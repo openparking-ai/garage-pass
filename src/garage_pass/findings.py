@@ -122,6 +122,8 @@ REFUSAL_NO_OPEN_VISIT = "REFUSAL_NO_OPEN_VISIT"
 REFUSAL_VISIT_ALREADY_OPEN = "REFUSAL_VISIT_ALREADY_OPEN"
 REFUSAL_EXIT_BEFORE_ENTRY = "REFUSAL_EXIT_BEFORE_ENTRY"
 REFUSAL_CONSTRAINT = "REFUSAL_CONSTRAINT"
+REFUSAL_FIELD_WRONG_TYPE = "REFUSAL_FIELD_WRONG_TYPE"
+REFUSAL_TENANT_NOT_FOUND = "REFUSAL_TENANT_NOT_FOUND"
 
 REFUSALS: dict[str, str] = {
     REFUSAL_VALID_TO_BEFORE_VALID_FROM: (
@@ -277,6 +279,19 @@ REFUSALS: dict[str, str] = {
         "racing end here. Under a deadlock the detail carries the database's own "
         "account of the cycle and asserts no cause the module did not observe."
     ),
+    REFUSAL_FIELD_WRONG_TYPE: (
+        "A document field carries a value of the wrong type -- text where a list "
+        "belongs, a number where text belongs, an object where an id belongs. The "
+        "document is refused naming the field, the type it declares and the value; "
+        "it is never reinterpreted (text is not read as a list of its characters) and "
+        "never a traceback. The check is derived from the dataclass the document loads "
+        "into, so a field added later is covered the day it is added."
+    ),
+    REFUSAL_TENANT_NOT_FOUND: (
+        "No tenant row has the id given. The first write for a tenant -- create-garage "
+        "-- reads the tenant row before it writes, so an id nobody seeded is refused by "
+        "name rather than met at the database's foreign key."
+    ),
 }
 
 
@@ -300,6 +315,7 @@ GARAGE_UNREADABLE = "GARAGE_UNREADABLE"
 BLANK_IDENTITY = "BLANK_IDENTITY"
 BLANK_LANE = "BLANK_LANE"
 PASS_NOT_HANDED_IN = "PASS_NOT_HANDED_IN"
+PASS_DUPLICATED = "PASS_DUPLICATED"
 
 NOT_COVERED_REASONS: dict[str, str] = {
     NO_PASS: (
@@ -369,6 +385,16 @@ NOT_COVERED_REASONS: dict[str, str] = {
         "answer, naming the field.) The store cannot produce this: it loads the "
         "passes its registrations name."
     ),
+    PASS_DUPLICATED: (
+        "The pass this vehicle is registered to was handed in more than once under "
+        "one id, and no copy covers this exit. Two passes carrying one id is "
+        "INCONSISTENT data: the module never picks a copy, whatever the order they "
+        "arrived in. At an EXIT every copy is evaluated -- the vehicle is covered if "
+        "any copy covers it, the duplication named -- and where none does, this is the "
+        "reason, with each copy's own reason in the detail. (At an entry the call "
+        "refuses to answer, naming the id.) The store cannot produce this: one id, one "
+        "pass, per garage."
+    ),
 }
 
 
@@ -421,6 +447,7 @@ MISSING_ONE_PASS = "registration.pass_id"
 MISSING_TIMEZONE = "garage.timezone"
 UNREADABLE_TERMS = "pass.terms"
 MISSING_PASS_HANDED_IN = "passes"
+DUPLICATED_PASS_ID = "passes[].id"
 
 REFUSED_TO_ANSWER: dict[str, str] = {
     MISSING_TRANSIENT_MODE: (
@@ -464,5 +491,14 @@ REFUSED_TO_ANSWER: dict[str, str] = {
         "(At an exit the vehicle is answered not-covered naming that pass -- or "
         "covered by another pass in force that was handed in, the inconsistency "
         "named. An exit is never refused and never raises on data.)"
+    ),
+    DUPLICATED_PASS_ID: (
+        "The pass this vehicle is registered to was handed in more than once under one "
+        "id, at an ENTRY -- whether or not the copies agree, since the caller who sent "
+        "one id twice does not know which they meant, and the module will not resolve "
+        "an inconsistency it should be naming. Measured before this: the LAST copy in "
+        "the list won silently, so the same inputs in a different order admitted or "
+        "refused the same car. Hand in each pass once. (At an exit every copy is "
+        "evaluated and the vehicle is covered if any covers it, the duplication named.)"
     ),
 }

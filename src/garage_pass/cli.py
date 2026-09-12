@@ -5,9 +5,12 @@
         [--registrations r.json] [--visits v.json] \
         --vehicle ID --lane L --direction entry|exit --at 2026-04-01T09:00:00-06:00
 
-Exit status: 0 covered, 1 not covered, 2 refused to answer, 3 the request was
-refused (a contradiction, a bad document, an unknown timezone, a malformed
-instant or day). The answer is printed as JSON, and there is no money in it.
+Exit status: 0 covered, 1 not covered, 2 refused to answer OR the machine's
+configuration (a sentence on stderr: no DSN, a database that does not connect
+or is not migrated, a role without its grants, no timezone database), 3 the
+request was refused (a contradiction, a bad document, a field of the wrong
+type, an unknown timezone, a malformed instant or day). The answer is printed
+as JSON, and there is no money in it.
 
 Against the store (``GARAGE_PASS_DSN``, ``--tenant``): ``create-garage``,
 ``set-garage-timezone`` (the repair for a garage stored with a timezone the
@@ -23,9 +26,23 @@ raises -- and ``UnknownTimezone`` is one -- reaches this boundary and is printed
 as ``{"refused": code, "field": ..., "detail": ...}`` with exit 3. What the
 libraries this boundary calls can raise is mapped here too: a document that
 cannot be read as JSON, an instant or a day that does not parse, a naive
-instant, a registrations or visits document that is not a list. Measured
+instant, a registrations or visits document that is not a list, a field of the
+wrong type (every document value is checked against the type its dataclass
+declares, in ``documents.py``, before anything is built from it). Measured
 before this: ``create-garage`` with a mistyped zone printed sixty lines of
-``zoneinfo`` stack. ``tests/test_g18_...`` enumerates every ``raise`` in the
+``zoneinfo`` stack; a registration document with no ``vehicle_identity`` was an
+``AttributeError`` at an exit.
+
+**WHAT THE DATABASE DRIVER RAISES AND THE MODULE DID NOT NAME IS THE MACHINE'S
+CONFIGURATION**: one sentence on stderr naming the SQLSTATE, exit 2, the shape
+of a DSN that does not connect -- an unmigrated database, a role without its
+grants, a DSN that is not one. It is the LAST resort, after every named
+refusal has had its chance: the module turns the SQLSTATEs it knows -- a unique
+violation, the one-car-one-pass exclusion, a deadlock -- into named refusals
+INSIDE the store, so the generic mapping here sees only what nothing named.
+Measured before this: those were tracebacks, four of them in the L3's census.
+
+``tests/test_g18_...`` enumerates every ``raise`` in the
 package by AST and classifies each as rendered here or a programming error a
 command cannot reach, so a new exception class fails that test until it is
 classified. A value that starts with a dash (``--timezone -06:00``) reaches the
@@ -275,6 +292,32 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
 
+#: What a SQLSTATE class says about WHOSE problem it is, in the operator's
+#: words. Derived from the class digits the standard defines, not from a list
+#: of the errors somebody has met; every class not named here is the last line.
+_SQLSTATE_CLASSES = {
+    "08": "the connection to the database failed",
+    "28": "the database refused the login",
+    "3D": "the database named does not exist",
+    "40": "the database rolled this command back to break a deadlock or a serialization "
+          "failure; nothing was written -- run it again",
+    "42": "the database is not set up for this command (a missing table or function, or a "
+          "role without its grants): the machine's configuration, not the request",
+    "53": "the database is out of a resource (connections, disk, memory)",
+    "57": "the database is shutting down or cancelled the command",
+}
+
+
+def _driver_sentence(exc: Exception) -> str:
+    """One line for a database error the store did not name: what class of
+    problem it is, the driver's class and SQLSTATE, the first line of its
+    message. The DSN is never in it."""
+    state = getattr(exc, "sqlstate", None) or "?"
+    what = _SQLSTATE_CLASSES.get(state[:2], "the database could not run this command")
+    message = str(exc).strip().splitlines()[0] if str(exc).strip() else repr(exc)
+    return f"{what}: {type(exc).__name__} (SQLSTATE {state}): {message}"
+
+
 def _run(args: argparse.Namespace) -> int:
     if args.command == "check-terms":
         for path in args.passes:
@@ -311,9 +354,10 @@ def _run(args: argparse.Namespace) -> int:
 
     try:
         connection = connect(dsn)
-    except psycopg.OperationalError as exc:
+    except psycopg.Error as exc:
         # Configuration, not a refusal of the request: one sentence, exit 2,
-        # like the unset DSN above. The DSN itself is not echoed.
+        # like the unset DSN above. The DSN itself is not echoed. A DSN that
+        # is not a conninfo string at all (ProgrammingError) is the same shape.
         print(f"GARAGE_PASS_DSN did not connect: {exc}".strip(), file=sys.stderr)
         return 2
     connection.autocommit = False
@@ -374,6 +418,15 @@ def _run(args: argparse.Namespace) -> int:
     except Refused:
         connection.rollback()
         raise
+    except psycopg.Error as exc:
+        # THE LAST RESORT, deliberately after Refused: a driver error the store
+        # did not turn into a named refusal is one sentence with its SQLSTATE,
+        # exit 2, never a traceback -- and never a refusal of the request's
+        # content, because nothing about the content was judged. Nothing the
+        # store names by SQLSTATE reaches here: those are Refused above.
+        connection.rollback()
+        print(_driver_sentence(exc), file=sys.stderr)
+        return 2
     finally:
         connection.close()
 

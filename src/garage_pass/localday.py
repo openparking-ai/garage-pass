@@ -142,6 +142,8 @@ def require_aware(moment: datetime, what: str = "an instant") -> datetime:
     `astimezone`, which is right about half the time and silent about the rest
     -- and "about half the time" is how a 06:00 window opens at 05:00.
     """
+    if not isinstance(moment, datetime):
+        raise TypeError(f"{what} must be a datetime, not {moment!r}")
     if moment.tzinfo is None or moment.utcoffset() is None:
         raise ValueError(
             f"{what} must carry a timezone. A naive datetime would be read as the "

@@ -15,10 +15,20 @@ $ garage-pass access --garage garage.json --pass pass.json \
 
 And, against the store: create the pass, register the vehicle, record what the
 lane saw, answer the lane from what is actually recorded. Exit status 0 covered,
-1 not covered, 2 refused to answer, 3 the request was refused — and a refusal is
-always the JSON `{"refused", "field", "detail"}`, never a traceback: a mistyped
-timezone, a document that is not JSON, an instant without an offset, a day that
-does not parse are each refused naming the option and the value.
+1 not covered, 2 refused to answer or the machine's configuration (one sentence
+on stderr: no DSN, a database that does not connect or is not migrated, a role
+without its grants, no timezone database), 3 the request was refused — and a
+refusal is always the JSON `{"refused", "field", "detail"}`, never a traceback:
+a mistyped timezone, a document that is not JSON, an instant without an offset,
+a day that does not parse, and a field of the wrong type are each refused naming
+the field and the value. **Every value a document carries is checked against
+the type the dataclass it loads into declares** — derived from the annotation,
+not from a list, so a field added later is covered the day it is added — and a
+string is never reinterpreted as a list of its characters. What the database
+driver raises that the store did not turn into a named refusal is the sentence
+on stderr with its SQLSTATE, exit 2, mapped last: the refusals the store names
+(a unique violation, the one-car-one-pass exclusion, a deadlock with its DETAIL)
+keep their names.
 
 ```
 $ garage-pass create-pass --tenant T --garage garage-downtown --pass pass.json --by owner --at ...
@@ -118,15 +128,24 @@ exit, naming the pass and the field, which at a transient garage means the stay
 is chargeable: said so, so nobody reads it as a free exit, and named so the
 operator can find the row. Inconsistent data is answered too: a registration
 naming a pass that was not handed in is not-covered at the exit, naming that
-pass, never an exception.
+pass, never an exception; a pass handed in twice under one id is never resolved
+by the order the copies arrived in — every copy is evaluated, the holder is
+covered if any copy covers, the duplication is named, and the same inputs in any
+order give the same answer (at an entry the call refuses to answer, naming the
+id, whether or not the copies agree).
 
-**What that sentence does not cover, named as such:** two caller-contract
-errors — an instant with no timezone, a direction that is not a `Direction` —
-raise on the first call, before there is a movement to answer about; and a
+**What that sentence does not cover, named because it cannot be otherwise — a
+class proven closed by execution, not a list:** a value of a type the signature
+does not accept — for any parameter of the call, or any element of its
+sequences; an instant with no timezone is one — raises on the first touch,
+before there is a movement to answer about, and never answers (the test
+enumerates the signature and hands every parameter a wrong-typed value); and a
 machine with no timezone database at all raises by its own name, never as an
 unknown zone, because nothing can be read on it. Neither is a term, a state, a
 revocation or data. A garage carrying a zone the system does not carry cannot
-be constructed at all; a stored one loads unreadable and answers.
+be constructed at all, and neither can a registration or a visit with a
+wrong-typed field; a stored garage the system cannot read loads unreadable and
+answers.
 
 ### What not-covered means depends on the garage
 

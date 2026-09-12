@@ -64,13 +64,23 @@ CLASSIFIED: dict[str, tuple[str, str]] = {
                                                    "caught by cli.main, one sentence on stderr, "
                                                    "exit 2 -- the shape of a DSN that does not "
                                                    "connect; never rendered as an unknown zone"),
-    "TypeError": (PROGRAMMING, "a direction that is not a Direction, a Pass built half-shaped: "
-                               "argparse choices and documents.py build the typed values, so "
-                               "the command line cannot produce either -- reachable only from "
-                               "the pure API, never from a command"),
+    "TypeError": (PROGRAMMING, "a value of a type the signature does not accept -- a direction "
+                               "that is not a Direction, a Pass built half-shaped, a Registration "
+                               "or Visit with a wrong-typed field, a wrong-typed parameter of "
+                               "access(): every value a command hands the module is loaded "
+                               "through the document boundary, which refuses a wrong type BY "
+                               "NAME against the dataclass's declared field types, so the "
+                               "class is reachable only from the pure API, never from a "
+                               "command -- and there it raises on the first touch, never "
+                               "answers (G4 enumerates the signature and proves it). Note the "
+                               "denominator: these are the raise STATEMENTS; the same class "
+                               "born of an operator on a wrong-typed value used to reach a "
+                               "command from a document, and the boundary closes that route"),
     "KeyError": (PROGRAMMING, "a refusal code invented at a raise site and never registered: "
                               "the contract test and the orphan scan catch it before it ships"),
-    "ValueError": (PROGRAMMING, "require_aware on a naive datetime: every instant the command "
+    "ValueError": (PROGRAMMING, "require_aware on a naive datetime -- an instant with no "
+                                "timezone is a value of a type the signature does not accept, "
+                                "the same class as TypeError above: every instant the command "
                                 "line hands the module goes through cli._at or documents._instant, "
                                 "which refuse a naive one first -- reachable only from the pure "
                                 "API, never from a command"),
@@ -119,7 +129,11 @@ def test_every_raise_in_the_package_is_classified():
 def test_the_sweep_reports_its_count_and_the_two_dead_raises_are_named_in_words():
     """The instrument names its denominator: how many ``raise`` statements,
     of how many classes, and that the two caller-contract classes carry the
-    sentence that closes them. A reader of the ``-rA`` output sees the count."""
+    sentence that closes them -- and, since the L3's census, that the same
+    words say the denominator is the raise STATEMENTS, because the class born
+    of an operator on a wrong-typed value reached a command by another route
+    until the document boundary closed it. A reader of the ``-rA`` output sees
+    the count."""
     found = every_raise()
     total = sum(len(where) for where in found.values())
     print(f"\nSWEEP: {total} raise statements naming {len(found)} classes: "
@@ -127,6 +141,7 @@ def test_the_sweep_reports_its_count_and_the_two_dead_raises_are_named_in_words(
     assert total > 50 and "Refused" in found
     for dead in ("ValueError", "TypeError"):
         assert "reachable only from the pure API, never from a command" in CLASSIFIED[dead][1]
+    assert "denominator" in CLASSIFIED["TypeError"][1], "the sweep says what it does not count"
     in_access = [w for w in found.get("Refused", []) if "garage_pass/access.py:" in w]
     assert in_access == [], (
         f"the access call raises a Refused again ({in_access}); a registration naming a pass "
@@ -429,3 +444,361 @@ def test_set_garage_timezone_with_a_dash_leading_value_is_the_json_refusal_exit_
     assert "'-06:00'" in printed["detail"]
     assert query(app, tenant_id, "SELECT timezone FROM garages") == [("America/Denver",)]
     assert query(app, tenant_id, "SELECT count(*) FROM garage_changes") == [(0,)]
+
+
+# ---------------------------------------------------------------------------
+# The document boundary: every value checked against its declared type (W2, W3).
+# ---------------------------------------------------------------------------
+
+
+def _write(tmp_path: Path, name: str, document: object) -> Path:
+    path = tmp_path / name
+    path.write_text(json.dumps(document))
+    return path
+
+
+def _with(document: dict, dotted: str, value: object) -> dict:
+    """A deep copy of ``document`` with one dotted key replaced (or removed
+    when ``value`` is ``...``)."""
+    import copy
+
+    out = copy.deepcopy(document)
+    cursor = out
+    *parents, last = dotted.split(".")
+    for part in parents:
+        cursor = cursor[int(part)] if isinstance(cursor, list) else cursor[part]
+    if value is ...:
+        del cursor[last]
+    else:
+        cursor[last] = value
+    return out
+
+
+REGISTRATION = {"pass_id": "pass-1", "vehicle_identity": "CAR-1", "effective_day": "2026-01-01"}
+VISIT = {"pass_id": "pass-1", "vehicle_identity": "CAR-1", "entry_lane": "L1",
+         "entered_at": "2026-06-01T09:00:00-06:00"}
+
+#: The L3's census, the cases that were TRACEBACKS or SILENT MISREADS at the
+#: command line: (which document, the dotted key, the wrong value, the refusal).
+#: ``...`` removes the key. Every one is now the JSON refusal, exit 3, stderr
+#: empty -- and the refusal names the field.
+WRONG_TYPED_DOCUMENTS = [
+    ("registration", "vehicle_identity", ..., f.REFUSAL_FIELD_BLANK),
+    ("registration", "vehicle_identity", 1234, f.REFUSAL_FIELD_WRONG_TYPE),
+    ("registration", "vehicle_identity", ["CAR-1"], f.REFUSAL_FIELD_WRONG_TYPE),
+    ("registration", "pass_id", {"id": "x"}, f.REFUSAL_FIELD_WRONG_TYPE),
+    ("registration", "pass_id", ["pass-1"], f.REFUSAL_FIELD_WRONG_TYPE),
+    ("registration", "pass_id", 7, f.REFUSAL_FIELD_WRONG_TYPE),
+    ("registration", "effective_day", 20260101, f.REFUSAL_FIELD_WRONG_TYPE),
+    ("visit", "vehicle_identity", ..., f.REFUSAL_FIELD_BLANK),
+    ("visit", "vehicle_identity", 5, f.REFUSAL_FIELD_WRONG_TYPE),
+    ("visit", "pass_id", {"x": 1}, f.REFUSAL_FIELD_WRONG_TYPE),
+    ("visit", "entry_lane", 1, f.REFUSAL_FIELD_WRONG_TYPE),
+    ("visit", "entered_at", 5, f.REFUSAL_FIELD_WRONG_TYPE),
+    ("pass", "terms.allowed_lanes", "L1", f.REFUSAL_FIELD_WRONG_TYPE),  # W3: not {'1','L'}
+    ("pass", "terms.allowed_lanes", 5, f.REFUSAL_FIELD_WRONG_TYPE),
+    ("pass", "terms.allowed_lanes", [1], f.REFUSAL_FIELD_WRONG_TYPE),
+    ("pass", "terms.directions", 5, f.REFUSAL_FIELD_WRONG_TYPE),
+    ("pass", "terms.directions", "entry", f.REFUSAL_FIELD_WRONG_TYPE),  # W3
+    ("pass", "terms.windows", 5, f.REFUSAL_FIELD_WRONG_TYPE),
+    ("pass", "terms.windows", {"days": [1]}, f.REFUSAL_FIELD_WRONG_TYPE),
+    ("pass", "terms.windows.0.days", 5, f.REFUSAL_FIELD_WRONG_TYPE),
+    ("pass", "terms.windows.0.days", "12345", f.REFUSAL_FIELD_WRONG_TYPE),  # W3
+    ("pass", "terms.windows.0.days", [1.5], f.REFUSAL_FIELD_WRONG_TYPE),
+    ("pass", "terms.windows.0.days", ["1"], f.REFUSAL_FIELD_WRONG_TYPE),
+    ("pass", "terms.windows.0.start_minute", ..., f.REFUSAL_FIELD_BLANK),
+    ("pass", "terms.windows.0.start_minute", "360", f.REFUSAL_FIELD_WRONG_TYPE),
+    ("pass", "terms.windows.0.start_minute", 360.5, f.REFUSAL_FIELD_WRONG_TYPE),
+    ("pass", "terms.visit_allowance.count", "3", f.REFUSAL_FIELD_WRONG_TYPE),
+    ("pass", "terms.visit_allowance.count", ..., f.REFUSAL_FIELD_BLANK),
+    ("pass", "terms.visit_allowance.count", 2.5, f.REFUSAL_FIELD_WRONG_TYPE),
+    ("pass", "terms.visit_allowance.count", True, f.REFUSAL_FIELD_WRONG_TYPE),
+    ("pass", "terms.max_stay_minutes", 10**15, f.REFUSAL_FIELD_WRONG_TYPE),
+    ("pass", "terms.max_stay_minutes", "600", f.REFUSAL_FIELD_WRONG_TYPE),
+    ("pass", "terms.valid_from", 2026, f.REFUSAL_FIELD_WRONG_TYPE),
+    ("pass", "terms", [], f.REFUSAL_FIELD_BLANK),
+    ("pass", "holder", ..., f.REFUSAL_FIELD_BLANK),
+    ("pass", "holder.email", 7, f.REFUSAL_FIELD_WRONG_TYPE),
+    ("pass", "id", 7, f.REFUSAL_FIELD_WRONG_TYPE),
+    ("garage", "timezone", 5, f.REFUSAL_FIELD_WRONG_TYPE),
+    ("garage", "timezone", ..., f.REFUSAL_FIELD_BLANK),
+    ("garage", "transient_available", "yes", f.REFUSAL_FIELD_WRONG_TYPE),
+    ("garage", "transient_available", 1, f.REFUSAL_FIELD_WRONG_TYPE),
+    ("garage", "id", 5, f.REFUSAL_FIELD_WRONG_TYPE),
+]
+
+
+@pytest.mark.guarantee("G18")
+@pytest.mark.parametrize(
+    "which,key,value,code", WRONG_TYPED_DOCUMENTS,
+    ids=[f"{w}.{k}={'ABSENT' if v is ... else v!r}" for w, k, v, _ in WRONG_TYPED_DOCUMENTS],
+)
+def test_a_wrong_typed_document_field_is_the_json_refusal_naming_the_field(
+    tmp_path, capsys, which, key, value, code
+):
+    """THE L3's CENSUS, CASE BY CASE: 19 of these were tracebacks at the command
+    line and three were silent misreads (``allowed_lanes: "L1"`` became the lane
+    set ``{'1', 'L'}``, a float allowance counted, a visit on an object pass_id
+    was ignored). Every value a document carries is now checked against the
+    type its dataclass declares -- derived from the annotation, not from a list
+    -- so each is the JSON refusal, exit 3, the field named, stderr empty."""
+    garage, pass_ = _documents(tmp_path)
+    documents = {"garage": garage, "pass": pass_}
+    argv = ["access", "--garage", str(garage), "--pass", str(pass_), *MOVE]
+    base = {"garage": json.loads(garage.read_text()), "pass": json.loads(pass_.read_text()),
+            "registration": REGISTRATION, "visit": VISIT}[which]
+    broken = _with(base, key, value)
+    if which in ("registration", "visit"):
+        path = _write(tmp_path, f"{which}s.json", [broken])
+        argv += [f"--{which}s", str(path)]
+    else:
+        documents[which].write_text(json.dumps(broken))
+    status, printed = run(argv, capsys)
+    assert status == EXIT_REFUSED_REQUEST, printed
+    assert printed["refused"] == code, printed
+    import re
+
+    field = key.split(".")[-1] if not key.split(".")[-1].isdigit() else key.split(".")[-2]
+    assert re.sub(r"\[\d+\]$", "", printed["field"]).endswith(field), printed
+    assert capsys.readouterr().err == ""
+    if value is not ...:
+        shown = value[0] if isinstance(value, list) and len(value) == 1 else value
+        assert repr(shown) in printed["detail"] or str(shown) in printed["detail"], printed
+
+
+@pytest.mark.guarantee("G18")
+def test_a_string_is_never_reinterpreted_as_a_collection(tmp_path, capsys):
+    """W3 as the control reads: ``allowed_lanes: "L1"`` used to LOAD as the lane
+    set ``{'1', 'L'}`` -- no traceback, no refusal, and a legitimate entry on L1
+    was then WRONG_LANE. Now the load itself is refused; the same document with
+    the list ``["L1"]`` is the control and covers."""
+    from garage_pass.documents import load_pass
+
+    with pytest.raises(f.Refused) as refused:
+        load_pass(pass_document(terms={**pass_document()["terms"], "allowed_lanes": "L1"}))
+    assert refused.value.code == f.REFUSAL_FIELD_WRONG_TYPE
+    assert refused.value.field == "pass.terms.allowed_lanes"
+    assert "a list of text" in refused.value.detail and "'L1'" in refused.value.detail
+    loaded = load_pass(pass_document(terms={**pass_document()["terms"], "allowed_lanes": ["L1"]}))
+    assert loaded.terms is not None and loaded.terms.allowed_lanes == frozenset({"L1"})
+    garage, pass_ = _documents(tmp_path)
+    pass_.write_text(json.dumps(pass_document(terms={**pass_document()["terms"],
+                                                     "allowed_lanes": ["L1"]})))
+    registrations = _write(tmp_path, "r.json", [REGISTRATION])
+    status, printed = run(["access", "--garage", str(garage), "--pass", str(pass_),
+                           "--registrations", str(registrations), *MOVE], capsys)
+    assert status == 0 and printed["outcome"] == "covered", printed
+
+
+@pytest.mark.guarantee("G18")
+def test_the_document_keys_and_checks_are_derived_from_the_dataclass_not_listed():
+    """THE ADD-A-FIELD CONTROL. A dataclass nobody listed anywhere is handed to
+    the loader: its fields are the document's keys, each value is checked
+    against its declared type, an unknown key is refused, a required field is
+    required, a defaulted one is optional -- with no list edited. Then the
+    published key sets are shown to be exactly what the dataclasses declare,
+    and the two declared exceptions are exactly two."""
+    from dataclasses import dataclass
+
+    from garage_pass import documents as docs
+
+    @dataclass(frozen=True)
+    class Scratch:
+        id: str
+        count: int
+        note: str | None = None
+        tags: frozenset[str] = frozenset()
+
+    assert docs.keys_of(Scratch) == {"id", "count", "note", "tags"}
+    loaded = docs.load(Scratch, {"id": "s", "count": 2, "note": "n", "tags": ["a", "b"]}, "scratch")
+    assert loaded == Scratch("s", 2, "n", frozenset({"a", "b"}))
+    assert docs.load(Scratch, {"id": "s", "count": 2}, "scratch") == Scratch("s", 2)
+    for document, code, field in (
+        ({"id": "s", "count": "2"}, f.REFUSAL_FIELD_WRONG_TYPE, "scratch.count"),
+        ({"id": "s", "count": True}, f.REFUSAL_FIELD_WRONG_TYPE, "scratch.count"),
+        ({"id": "s", "count": 2, "note": 5}, f.REFUSAL_FIELD_WRONG_TYPE, "scratch.note"),
+        ({"id": "s", "count": 2, "tags": "ab"}, f.REFUSAL_FIELD_WRONG_TYPE, "scratch.tags"),
+        ({"id": "s", "count": 2, "tags": [1]}, f.REFUSAL_FIELD_WRONG_TYPE, "scratch.tags[0]"),
+        ({"id": "s"}, f.REFUSAL_FIELD_BLANK, "scratch.count"),
+        ({"id": "s", "count": None}, f.REFUSAL_FIELD_BLANK, "scratch.count"),
+        ({"id": "s", "count": 2, "colour": "red"}, f.REFUSAL_UNKNOWN_FIELD, "scratch.colour"),
+    ):
+        with pytest.raises(f.Refused) as refused:
+            docs.load(Scratch, document, "scratch")
+        assert (refused.value.code, refused.value.field) == (code, field), refused.value
+    # the published sets ARE the dataclasses' fields, minus the declared exceptions
+    import dataclasses as dc
+
+    from garage_pass.garage import Garage
+    from garage_pass.passes import Holder, Pass, Registration, Visit
+    from garage_pass.terms import Terms, VisitAllowance, Window
+
+    for cls, published in ((Garage, docs.GARAGE_KEYS), (Pass, docs.PASS_KEYS),
+                           (Holder, docs.HOLDER_KEYS), (Terms, docs.TERMS_KEYS),
+                           (Window, docs.WINDOW_KEYS), (VisitAllowance, docs.ALLOWANCE_KEYS),
+                           (Registration, docs.REGISTRATION_KEYS), (Visit, docs.VISIT_KEYS)):
+        names = {fld.name for fld in dc.fields(cls)} - docs.STORE_ONLY.get(cls, frozenset())
+        renamed = {docs.DOCUMENT_KEY_OF.get((cls, n), (n, None))[0] for n in names}
+        assert published == renamed, cls
+    assert docs.DOCUMENT_KEY_OF == {(Terms, "max_stay"): ("max_stay_minutes", "minutes")}
+    assert docs.STORE_ONLY == {Pass: frozenset({"unreadable"}), Garage: frozenset({"unreadable"})}
+    assert "unreadable" not in docs.PASS_KEYS | docs.GARAGE_KEYS
+    assert "max_stay_minutes" in docs.TERMS_KEYS and "max_stay" not in docs.TERMS_KEYS
+
+
+# ---------------------------------------------------------------------------
+# What the driver raises and the module did not name: the machine's configuration.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.guarantee("G18")
+def test_a_dsn_that_is_not_a_conninfo_string_is_a_sentence_exit_2(tmp_path, capsys, monkeypatch):
+    """``psycopg.ProgrammingError`` at connect -- a traceback in the L3's
+    census. The same shape as a DSN that does not connect."""
+    garage, _pass = _documents(tmp_path)
+    monkeypatch.setenv("GARAGE_PASS_DSN", "this is not a dsn = secret-4f9c")
+    try:
+        status = main(["create-garage", "--tenant", "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
+                       "--garage", str(garage)])
+    except Exception as exc:  # noqa: BLE001
+        pytest.fail(f"raised instead of a sentence: {exc!r}")
+    captured = capsys.readouterr()
+    assert status == 2 and "did not connect" in captured.err and captured.out == ""
+    assert "secret-4f9c" not in captured.err
+
+
+@pytest.mark.guarantee("G18")
+@store_test
+def test_a_driver_error_the_store_did_not_name_is_a_sentence_and_a_named_one_is_still_the_refusal(
+    app, owner, tenant_id, tmp_path, capsys, monkeypatch
+):
+    """THE GUARD ON THE GENERIC MAPPING, BOTH HALVES IN ONE RUN. The command
+    line maps whatever the driver raises and the store did not name to one
+    sentence on stderr with its SQLSTATE, exit 2 -- the shape of a DSN that
+    does not connect. It is the LAST resort, after the store's own named
+    refusals: a generic handler placed AHEAD of them would report a real
+    refusal as a broken server, which is worse than the four tracebacks it
+    replaces. So, in one test: (a) a database that is not set up (the schema
+    out of the search path: ``UndefinedTable``, class 42) is the sentence;
+    (b) a REAL deadlock at the one-car-one-pass INSERT, driven through the
+    command line, is STILL the JSON refusal naming the constraint and carrying
+    PostgreSQL's DETAIL, exit 3 -- and it is made deterministic the way G1's
+    test does it, with the command's own transaction made to hold a row first
+    (through ``_holders``, the module's read before its INSERT)."""
+    import threading
+    import time
+
+    from fixtures import a_pass, transient_garage
+    from garage_pass.store import records
+    from garage_pass.store.postgres import connect
+    from store_harness import query, seed
+
+    garage_doc, _pass = _documents(tmp_path)
+    tenant = ["--tenant", str(tenant_id)]
+    # ---- (a) not set up: the sentence, exit 2, stdout empty, no traceback
+    from psycopg import conninfo
+
+    from garage_pass.store.postgres import APP_ROLE
+    from store_harness import APP_PASSWORD
+
+    params = conninfo.conninfo_to_dict(DSN)
+    monkeypatch.setenv("GARAGE_PASS_DSN", conninfo.make_conninfo(
+        **{**params, "user": APP_ROLE, "password": APP_PASSWORD,
+           "options": "-c search_path=pg_catalog"}))
+    try:
+        status = main(["create-garage", *tenant, "--garage", str(garage_doc)])
+    except Exception as exc:  # noqa: BLE001
+        pytest.fail(f"the driver's error escaped as a traceback: {exc!r}")
+    captured = capsys.readouterr()
+    assert status == 2 and captured.out == "", captured
+    assert "SQLSTATE 42" in captured.err and "UndefinedTable" in captured.err, captured.err
+    assert "not set up" in captured.err and "\n" not in captured.err.strip(), captured.err
+    assert str(APP_PASSWORD) not in captured.err
+    # ---- (b) a real deadlock at the INSERT, through the command line: exit 3, named
+    _dsn_for_the_app(monkeypatch)
+    G = transient_garage()
+    A, Z = a_pass(id="pass-a"), a_pass(id="pass-z")
+    seed(app, tenant_id, G, (A, Z))
+    ids = dict(query(app, tenant_id, "SELECT external_id, id FROM passes"))
+    raw = connect(DSN)
+    theirs: dict = {}
+    original_holders = records._holders
+
+    def holders_then_hold_z_and_wait(cursor, *args):
+        """The module's own read before its INSERT, then -- on the COMMAND'S
+        transaction -- a row lock on Z, the raw side made to wait on it, and
+        the clock run past its deadlock_timeout; the INSERT that follows is
+        the last waiter and the victim."""
+        rows = original_holders(cursor, *args)
+        cursor.execute("SELECT id FROM passes WHERE id = %s FOR UPDATE", (ids["pass-z"],))
+        with raw.cursor() as c:
+            c.execute("SELECT id FROM passes WHERE id = %s FOR UPDATE", (ids["pass-a"],))
+
+        def wait_on_ours():
+            try:
+                with raw.cursor() as c:
+                    c.execute("SELECT id FROM passes WHERE id = %s FOR UPDATE", (ids["pass-z"],))
+                theirs["result"] = "acquired"
+            except BaseException as exc:  # noqa: BLE001
+                theirs["result"] = exc
+
+        threading.Thread(target=wait_on_ours).start()
+
+        def raw_is_waiting() -> bool:
+            with owner.cursor() as c:
+                c.execute("SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock' "
+                          "AND query ILIKE 'SELECT id FROM passes%%FOR UPDATE'")
+                return c.fetchone()[0] == 1
+
+        deadline = time.monotonic() + 10
+        while not raw_is_waiting() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert raw_is_waiting()
+        time.sleep(1.5)
+        return rows
+
+    monkeypatch.setattr(records, "_holders", holders_then_hold_z_and_wait)
+    try:
+        status, printed = run(["register-vehicle", *tenant, "--garage", G.id, "--pass-id", A.id,
+                               "--vehicle", "CAR-1", "--effective-day", "2026-01-01"], capsys)
+    finally:
+        raw.rollback()
+        raw.close()
+    assert status == EXIT_REFUSED_REQUEST, (status, printed, capsys.readouterr())
+    assert printed["refused"] == f.REFUSAL_CONSTRAINT and printed["field"] == "vehicle_identity"
+    assert "deadlock" in printed["detail"] and "blocked by process" in printed["detail"]
+    assert "raced" not in printed["detail"]
+    assert query(app, tenant_id, "SELECT count(*) FROM vehicle_registrations") == [(0,)]
+
+
+@pytest.mark.guarantee("G18")
+@store_test
+def test_create_garage_for_a_tenant_nobody_seeded_is_the_json_refusal_not_the_foreign_key(
+    app, tenant_id, tmp_path, capsys, monkeypatch
+):
+    """W5. Measured at the re-run of the walk: a ``--tenant`` with no row was a
+    ``ForeignKeyViolation`` traceback at ``create-garage`` -- and at
+    create-garage ONLY, the L3 measured: the other eight store commands load
+    the garage first and were already refusing GARAGE_NOT_FOUND. The first
+    write for a tenant now reads the tenant row first and refuses by name;
+    the seeded tenant in the same run is the control, and nothing is stored
+    for the unseeded one."""
+    import uuid
+
+    from store_harness import query
+
+    _dsn_for_the_app(monkeypatch)
+    garage, _pass = _documents(tmp_path)
+    nobody = str(uuid.uuid4())
+    status, printed = run(["create-garage", "--tenant", nobody, "--garage", str(garage)], capsys)
+    assert status == EXIT_REFUSED_REQUEST, printed
+    assert printed["refused"] == f.REFUSAL_TENANT_NOT_FOUND and printed["field"] == "tenant"
+    assert nobody in printed["detail"] and capsys.readouterr().err == ""
+    status, printed = run(["create-garage", "--tenant", str(tenant_id), "--garage", str(garage)],
+                          capsys)
+    assert status == 0 and printed["stored"] == "garage-downtown", "the control: a seeded tenant"
+    assert query(app, tenant_id, "SELECT count(*) FROM garages") == [(1,)]
+    with app.cursor() as cursor:  # as the application role, no tenant set: nothing for nobody
+        cursor.execute("SELECT count(*) FROM garages WHERE tenant_id = %s", (nobody,))
+        assert cursor.fetchone() == (0,)
+    app.rollback()

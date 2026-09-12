@@ -973,6 +973,137 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
         "ninth table gets the same control as the eight; the isolation test's denominator "
         "is the catalogue, so it sees the table without being told",
     ),
+    # --- the document boundary, and the answer that depended on list order (W1-W5) ---
+    "G4/duplicate-last-wins": (
+        G4, "access.py",
+        source(
+            "    duplicated = {",
+            "        pid: sorted(ps, key=_copy_order)",
+            "        for pid, ps in copies.items()",
+            "        if len(ps) > 1 and any(p.garage_id == garage.id for p in ps)",
+            "    }",
+        ),
+        source(
+            "    duplicated: dict = {}  # PLANTED: last-wins is back; a repeated id is not seen",
+        ),
+        "a pass handed in twice under one id is resolved by ORDER again: by_id is a dict, "
+        "the last copy wins silently, and [revoked p1, active p1] admits at an entry the "
+        "car that [active p1, revoked p1] refuses -- the L3's order-dependent answer",
+    ),
+    "G4/wrong-type-answers": (
+        G4, "access.py",
+        source(
+            '    for name, value in (("vehicle_identity", vehicle_identity), ("lane", lane)):',
+            "        if not isinstance(value, str):",
+            "            raise TypeError(f\"{name} must be text, not {value!r}\")",
+        ),
+        source(
+            "    return  # PLANTED: a wrong-typed identity or lane is read as blank and ANSWERED",
+        ),
+        "a wrong-typed identity or lane is no longer refused at the signature: it reaches "
+        ".strip() and is an AttributeError at an exit lane (the L3's shape through the pure "
+        "API) -- and with the old blank-reading back it would be an ANSWER, a caller's bug "
+        "read as a car with no plate. The signature enumeration reddens either way; the "
+        "naive-at and direction checks stay",
+    ),
+    "G4/registration-untyped": (
+        G4, "passes.py",
+        source(
+            "        # without complaint and raised at an EXIT lane instead.",
+            "        require_typed(self)",
+        ),
+        source(
+            "        # without complaint and raised at an EXIT lane instead.",
+            "        return  # PLANTED: Registration validates nothing again",
+        ),
+        "a Registration with a None identity or a string day is constructed again and "
+        "raises at an exit lane -- the eight pure-API raises the L3 found",
+    ),
+    "G18/document-untyped-scalar": (
+        G18, "documents.py",
+        source(
+            "    if arm is str:",
+            "        if not isinstance(value, str):",
+            "            _refuse_wrong_type(field, hint, value)",
+        ),
+        source(
+            "    if arm is str:",
+            "        pass  # PLANTED: text fields take any value; a number where an id belongs",
+        ),
+        "a registration document whose vehicle_identity is a number reaches the module "
+        "and is an AttributeError at an exit again (the loader's type check for text is gone)",
+    ),
+    "G18/string-as-collection": (
+        G18, "documents.py",
+        source(
+            "        if not isinstance(value, list):",
+            "            _refuse_wrong_type(field, hint, value)",
+        ),
+        source(
+            "        if isinstance(value, str):  # PLANTED: text is read as its characters",
+            "            value = list(value)",
+            "        elif not isinstance(value, list):",
+            "            _refuse_wrong_type(field, hint, value)",
+        ),
+        "allowed_lanes: 'L1' loads as the lane set {'1', 'L'} again -- no traceback, no "
+        "refusal, a silently wrong pass, WRONG_LANE on a legitimate lane",
+    ),
+    "G18/keys-hand-listed": (
+        G18, "documents.py",
+        "    return frozenset(f.key for f in document_fields(cls))",
+        source(
+            "    listed = {  # PLANTED: the keys are a hand-written list again",
+            '        "Garage": {"id", "timezone", "transient_available"},',
+            '        "Pass": {"id", "garage_id", "label", "holder", "terms", "state"},',
+            '        "Holder": {"email", "name", "phone"},',
+            '        "Terms": {"valid_from", "valid_to", "windows", "max_stay_minutes",',
+            '                  "visit_allowance", "directions", "allowed_lanes"},',
+            '        "Window": {"days", "start_minute", "end_minute"},',
+            '        "VisitAllowance": {"count", "per"},',
+            '        "Registration": {"pass_id", "vehicle_identity", "effective_day", "end_day"},',
+            '        "Visit": {"pass_id", "vehicle_identity", "entry_lane", "entered_at",',
+            '                  "exited_at", "exit_lane"},',
+            "    }",
+            "    return frozenset(listed.get(cls.__name__, set()))",
+        ),
+        "the document keys are typed by hand again: a field added to a dataclass -- the "
+        "add-a-field control's scratch class -- is not a document key until somebody edits "
+        "the list, which is exactly how the L3's holes were made",
+    ),
+    "G18/driver-generic": (
+        G18, "cli.py",
+        source(
+            "    except psycopg.Error as exc:",
+            "        # THE LAST RESORT, deliberately after Refused: a driver error the store",
+        ),
+        source(
+            "    except psycopg.Error as exc:",
+            "        raise  # PLANTED: the driver's error is a traceback again",
+            "        # THE LAST RESORT, deliberately after Refused: a driver error the store",
+        ),
+        "an unmigrated database, a role without its grants: UndefinedTable and "
+        "InsufficientPrivilege escape the command line as tracebacks again -- the L3's "
+        "census, four of the nineteen",
+    ),
+    "G18/driver-generic-first": (
+        G18, "store/records.py",
+        "    except psycopg.errors.DeadlockDetected as deadlock:",
+        "    except psycopg.errors.NoDataFound as deadlock:  # PLANTED: the deadlock is not named",
+        "THE GUARD: a real deadlock at the one-car-one-pass INSERT is no longer turned into "
+        "its named refusal inside the store, so it falls through to the command line's "
+        "generic mapping and a REAL REFUSAL is reported as a broken server -- exit 2 and a "
+        "sentence instead of exit 3 and the JSON refusal carrying PostgreSQL's DETAIL. "
+        "The generic mapping is the last resort or it is a worse defect than the four "
+        "tracebacks it replaced",
+    ),
+    "G18/tenant-row": (
+        G18, "store/records.py",
+        '    cursor.execute("SELECT 1 FROM tenants WHERE id = %s", (tenant_uuid,))',
+        '    cursor.execute("SELECT 1 WHERE %s IS NOT NULL", (tenant_uuid,))  # PLANTED',
+        "create-garage with a --tenant nobody seeded reaches the INSERT and is the "
+        "database's ForeignKeyViolation again -- which the generic mapping now renders as "
+        "a configuration sentence, exit 2, instead of the refusal by name, exit 3",
+    ),
     "G12/garage-who-why": (
         G12, "store/records.py",
         source(

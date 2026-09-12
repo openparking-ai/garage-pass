@@ -70,7 +70,7 @@ def test_a_registration_ended_by_revocation_reads_as_revoked_not_no_pass():
 
 
 @pytest.mark.guarantee("G8")
-@pytest.mark.parametrize("blank", ["", "   ", None, 12], ids=["empty", "spaces", "None", "int"])
+@pytest.mark.parametrize("blank", ["", "   ", "\t"], ids=["empty", "spaces", "tab"])
 def test_a_blank_identity_is_refused_an_answer_naming_the_field_at_entry(blank):
     answer = ask(blank)
     assert answer.outcome is Outcome.REFUSED_TO_ANSWER

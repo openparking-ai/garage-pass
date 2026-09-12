@@ -25,8 +25,9 @@ def require_text(value: object, field: str) -> str:
 class Garage:
     id: str
     timezone: str
-    #: True, False, or None for "not stated". None is not a default of False.
-    transient_available: bool | None
+    #: True, False, or None for "not stated". None is not a default of False:
+    #: absent is UNSTATED, and an unstated garage refuses every entry an answer.
+    transient_available: bool | None = None
     #: Set by the store's LOAD path only, for a stored row this module refuses
     #: to read (a timezone the system does not carry). A garage is never
     #: WRITTEN unreadable -- ``zone`` refuses the value where it is written --

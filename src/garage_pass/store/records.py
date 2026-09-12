@@ -53,6 +53,7 @@ from garage_pass.findings import (
     REFUSAL_REGISTRATION_NOT_FOUND,
     REFUSAL_REGISTRATION_OUTLIVES_THE_PASS,
     REFUSAL_REPAIR_NEEDS_WHO_AND_WHY,
+    REFUSAL_TENANT_NOT_FOUND,
     REFUSAL_VEHICLE_ON_ANOTHER_PASS,
     REFUSAL_VISIT_ALREADY_OPEN,
     Refused,
@@ -87,8 +88,21 @@ def as_uuid(value: Any) -> UUID:
 def store_garage(cursor: Any, tenant_id: Any, garage: Garage) -> UUID:
     """Store a garage. Its timezone was refused where the ``Garage`` value was
     built if the system does not carry it. A second garage with the same id is
-    refused by name; the UNIQUE is the backstop for two writers racing."""
+    refused by name; the UNIQUE is the backstop for two writers racing.
+
+    THE TENANT ROW IS READ FIRST. This is the first write anything makes for a
+    tenant, so a ``--tenant`` nobody seeded arrives here before any garage
+    could be looked up -- measured before this it was the database's foreign
+    key, a traceback at the command line, while every other store command was
+    already refusing GARAGE_NOT_FOUND. The tenant policy lets the role read
+    exactly its own row, which is the row this asks for."""
     tenant_uuid = as_uuid(tenant_id)
+    cursor.execute("SELECT 1 FROM tenants WHERE id = %s", (tenant_uuid,))
+    if not cursor.fetchone():
+        raise Refused(
+            REFUSAL_TENANT_NOT_FOUND, "tenant",
+            f"no tenant row has id {tenant_uuid}; seed the tenant before its first garage.",
+        )
     cursor.execute(
         "SELECT 1 FROM garages WHERE tenant_id = %s AND external_id = %s",
         (tenant_uuid, garage.id),
