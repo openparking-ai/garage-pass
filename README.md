@@ -1,21 +1,191 @@
 # Open Parking AI — garage pass
 
-**Nothing is built here yet.** This branch carries the licence, the contributor
-agreement and the guards that every repository in this project starts with. The
-module arrives as a pull request.
+**This vehicle, at this lane, going this direction, at this instant — does a
+pass cover it, and if not, why not?** That question, and nothing else.
 
-When it does, it will answer one question and nothing else:
+Standalone. It runs with no parking system around it, no platform, and — for
+the answer itself — no database and no dependencies at all.
 
-> **This vehicle, at this lane, going this direction, at this instant — does a
-> pass cover it, and if not, why not?**
+```
+$ garage-pass check-terms --pass pass.json
+$ garage-pass access --garage garage.json --pass pass.json \
+      --registrations registrations.json --visits visits.json \
+      --vehicle CAR-1 --lane L1 --direction entry --at 2026-06-01T12:00:00-06:00
+```
 
-A pass is one garage, an owner-typed label, a holder, its terms and its state,
-with the vehicles registered to it. No fee, no amount and no balance ever cross
-the access call; an exit is never refused; and this module never opens or closes
-a gate — it answers, the lane acts.
+And, against the store: create the pass, register the vehicle, record what the
+lane saw, answer the lane from what is actually recorded. Exit status 0 covered,
+1 not covered, 2 refused to answer, 3 the request was refused — and a refusal is
+always the JSON `{"refused", "field", "detail"}`, never a traceback: a mistyped
+timezone, a document that is not JSON, an instant without an offset, a day that
+does not parse are each refused naming the option and the value.
 
-## Licence and contributions
+```
+$ garage-pass create-pass --tenant T --garage garage-downtown --pass pass.json --by owner --at ...
+$ garage-pass register-vehicle --tenant T --garage garage-downtown --pass-id pass-1 \
+      --vehicle CAR-1 --effective-day 2026-06-01
+$ garage-pass record-entry --tenant T --garage garage-downtown --pass-id pass-1 \
+      --vehicle CAR-1 --lane L1 --at 2026-06-01T09:00:00-06:00
+$ garage-pass access-in-store --tenant T --garage garage-downtown \
+      --vehicle CAR-1 --lane L1 --direction exit --at 2026-06-01T12:00:00-06:00
+```
 
-AGPL-3.0-or-later. See `LICENSE`, `CONTRIBUTING.md` and `CLA.md`.
+## What a pass is
+
+One garage. An owner-typed **label** — "Employee", "Monthly", "Vendor", whatever
+the owner needs — that no behaviour reads. A **holder**: an email address, and
+optionally a name and a phone; no account, no login. Its **terms**. Its
+**state**. The **vehicles** registered to it.
+
+**There are not five pass types.** The only structural difference between
+passes is which other module is connected to them, and in this version none is.
+
+### Terms — six things, each stated or absent, no defaults
+
+A valid-from / valid-to range in the garage's local day. Recurring windows: days
+of the week plus minutes of the local day. A maximum stay per visit. A visit
+allowance, over the pass's life or per window. The directions the pass states —
+entry, exit or both; nothing is implicit. The lanes it may use; absent means
+every lane.
+
+**A contradiction is refused when the pass is created, naming the field.** A
+valid-to before valid-from, a weekend window on a Monday-to-Wednesday pass, a
+maximum stay of zero, an allowance of zero — none of them can be constructed, so
+none is ever discovered at a gate at seven in the morning. And only a
+contradiction is refused: a maximum stay longer than a window is slack, not a
+contradiction — windows bind the moments a car enters and leaves, never the stay
+between them — so a six-hour maximum beside two four-hour windows is created,
+and binds at the exit.
+
+### States
+
+`draft`, `awaiting_enrolment`, `active`, `suspended`, `revoked` — and `expired`,
+which is derived from the terms and which nobody can type. **Revoked is
+terminal.** Every change records who, when and why, into a history the
+application can only append to — it holds no UPDATE or DELETE on the history
+and no DELETE on anything the history belongs to, so it cannot be erased by
+deleting the pass.
+
+### One car, one pass per garage
+
+A vehicle identity is on one pass at a garage for any given day. A second
+registration is refused by name — naming the pass that holds the identity, its
+state and the day that registration ends — before the database's own constraint
+has to; every open registration counts as a holder whatever its pass's state,
+so the constraint is the backstop for a raw insert and for two writers
+genuinely racing, and nothing else reaches it through the module. Ending a
+registration on day D frees the identity **from** D.
+
+**A vehicle is registered onto a draft, awaiting-enrolment or active pass.** A
+registration onto a suspended pass (a hold; a car added to a hold is a claim the
+owner did not make), a revoked pass (revoked is revoked) or an expired one (over,
+derived from `valid_to` against the registration's effective day) is refused by
+name, naming the state.
+
+## The answer
+
+**Covered**, with the pass and the term that covers it. **Not covered**, with a
+plain reason: no pass · not active · not started · expired · suspended ·
+revoked · direction not allowed · wrong lane · outside window · out of visits ·
+over maximum stay · a pass or garage stored with a value the module cannot read
+· at an exit, a blank identity or lane. Or — **at an entry only** — **refused to
+answer**, naming the field that would let it: a garage that has not stated
+whether it sells transient parking, a blank identity, a pass whose stored terms
+cannot be read. It does not guess: a maximum stay with no recorded entry to
+measure from is answered on the terms that can be evaluated and named
+**unmeasured**, never silently satisfied.
+
+**No fee, no amount, no balance ever crosses this call.** It is an access fact.
+
+**This module never opens or closes a gate**, never counts who is inside and
+holds no session state. It answers; the lane acts. What it holds is a ledger of
+the visits the lane told it about, because a visit allowance and a maximum stay
+are computed from those rows and from nothing else — and the answer says what
+it counted, on which pass, over what.
+
+### An exit is never refused
+
+A pass's terms govern entry and which lanes may be used. At exit the same terms
+are evaluated — an exit outside them is answered not-covered with its reason, so
+that a transient garage can charge the stay — but **no term, no state and no
+revocation keeps a vehicle inside a garage.** Every exit is answered covered or
+not covered — refused-to-answer is not an outcome an exit can have; whatever
+cannot be evaluated is named — every exit answer carries the sentence that says
+so, and the exit half of the call does not read the garage's transient mode at
+all. A pass stored with terms the module refuses to read — a raw write, or a
+validator tightened after the pass was stored — is answered not-covered at the
+exit, naming the pass and the field, which at a transient garage means the stay
+is chargeable: said so, so nobody reads it as a free exit, and named so the
+operator can find the row.
+
+### What not-covered means depends on the garage
+
+At a garage that sells transient parking, an uncovered entry is an ordinary
+paying customer. At a garage that sells none — staff only — there is nothing for
+an uncovered vehicle to be admitted as. **Which one a garage is, it states; there
+is no default and no inference.** Left unstated, the access call refuses to
+answer an entry and names the field.
+
+## A calendar day is the garage's local day
+
+A window of 06:00–20:00 is the wall clock on the garage's door, and "Monday" is
+Monday where the garage stands. The tests measure this at the window edges on the
+spring-forward and fall-back days, where a UTC reading disagrees — and a stay's
+length is elapsed time between instants, so a stay across the fall-back hour is
+an hour longer than its wall clocks say.
+
+## What is guaranteed, and how you can tell
+
+`docs/CONTRACT.md` lists every guarantee. Each one has a test that CI requires
+to run and pass, and a fail control in `scripts/fail_controls.py` that breaks
+the thing it guards and requires the test to go red. The contract's tables are
+generated from the code's own registries and checked on every run; a number or a
+sentence edited by hand fails the build.
+
+## What this version does not do
+
+No enrolment — no QR, no token, no email, no lane binding, no vehicle
+identification; a vehicle identity here is an opaque value the caller supplies.
+No money. No connection to any billing module, and no reservations of either
+kind. No accounts, no screens. One garage per pass.
+
+## Install
+
+```
+pip install -e .            # the engine: standard library only
+pip install -e '.[store]'   # with the Postgres store
+pip install -e '.[dev]'     # to run the suite and the controls
+```
+
+The store needs a database with the migration applied as its owner, and the
+application role given a login:
+
+```
+psql "$DSN" -v ON_ERROR_STOP=1 -f migrations/0001_garages_passes_registrations_and_rls.sql
+GARAGE_PASS_APP_PASSWORD=... python scripts/ensure-app-role.py "$DSN"
+```
+
+Both steps are run by the suite, not only described here: a test applies the
+migration and runs `ensure-app-role.py` against the test cluster, logs in as the
+application role with the password it set, and shows a wrong one refused.
+
+A garage stored with a timezone the running system does not carry — a raw
+write, or tzdata that lost the name — still answers (not-covered at an exit,
+refused-to-answer at an entry, naming `garage.timezone`), but takes no write
+until it is repaired; the repair is the one write it takes:
+
+```
+$ garage-pass set-garage-timezone --tenant T --garage garage-downtown --timezone America/Denver
+```
+
+The suite reads `GARAGE_PASS_TEST_DSN` for a database it may drop and rebuild.
+Without one, the store-backed tests skip and the run **fails**, on purpose: a
+guarantee whose test did not run is not a guarantee.
+
+## Licence
+
+AGPL-3.0. Contributions need a signed CLA — see [CONTRIBUTING.md](CONTRIBUTING.md).
+
+---
 
 Built by 72 Knots Method by 72Knots.ai
