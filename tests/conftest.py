@@ -136,3 +136,19 @@ def tenant_id(owner):
     from store_harness import new_tenant
 
     return new_tenant(owner)
+
+
+@pytest.fixture(autouse=True)
+def _leave_the_connection_idle(request):
+    """A test that raises inside a transaction must not poison the next one.
+
+    The application connection is shared by a module's tests. A test that
+    fails mid-transaction -- which is exactly what a planted defect makes tests
+    do -- would otherwise leave it aborted, and every later test in the module
+    would fail on "current transaction is aborted" rather than on its own
+    subject. Measured under the G1 refusal plant: 15 failed where 6 were about
+    the subject. Rolled back after every test, so a red names its own cause.
+    """
+    yield
+    if "app" in request.fixturenames:
+        request.getfixturevalue("app").rollback()

@@ -89,9 +89,13 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
     "G1/overlap-query": (
         G1, "store/records.py",
         "          AND daterange(r.effective_day, r.end_day, '[)') && daterange(%s, %s, '[)')",
-        "          AND r.end_day IS NULL  -- PLANTED: only open-ended registrations are seen",
+        "          AND r.end_day IS NULL AND daterange(r.effective_day, NULL, '[)') "
+        "&& daterange(%s, %s, '[)')  -- PLANTED: registrations with an end day are unseen",
         "a registration with an end day is invisible to the check, so a second pass "
-        "is accepted over it -- the refusal that should name the end day never fires",
+        "is accepted over it and the EXCLUDE fires as a bare constraint -- the refusal "
+        "that should name the end day never fires. (The first cut of this plant dropped "
+        "two placeholders and went red on a malformed query, which proves nothing about "
+        "the subject; measured in CI, corrected here.)",
     ),
     "G1/exclude": (
         G1, MIGRATION,
