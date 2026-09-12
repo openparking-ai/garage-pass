@@ -116,7 +116,8 @@ GUARANTEES: dict[str, str] = {
         "ENABLE, FORCE and a policy on each, read from the catalogue and never from a "
         "list; isolation proven ON EVERY TENANT-BEARING TABLE, from the catalogue, by a "
         "role that COULD bypass being shown it cannot read or write another tenant's "
-        "rows -- and a stripped predicate on any one of the eight tables reddens it; "
+        "rows -- and a stripped predicate on any one of the tables reddens it, every table "
+        "of every migration having that control; "
         "and every garage and pass reference is half of a composite tenant key, so a "
         "row cannot name another tenant's garage or pass even by a raw insert."
     ),

@@ -37,8 +37,9 @@ measured and not assumed), and asserts the password reaches no output.
 
 Controls: FORCE removed from one table in the migration; a composite key
 removed from one table in the migration; the policy split into isolated reads
-and open writes; the tenant predicate stripped from each of the eight tables'
-policies in turn -- eight controls, each required to redden this file; the
+and open writes; the tenant predicate stripped from each table's policy in
+turn (the eight of 0001, the ninth of 0002) -- one control per table, each
+required to redden this file; the
 install script's statement planted back to the bind-parameter form.
 """
 
