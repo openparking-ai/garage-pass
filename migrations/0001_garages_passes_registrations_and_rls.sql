@@ -107,7 +107,18 @@ CREATE POLICY garages_tenant_isolation ON garages
 --
 -- The CHECKs are the database half of "a contradiction is refused at
 -- creation": the module refuses first, naming the field; these are the
--- backstop for a raw write.
+-- backstop for a raw write WHERE ONE TABLE CAN EXPRESS THE RULE.
+--
+-- THREE CONTRADICTIONS THE SCHEMA CANNOT REACH, stated rather than glossed:
+-- lanes stated (`lanes_stated`) with no `pass_lanes` rows; a per-window
+-- allowance (`allowance_per = 'window'`) with no `pass_windows` rows; and a
+-- window whose days never occur inside `valid_from..valid_to`. Each spans two
+-- tables, and a CHECK sees one row of one table. No trigger is built for
+-- them: the backstop is the LOAD PATH -- the module re-validates terms on
+-- every read, and a stored row it refuses becomes an UNREADABLE pass that
+-- still produces a stated access answer (refused-to-answer at entry,
+-- not-covered at exit, naming the pass and the field), never an exception.
+-- The same path is what catches a validator tightened after rows were stored.
 -- ---------------------------------------------------------------------------
 CREATE TABLE passes (
   id                uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -115,7 +126,13 @@ CREATE TABLE passes (
   garage_id         uuid        NOT NULL,
   external_id       text        NOT NULL CHECK (length(btrim(external_id)) > 0),
   label             text        NOT NULL CHECK (length(btrim(label)) > 0),
-  holder_email      text        NOT NULL CHECK (position('@' in holder_email) > 1),
+  -- One @ with text on both sides -- the module's own rule for the holder's
+  -- identity, expressed here so a raw write cannot store 'a@' (the first cut
+  -- checked only that something preceded the @, and such a row raised at load).
+  holder_email      text        NOT NULL CHECK (
+                      position('@' in holder_email) > 1
+                      AND position('@' in holder_email) < length(holder_email)
+                    ),
   holder_name       text,
   holder_phone      text,
   valid_from        date,
@@ -323,9 +340,18 @@ CREATE POLICY visits_tenant_isolation ON visits
 -- Grants. The app role gets DML and nothing structural -- and on the state
 -- history it gets SELECT and INSERT only, which is what "append-only" means
 -- here: a grant the catalogue can be asked about, not a promise.
+--
+-- NO DELETE ANYWHERE. The module issues no DELETE (measured), and a DELETE on
+-- `passes` or `tenants` would erase the append-only history through the
+-- ON DELETE CASCADE keys below -- measured: the first cut granted it, and
+-- `DELETE FROM passes` as the application role took the history from one row
+-- to none. The cascades stay: they are correct for an OWNER-run deletion, and
+-- retention in this project is redaction, not deletion. A test reads every
+-- table whose deletion cascades into pass_state_changes from the catalogue
+-- and asserts the application role holds no DELETE on any of them.
 -- ---------------------------------------------------------------------------
 GRANT USAGE ON SCHEMA public TO garage_pass_app;
-GRANT SELECT, INSERT, UPDATE, DELETE ON
+GRANT SELECT, INSERT, UPDATE ON
   tenants, garages, passes, pass_windows, pass_lanes
 TO garage_pass_app;
 GRANT SELECT, INSERT, UPDATE ON vehicle_registrations, visits TO garage_pass_app;

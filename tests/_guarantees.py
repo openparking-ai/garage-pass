@@ -30,11 +30,14 @@ GUARANTEES: dict[str, str] = {
     "G2": (
         "Contradictory terms are refused AT CREATION, naming the field: a valid_to "
         "before valid_from, a window that no day in the valid range can satisfy, an "
-        "empty window, a maximum stay longer than a window it sits in, a visit "
-        "allowance of zero, a per-window allowance with no windows, no direction, an "
-        "empty lane set. A Terms value that fails the check cannot be constructed, "
-        "so the access call never meets a contradiction; the schema's CHECKs are the "
-        "backstop for a raw write."
+        "empty window, a maximum stay of zero, a visit allowance of zero, a per-window "
+        "allowance with no windows, no direction, an empty lane set -- and ONLY "
+        "contradictions: a maximum stay longer than a window is slack, not a "
+        "contradiction (windows bind instants, not stays), and such a pass is created "
+        "and its maximum binds at the exit. A Terms value that fails the check cannot "
+        "be constructed, so the access call never meets a contradiction. The schema's "
+        "CHECKs back the single-table rules for a raw write; the three that span two "
+        "tables are named in the migration and backed by the load path (G17)."
     ),
     "G3": (
         "No fee, no amount, no balance and no barrier command ever crosses the access "
@@ -44,11 +47,16 @@ GUARANTEES: dict[str, str] = {
         "gate and never counts who is inside."
     ),
     "G4": (
-        "AN EXIT IS NEVER REFUSED. No term, no state and no revocation refuses an "
-        "exit to a vehicle that is inside: every exit answer -- covered, not covered, "
-        "or refused to answer -- carries the sentence that says so, a not-covered exit "
-        "means OUT-OF-TERMS and never a refusal, in every state including revoked, "
-        "and the exit half of the call does not read the garage's transient mode."
+        "AN EXIT IS NEVER REFUSED, AND EVERY EXIT IS ANSWERED. No term, no state and "
+        "no revocation refuses an exit to a vehicle that is inside: every exit produces "
+        "a stated COVERED or NOT-COVERED answer -- refused-to-answer is not an outcome "
+        "an exit can have, and the absence of an answer, a refusal and an exception are "
+        "each a failure of this guarantee. Whatever cannot be evaluated at an exit is "
+        "NAMED, never guessed: a blank identity or lane, an unmeasurable maximum stay, "
+        "an unreadable pass or garage, two passes holding one car. Every exit answer "
+        "carries the sentence that says so, a not-covered exit means OUT-OF-TERMS and "
+        "never a refusal, in every state including revoked, and the exit half of the "
+        "call does not read the garage's transient mode."
     ),
     "G5": (
         "A revoked pass is refused at ENTRY in every configuration of terms, and "
@@ -73,20 +81,24 @@ GUARANTEES: dict[str, str] = {
         "An unknown vehicle identity gets a STATED answer -- not covered, NO_PASS, "
         "with the nearest ended or future registration named when there is one -- "
         "never an accidental refusal and never a silent pass. A BLANK identity is "
-        "refused an answer, naming the field, because there is nothing to look up."
+        "refused an answer AT AN ENTRY, naming the field, because there is nothing to "
+        "look up; at an exit the same input is answered not-covered, naming the field."
     ),
     "G9": (
         "A visit allowance and a maximum stay are computed from the module's OWN "
         "recorded visits and from nothing else, and the answer names its denominator: "
         "how many entries were counted, on which pass, over its life or in which "
         "window on which day; and which entry a stay was measured from. A maximum "
-        "stay with no recorded entry to measure from is refused an answer, naming the "
-        "field, never guessed."
+        "stay with no open recorded entry to measure from is UNMEASURED and the answer "
+        "says so by name while answering on the terms that can be evaluated -- never "
+        "silently treated as satisfied, and never a refusal."
     ),
     "G10": (
         "Row-level security on every table from migration 0001: a tenant column, "
         "ENABLE, FORCE and a policy on each, read from the catalogue and never from a "
-        "list; isolation proven by a role that COULD bypass being shown it cannot; "
+        "list; isolation proven ON EVERY TENANT-BEARING TABLE, from the catalogue, by a "
+        "role that COULD bypass being shown it cannot read or write another tenant's "
+        "rows -- and a stripped predicate on any one of the eight tables reddens it; "
         "and every garage and pass reference is half of a composite tenant key, so a "
         "row cannot name another tenant's garage or pass even by a raw insert."
     ),
@@ -100,15 +112,22 @@ GUARANTEES: dict[str, str] = {
     "G12": (
         "Every state change records WHO, WHEN and WHY, none blank, into an "
         "append-only history: the application role holds SELECT and INSERT on it and "
-        "nothing else, read from the catalogue and proven by a refused UPDATE. The "
+        "nothing else, read from the catalogue and proven by a refused UPDATE -- and "
+        "holds no DELETE on any table whose deletion cascades into it, the set read "
+        "from the catalogue and walked transitively, so the history cannot be erased "
+        "by deleting what it belongs to. The "
         "allowed transitions are the published ones, `expired` is derived from "
         "valid_to and refused if typed, and revoked outranks expiry."
     ),
     "G13": (
         "THE LABEL IS ONLY A LABEL. 'Monthly', 'employee', 'vendor' and the rest are "
-        "free text the owner types, and no behaviour keys off them: two passes that "
-        "differ only in label answer identically across every state, direction and "
-        "term, and the source reads the label nowhere but to report it."
+        "free text the owner types, and no behaviour keys off them. THE PROOF IS THE "
+        "MATRIX: two passes that differ only in label answer identically across every "
+        "state, direction and term, and its power is measured -- twelve spellings of a "
+        "label-keyed branch are planted as its controls, and it catches every one that "
+        "changes an answer. An AST scan also reports the spellings it knows (a "
+        "comparison, a string predicate, a match) and is a report, not the proof: a "
+        "scan that must know every way to read a string is the wrong instrument."
     ),
     "G14": (
         "The fixtures are capable of exercising what they claim: the shifting zone "
@@ -123,6 +142,16 @@ GUARANTEES: dict[str, str] = {
         "and by running the module -- and the derivation is proven by plants that "
         "contradict the prose and require it to change, never by comparing two "
         "copies of the same claim."
+    ),
+    "G17": (
+        "A stored pass or garage this module cannot read degrades to a STATED answer, "
+        "never an exception: at an entry refused-to-answer naming the field, at an exit "
+        "not-covered naming the pass and the field (which at a transient garage means "
+        "chargeable, and is said so). Terms are re-validated on every load, so a raw row "
+        "no CHECK can reach, or a validator tightened after the row was stored, strands "
+        "the pass -- and a stranded pass still answers. A timezone the system does not "
+        "carry is refused where the garage is written, and an existing bad row answers "
+        "first, naming the field."
     ),
     "G16": (
         "No test module sits outside the guarantee registry: every test module "

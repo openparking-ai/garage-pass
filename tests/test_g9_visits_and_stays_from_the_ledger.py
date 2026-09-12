@@ -10,10 +10,16 @@ The store half -- the ledger is the rows the lane wrote -- is in this module
 too, marked needs_postgres per test rather than per module, so the pure half
 runs everywhere.
 
+A maximum stay with no open recorded entry to measure from is UNMEASURED and
+the answer SAYS SO BY NAME (``Answer.unmeasured``) while answering on the terms
+that can be evaluated -- never silently treated as satisfied, and never a
+refusal, because an exit is never refused an answer (G4).
+
 Controls: the per-window count planted to count the pass's whole life; the
 denominator sentence planted to a fixed string; the open-visit lookup planted
-to ignore the vehicle identity; the max-stay refusal-to-answer planted into a
-covered answer.
+to ignore the vehicle identity; the UNMEASURED naming planted away (the stay
+then silently treated as satisfied -- wrong-silently, the failure this exists
+to catch).
 """
 
 from __future__ import annotations
@@ -124,16 +130,35 @@ def test_a_stay_is_measured_from_the_open_entry_of_this_vehicle_on_this_pass():
 
 
 @pytest.mark.guarantee("G9")
-def test_a_maximum_stay_with_no_recorded_entry_is_refused_an_answer_not_guessed():
+def test_a_maximum_stay_with_no_recorded_entry_is_unmeasured_and_says_so_by_name():
+    """Answered on the terms that CAN be evaluated; the stay named UNMEASURED,
+    with why. Not a refusal, not a silent pass."""
     pass_ = a_pass(terms=simple_terms(max_stay=timedelta(hours=2)))
     nothing = ask(pass_, [], Direction.EXIT)
-    assert nothing.outcome is Outcome.REFUSED_TO_ANSWER
-    assert nothing.missing == f.MISSING_RECORDED_ENTRY
+    assert nothing.outcome is Outcome.COVERED and nothing.missing is None
     assert nothing.exit_note == f.EXIT_IS_NEVER_REFUSED
+    assert nothing.unmeasured is not None
+    assert "max_stay 2:00:00 of pass 'pass-1' could not be measured" in nothing.unmeasured
+    assert "no open recorded entry" in nothing.unmeasured
+    assert "UNMEASURED" in nothing.covering_term
     closed_only = ask(pass_, [visit(pass_, "CAR-1", 7, exited_hour=8)], Direction.EXIT)
-    assert closed_only.missing == f.MISSING_RECORDED_ENTRY
+    assert closed_only.outcome is Outcome.COVERED and "no open recorded entry" in (
+        closed_only.unmeasured
+    )
     entered_later = ask(pass_, [visit(pass_, "CAR-1", 13)], Direction.EXIT)
-    assert entered_later.missing == f.MISSING_RECORDED_ENTRY and "later" in entered_later.detail
+    assert entered_later.outcome is Outcome.COVERED
+    assert "later than this exit" in entered_later.unmeasured
+    assert "2026-06-01T13:00:00-06:00" in entered_later.unmeasured
+    # the other terms still decide the outcome: an out-of-terms exit with an
+    # unmeasurable stay is not-covered AND names the unmeasured stay
+    entry_only = a_pass(terms=simple_terms(max_stay=timedelta(hours=2),
+                                           allowed_lanes=frozenset({"L9"})))
+    out = ask(entry_only, [], Direction.EXIT)
+    assert out.outcome is Outcome.NOT_COVERED and out.reason == f.WRONG_LANE
+    assert out.unmeasured is None, "the stay was never reached; nothing to name"
+    # and a MEASURED stay names nothing
+    measured = ask(pass_, [visit(pass_, "CAR-1", 11)], Direction.EXIT)
+    assert measured.outcome is Outcome.COVERED and measured.unmeasured is None
 
 
 @pytest.mark.guarantee("G9")
@@ -214,7 +239,8 @@ def test_the_store_measures_a_stay_from_the_recorded_entry(app, tenant_id):
     assert answer.reason == f.OVER_MAX_STAY and "3:00:00 elapsed" in answer.detail
     nothing = access_from_store(app, tenant_id, GARAGE.id, "CAR-2", "L1", Direction.EXIT,
                                 NOON_MONDAY)
-    assert nothing.missing == f.MISSING_RECORDED_ENTRY
+    assert nothing.outcome is Outcome.COVERED and nothing.missing is None
+    assert nothing.unmeasured and "no open recorded entry" in nothing.unmeasured
 
 
 @pytest.mark.guarantee("G9")

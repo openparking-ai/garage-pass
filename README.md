@@ -46,16 +46,21 @@ every lane.
 
 **A contradiction is refused when the pass is created, naming the field.** A
 valid-to before valid-from, a weekend window on a Monday-to-Wednesday pass, a
-maximum stay longer than the window it sits in, an allowance of zero — none of
-them can be constructed, so none is ever discovered at a gate at seven in the
-morning.
+maximum stay of zero, an allowance of zero — none of them can be constructed, so
+none is ever discovered at a gate at seven in the morning. And only a
+contradiction is refused: a maximum stay longer than a window is slack, not a
+contradiction — windows bind the moments a car enters and leaves, never the stay
+between them — so a six-hour maximum beside two four-hour windows is created,
+and binds at the exit.
 
 ### States
 
 `draft`, `awaiting_enrolment`, `active`, `suspended`, `revoked` — and `expired`,
 which is derived from the terms and which nobody can type. **Revoked is
 terminal.** Every change records who, when and why, into a history the
-application can only append to.
+application can only append to — it holds no UPDATE or DELETE on the history
+and no DELETE on anything the history belongs to, so it cannot be erased by
+deleting the pass.
 
 ### One car, one pass per garage
 
@@ -70,10 +75,13 @@ Ending a registration on day D frees the identity **from** D.
 **Covered**, with the pass and the term that covers it. **Not covered**, with a
 plain reason: no pass · not active · not started · expired · suspended ·
 revoked · direction not allowed · wrong lane · outside window · out of visits ·
-over maximum stay. Or **refused to answer**, naming the field that would let it
-— a garage that has not stated whether it sells transient parking, a blank
-identity, a maximum stay with no recorded entry to measure from. It does not
-guess.
+over maximum stay · a pass or garage stored with a value the module cannot read
+· at an exit, a blank identity or lane. Or — **at an entry only** — **refused to
+answer**, naming the field that would let it: a garage that has not stated
+whether it sells transient parking, a blank identity, a pass whose stored terms
+cannot be read. It does not guess: a maximum stay with no recorded entry to
+measure from is answered on the terms that can be evaluated and named
+**unmeasured**, never silently satisfied.
 
 **No fee, no amount, no balance ever crosses this call.** It is an access fact.
 
@@ -88,9 +96,15 @@ it counted, on which pass, over what.
 A pass's terms govern entry and which lanes may be used. At exit the same terms
 are evaluated — an exit outside them is answered not-covered with its reason, so
 that a transient garage can charge the stay — but **no term, no state and no
-revocation keeps a vehicle inside a garage.** Every exit answer, whatever its
-outcome, carries the sentence that says so, and the exit half of the call does
-not read the garage's transient mode at all.
+revocation keeps a vehicle inside a garage.** Every exit is answered covered or
+not covered — refused-to-answer is not an outcome an exit can have; whatever
+cannot be evaluated is named — every exit answer carries the sentence that says
+so, and the exit half of the call does not read the garage's transient mode at
+all. A pass stored with terms the module refuses to read — a raw write, or a
+validator tightened after the pass was stored — is answered not-covered at the
+exit, naming the pass and the field, which at a transient garage means the stay
+is chargeable: said so, so nobody reads it as a free exit, and named so the
+operator can find the row.
 
 ### What not-covered means depends on the garage
 

@@ -3,8 +3,11 @@ with a plain-English sentence.
 
 **The registries are the single source.** ``docs/CONTRACT.md`` is generated from
 them, a refusal carries its code, and the tests derive their lists from here
-rather than walking hand-written ones -- so a code added without a sentence, or
-a sentence published for a code nothing raises, each fail.
+rather than walking hand-written ones -- so a code added without a sentence
+fails at the raise site, and a sentence published for a code nothing raises
+fails ``scripts/generate_contract.py --check`` (measured: before that check
+existed, regenerating the contract silenced an orphan and the suite stayed
+green).
 
 Three vocabularies live here and they are deliberately not one:
 
@@ -30,6 +33,27 @@ Three vocabularies live here and they are deliberately not one:
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class Unreadable:
+    """A stored value this module refuses to read -- carried on the pass or the
+    garage it came from instead of raised, so an access call about it produces a
+    STATED answer and never an exception. Reached by a raw write, or by a
+    validator tightened after the row was stored.
+
+    ``code`` is a registered refusal (or ``UnknownTimezone``'s own name), ``field``
+    the one that fails, ``detail`` the sentence an operator reads.
+    """
+
+    code: str
+    field: str
+    detail: str
+
+    def describe(self) -> str:
+        return f"{self.code} [{self.field}]: {self.detail}"
+
 
 class Refused(Exception):
     """The module will not do this, and says which field is why.
@@ -52,6 +76,9 @@ class Refused(Exception):
         self.detail = detail
         super().__init__(f"{code} [{field}]: {REFUSALS[code]} — {detail}")
 
+    def as_unreadable(self) -> Unreadable:
+        return Unreadable(code=self.code, field=self.field, detail=self.detail)
+
 
 # --------------------------------------------------------------------------
 # Refusals. The module will not do what it was asked, and names the field.
@@ -64,7 +91,6 @@ REFUSAL_WINDOW_MINUTE_OUT_OF_RANGE = "REFUSAL_WINDOW_MINUTE_OUT_OF_RANGE"
 REFUSAL_WINDOW_ENDS_BEFORE_IT_STARTS = "REFUSAL_WINDOW_ENDS_BEFORE_IT_STARTS"
 REFUSAL_WINDOW_NEVER_OCCURS = "REFUSAL_WINDOW_NEVER_OCCURS"
 REFUSAL_MAX_STAY_NOT_POSITIVE = "REFUSAL_MAX_STAY_NOT_POSITIVE"
-REFUSAL_MAX_STAY_LONGER_THAN_WINDOW = "REFUSAL_MAX_STAY_LONGER_THAN_WINDOW"
 REFUSAL_VISIT_ALLOWANCE_NOT_POSITIVE = "REFUSAL_VISIT_ALLOWANCE_NOT_POSITIVE"
 REFUSAL_ALLOWANCE_PER_WINDOW_WITHOUT_WINDOWS = "REFUSAL_ALLOWANCE_PER_WINDOW_WITHOUT_WINDOWS"
 REFUSAL_NO_DIRECTIONS = "REFUSAL_NO_DIRECTIONS"
@@ -84,6 +110,7 @@ REFUSAL_REGISTRATION_ENDS_BEFORE_IT_STARTS = "REFUSAL_REGISTRATION_ENDS_BEFORE_I
 REFUSAL_REGISTRATION_NOT_FOUND = "REFUSAL_REGISTRATION_NOT_FOUND"
 REFUSAL_REGISTRATION_ALREADY_ENDED = "REFUSAL_REGISTRATION_ALREADY_ENDED"
 REFUSAL_PASS_NOT_FOUND = "REFUSAL_PASS_NOT_FOUND"
+REFUSAL_GARAGE_NOT_FOUND = "REFUSAL_GARAGE_NOT_FOUND"
 REFUSAL_PASS_ALREADY_EXISTS = "REFUSAL_PASS_ALREADY_EXISTS"
 REFUSAL_GARAGE_MISMATCH = "REFUSAL_GARAGE_MISMATCH"
 REFUSAL_NO_OPEN_VISIT = "REFUSAL_NO_OPEN_VISIT"
@@ -120,12 +147,6 @@ REFUSALS: dict[str, str] = {
     REFUSAL_MAX_STAY_NOT_POSITIVE: (
         "The maximum stay is zero or negative. A pass that allows no time inside "
         "covers nothing; state a positive duration, or no maximum."
-    ),
-    REFUSAL_MAX_STAY_LONGER_THAN_WINDOW: (
-        "The maximum stay is longer than a recurring window it sits in. A stay "
-        "that could not fit inside the window that admits it is a contradiction "
-        "the gate would otherwise have to resolve; shorten the stay or widen the "
-        "window."
     ),
     REFUSAL_VISIT_ALLOWANCE_NOT_POSITIVE: (
         "The visit allowance is zero or negative. A pass allowing no visits covers "
@@ -199,6 +220,7 @@ REFUSALS: dict[str, str] = {
         "to move the day, that is a new registration."
     ),
     REFUSAL_PASS_NOT_FOUND: ("No pass with that id at that garage in this tenant."),
+    REFUSAL_GARAGE_NOT_FOUND: ("No garage with that id in this tenant."),
     REFUSAL_PASS_ALREADY_EXISTS: ("A pass with that id already exists at that garage."),
     REFUSAL_GARAGE_MISMATCH: (
         "A pass belongs to one garage and was asked about another. One garage per "
@@ -239,6 +261,10 @@ WRONG_LANE = "WRONG_LANE"
 OUTSIDE_WINDOW = "OUTSIDE_WINDOW"
 OUT_OF_VISITS = "OUT_OF_VISITS"
 OVER_MAX_STAY = "OVER_MAX_STAY"
+PASS_UNREADABLE = "PASS_UNREADABLE"
+GARAGE_UNREADABLE = "GARAGE_UNREADABLE"
+BLANK_IDENTITY = "BLANK_IDENTITY"
+BLANK_LANE = "BLANK_LANE"
 
 NOT_COVERED_REASONS: dict[str, str] = {
     NO_PASS: (
@@ -271,6 +297,30 @@ NOT_COVERED_REASONS: dict[str, str] = {
         "This exit comes later after the recorded entry than the pass's maximum "
         "stay allows. Measured in elapsed time between the two instants, not in "
         "wall-clock hours."
+    ),
+    PASS_UNREADABLE: (
+        "The pass this vehicle is registered to is stored with a value this module "
+        "refuses to read -- terms or a holder that would be refused at creation. "
+        "Reached only by a raw write or by a validator tightened after the pass was "
+        "stored. The detail names the pass and the field. At an EXIT this is "
+        "out-of-terms and therefore chargeable at a transient garage: stated so "
+        "nobody reads it as a free exit, and named so an operator can find the row "
+        "and undo the charge."
+    ),
+    GARAGE_UNREADABLE: (
+        "The garage is stored with a timezone this system does not carry, so no "
+        "window, day or registration range can be evaluated. Answered ahead of every "
+        "term. At an EXIT this is out-of-terms; at an entry the call refuses to answer."
+    ),
+    BLANK_IDENTITY: (
+        "The vehicle identity is blank at an EXIT, so there is nothing to look up -- "
+        "and an exit is answered, never refused. At an entry the same input is refused "
+        "an answer."
+    ),
+    BLANK_LANE: (
+        "The lane is blank at an EXIT, so lane terms cannot be evaluated -- and an "
+        "exit is answered, never refused. At an entry the same input is refused an "
+        "answer."
     ),
 }
 
@@ -305,8 +355,9 @@ BARRIER_MEANINGS: dict[str, str] = {
     ),
 }
 
-#: The sentence every EXIT answer carries, whatever its outcome -- covered, not
-#: covered, or refused to answer. It is the guarantee in one line.
+#: The sentence every EXIT answer carries. An exit's outcome is always covered
+#: or not covered -- refused-to-answer is not an outcome an exit can have. It is
+#: the guarantee in one line.
 EXIT_IS_NEVER_REFUSED = (
     "An exit is never refused. Whatever this answer says, the vehicle leaves."
 )
@@ -319,8 +370,9 @@ EXIT_IS_NEVER_REFUSED = (
 MISSING_TRANSIENT_MODE = "garage.transient_available"
 MISSING_VEHICLE_IDENTITY = "vehicle_identity"
 MISSING_LANE = "lane"
-MISSING_RECORDED_ENTRY = "visit.entered_at"
 MISSING_ONE_PASS = "registration.pass_id"
+MISSING_TIMEZONE = "garage.timezone"
+UNREADABLE_TERMS = "pass.terms"
 
 REFUSED_TO_ANSWER: dict[str, str] = {
     MISSING_TRANSIENT_MODE: (
@@ -331,17 +383,29 @@ REFUSED_TO_ANSWER: dict[str, str] = {
         "and a fired employee driving into a building. State it on the garage."
     ),
     MISSING_VEHICLE_IDENTITY: (
-        "The vehicle identity is blank, so there is nothing to look up. An unknown "
-        "identity gets a stated answer; a missing one gets none."
+        "The vehicle identity is blank at an ENTRY, so there is nothing to look up. "
+        "An unknown identity gets a stated answer; a missing one gets none. (At an "
+        "exit the same input is answered not-covered: an exit is never refused.)"
     ),
-    MISSING_LANE: ("The lane is blank, so lane terms cannot be evaluated."),
-    MISSING_RECORDED_ENTRY: (
-        "The pass has a maximum stay and no recorded entry of this vehicle on this "
-        "pass is open, so the stay's length cannot be measured. It is not guessed."
+    MISSING_LANE: (
+        "The lane is blank at an ENTRY, so lane terms cannot be evaluated. (At an "
+        "exit the same input is answered not-covered.)"
     ),
     MISSING_ONE_PASS: (
         "More than one pass at this garage has this vehicle registered on this "
-        "day. The module refuses to pick one. That state cannot be produced through "
-        "this module; it was handed in."
+        "day, at an ENTRY. The module refuses to pick one. That state cannot be "
+        "produced through this module; it was handed in or written raw. (At an exit "
+        "every one of them is evaluated and the vehicle is covered if any covers it, "
+        "the inconsistency named.)"
+    ),
+    MISSING_TIMEZONE: (
+        "The garage is stored with a timezone this system does not carry, and an "
+        "ENTRY cannot be evaluated without a clock. (An exit is answered "
+        "not-covered, naming the field.)"
+    ),
+    UNREADABLE_TERMS: (
+        "The pass this vehicle is registered to is stored with terms or a holder "
+        "this module refuses to read, and an ENTRY on it is not guessed. The detail "
+        "names the pass and the field. (An exit is answered not-covered, naming both.)"
     ),
 }

@@ -18,6 +18,8 @@ import pytest
 
 from fixtures import BOTH, SIX_TO_EIGHT, WEEKDAYS, simple_terms
 from garage_pass import findings as f
+from garage_pass.access import Outcome, access
+from garage_pass.passes import Visit
 from garage_pass.terms import AllowancePeriod, Direction, Terms, VisitAllowance, Window
 
 CASES = [
@@ -58,11 +60,6 @@ CASES = [
         "a zero maximum stay",
         dict(max_stay=timedelta(0)),
         f.REFUSAL_MAX_STAY_NOT_POSITIVE, "max_stay",
-    ),
-    (
-        "a maximum stay longer than the window it sits in",
-        dict(windows=(SIX_TO_EIGHT,), max_stay=timedelta(hours=15)),
-        f.REFUSAL_MAX_STAY_LONGER_THAN_WINDOW, "max_stay",
     ),
     (
         "a visit allowance of zero",
@@ -144,3 +141,45 @@ def test_a_window_that_occurs_on_one_day_of_a_short_range_is_accepted():
         windows=(Window(days=frozenset({1}), start_minute=0, end_minute=1440),),
     )
     assert terms.windows[0].days == {1}
+
+
+@pytest.mark.guarantee("G2")
+def test_a_maximum_longer_than_a_window_is_slack_not_a_contradiction_created_and_binding():
+    """Windows bind the two instants, never the stay between them, so a
+    maximum longer than any window is reachable: created here, then measured
+    binding at the exit -- 14:59 covered, 15:01 over the maximum. The first
+    cut refused this pass at creation; the L3 settled it by execution.
+
+    Control: the removed refusal re-planted into the validator."""
+    from fixtures import a_pass, at, registered, transient_garage
+
+    two_short_windows = (
+        Window(days=WEEKDAYS, start_minute=6 * 60, end_minute=10 * 60),
+        Window(days=WEEKDAYS, start_minute=14 * 60, end_minute=18 * 60),
+    )
+    try:
+        terms = simple_terms(windows=two_short_windows, max_stay=timedelta(hours=6))
+    except f.Refused as refused:
+        pytest.fail(f"a slack maximum was refused at creation: {refused}")
+    assert terms.max_stay == timedelta(hours=6) and all(
+        terms.max_stay > w.length for w in terms.windows
+    ), "the premise: the maximum is longer than every window"
+    garage = transient_garage()
+    pass_ = a_pass(garage_id=garage.id, terms=terms)
+    monday = date(2026, 6, 1)
+    ledger = [Visit(pass_id=pass_.id, vehicle_identity="CAR-1", entry_lane="L1",
+                    entered_at=at(monday, 9))]
+
+    def exit_at(hour, minute):
+        return access(
+            garage=garage, passes=[pass_], registrations=[registered(pass_)], visits=ledger,
+            vehicle_identity="CAR-1", lane="L1", direction=Direction.EXIT,
+            at=at(monday, hour, minute),
+        )
+
+    inside = exit_at(14, 59)
+    assert inside.outcome is Outcome.COVERED, inside
+    assert "stayed 5:59:00 of at most 6:00:00" in inside.covering_term
+    over = exit_at(15, 1)
+    assert over.outcome is Outcome.NOT_COVERED and over.reason == f.OVER_MAX_STAY, over
+    assert "6:01:00 elapsed, more than 6:00:00" in over.detail

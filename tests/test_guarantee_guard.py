@@ -29,6 +29,7 @@ from pathlib import Path
 import pytest
 
 from _guarantees import GUARANTEES
+from store_harness import store_test
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -272,6 +273,7 @@ def test_the_run_guard_fails_a_full_run_with_an_unrun_guarantee_unless_allowed(m
 
     missing = sorted(GUARANTEES)[-1]
     monkeypatch.setattr(conftest, "_ran", set(GUARANTEES) - {missing})
+    monkeypatch.setattr(conftest, "_skipped", {})  # this run's real skips are not the subject
     monkeypatch.delenv(conftest.ALLOW_ENV, raising=False)
     session = Session()
     conftest.pytest_sessionfinish(session, 0)
@@ -284,6 +286,103 @@ def test_the_run_guard_fails_a_full_run_with_an_unrun_guarantee_unless_allowed(m
 
     complete = Session()
     monkeypatch.setattr(conftest, "_ran", set(GUARANTEES))
+    monkeypatch.setattr(conftest, "_skipped", {})
     monkeypatch.delenv(conftest.ALLOW_ENV, raising=False)
     conftest.pytest_sessionfinish(complete, 0)
     assert complete.exitstatus == 0
+
+
+@pytest.mark.guarantee("G16")
+def test_the_run_guard_names_every_guarantee_that_did_not_run_in_full(monkeypatch, capsys):
+    """A guarantee with SOME tests skipped ran and passed -- and is not
+    covered. The report names it, with the count, beside the ones with no
+    passing test. Measured before: with no database the report named two
+    guarantees while five more had skipped tests, and a receipt copied the
+    wrong list off it."""
+    import conftest
+
+    class Option:
+        keyword = ""
+        markexpr = ""
+
+    class Config:
+        option = Option()
+        args = []
+
+        @staticmethod
+        def getini(name):
+            return ["tests"]
+
+    class Session:
+        config = Config()
+        exitstatus = 0
+
+    ids = sorted(GUARANTEES, key=lambda g: int(g[1:]))
+    none_ran, partly = ids[0], ids[1]
+    monkeypatch.setattr(conftest, "_ran", set(GUARANTEES) - {none_ran})
+    monkeypatch.setattr(conftest, "_skipped", {partly: 3, none_ran: 15})
+    monkeypatch.setattr(conftest, "_collected", {partly: 10, none_ran: 15})
+    monkeypatch.delenv(conftest.ALLOW_ENV, raising=False)
+    session = Session()
+    conftest.pytest_sessionfinish(session, 0)
+    out = capsys.readouterr().out
+    assert session.exitstatus == 1
+    assert f"{none_ran}  no test ran and passed (15 of 15 skipped)" in out
+    assert f"{partly}  3 of 10 tests skipped" in out
+    for other in ids[2:]:
+        assert f"    {other}  " not in out, f"{other} ran in full and was named"
+
+
+@pytest.mark.guarantee("G16")
+@store_test
+def test_the_controls_runner_refuses_a_control_whose_only_reds_are_exceptions(tmp_path):
+    """THE RULE THAT STOPS A THIRD ONE. Three times in this module a control
+    reddened on something other than an assertion about its subject: a plant
+    that dropped two SQL placeholders, a plant that dereferenced None on the
+    next line, and a near-miss where one of six reds was a driver error. The
+    runner now reads every red's REASON and refuses a control with no
+    assertion red. Exercised against the runner itself: the L3's crashing
+    version of G9/missing-entry is planted through it and must be reported
+    EXCEPTION-ONLY; the shipped, quiet plant must be reported RED with
+    assertion reds. The near-miss shape -- assertions plus one other -- is
+    allowed and reported as such."""
+    import io
+    import sys
+    from contextlib import redirect_stdout
+
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import fail_controls
+
+    crashing = (
+        fail_controls.G9, "access.py",
+        "            if open_visit is None or at < open_visit.entered_at:",
+        "            if False:  # PLANTED (the L3's crashing cut): the next line dereferences None",
+        "the first cut of G9/missing-entry",
+    )
+    fail_controls.CONTROLS["G9/crashing-cut"] = crashing
+    try:
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            fired = fail_controls.run_control("G9/crashing-cut")
+        assert fired is False, "a control whose reds are all AttributeError counted as fired"
+        assert "EXCEPTION-ONLY" in buffer.getvalue() and "AttributeError" in buffer.getvalue()
+    finally:
+        del fail_controls.CONTROLS["G9/crashing-cut"]
+    buffer = io.StringIO()
+    with redirect_stdout(buffer):
+        fired = fail_controls.run_control("G9/missing-entry")
+    assert fired is True and "assertion red(s)" in buffer.getvalue(), buffer.getvalue()
+    # the classifier itself, on the three shapes it must tell apart
+    reasons = fail_controls.failure_reasons(
+        "/x/tests/test_a.py:10: AssertionError: assert 1 == 2\n"
+        "/x/tests/test_a.py:20: assert 'a' in 'b'\n"
+        "/x/tests/test_a.py:30: Failed: DID NOT RAISE Refused\n"
+        "/x/src/garage_pass/access.py:334: AttributeError: 'NoneType' object has no attribute 'x'\n"
+        "/x/venv/psycopg/cursor.py:117: psycopg.errors.InFailedSqlTransaction: aborted\n"
+        "FAILED tests/test_a.py::test_x - AssertionError\n"
+    )
+    assert [r[1] for r in reasons] == [
+        "AssertionError", "assert", "Failed", "AttributeError",
+        "psycopg.errors.InFailedSqlTransaction",
+    ]
+    assert len(fail_controls.assertion_reds(reasons)) == 3

@@ -25,7 +25,9 @@ from uuid import UUID
 from garage_pass.findings import (
     REFUSAL_CONSTRAINT,
     REFUSAL_EXIT_BEFORE_ENTRY,
+    REFUSAL_FIELD_BLANK,
     REFUSAL_GARAGE_MISMATCH,
+    REFUSAL_GARAGE_NOT_FOUND,
     REFUSAL_NO_OPEN_VISIT,
     REFUSAL_PASS_ALREADY_EXISTS,
     REFUSAL_PASS_NOT_FOUND,
@@ -37,7 +39,7 @@ from garage_pass.findings import (
     REFUSAL_VISIT_ALREADY_OPEN,
     Refused,
 )
-from garage_pass.garage import Garage, require_text
+from garage_pass.garage import Garage, garage_from_stored, require_text
 from garage_pass.localday import day_of, require_aware, zone
 from garage_pass.passes import Holder, Pass, Registration, State, Visit
 from garage_pass.states import transition
@@ -76,8 +78,10 @@ def load_garage(cursor: Any, tenant_id: Any, external_id: str) -> tuple[UUID, Ga
     )
     row = cursor.fetchone()
     if row is None:
-        raise Refused(REFUSAL_PASS_NOT_FOUND, "garage", f"no garage {external_id!r}.")
-    return as_uuid(row[0]), Garage(id=external_id, timezone=row[1], transient_available=row[2])
+        raise Refused(REFUSAL_GARAGE_NOT_FOUND, "garage", f"no garage {external_id!r}.")
+    # A stored timezone the running system does not carry is an UNREADABLE
+    # garage, not an exception: the access call answers, naming the field.
+    return as_uuid(row[0]), garage_from_stored(external_id, row[1], row[2])
 
 
 # ---------------------------------------------------------------------------
@@ -93,6 +97,11 @@ def create_pass(
     are the backstop for a raw write."""
     tenant_uuid = as_uuid(tenant_id)
     require_aware(at, "at")
+    if pass_.unreadable is not None or pass_.terms is None or pass_.holder is None:
+        raise Refused(
+            REFUSAL_FIELD_BLANK, "pass.terms",
+            f"pass {pass_.id!r} carries no readable terms; only the load path builds such a value.",
+        )
     garage_uuid, _garage = load_garage(cursor, tenant_uuid, garage_external_id)
     if pass_.garage_id != garage_external_id:
         raise Refused(
@@ -169,6 +178,30 @@ def load_pass(
 
 
 def _pass_from_row(cursor: Any, tenant_uuid: UUID, external_id: str, row: tuple) -> Pass:
+    """The stored row as a ``Pass``.
+
+    **TERMS ARE RE-VALIDATED ON EVERY LOAD** -- ``Terms`` and ``Holder`` run
+    their validators when built -- so a row that passes every CHECK in the
+    schema but fails the validator (a raw write; or a validator TIGHTENED after
+    the row was stored, which strands every pass it no longer accepts) is met
+    here, not at creation. It becomes an UNREADABLE pass carrying the refusal,
+    never an exception: an access call about it -- an exit above all -- still
+    produces a stated answer naming the pass and the field. Measured: before
+    this, four such rows made every access call on the pass raise.
+    """
+    try:
+        return _readable_pass_from_row(cursor, tenant_uuid, external_id, row)
+    except Refused as refusal:
+        (pass_uuid, garage_ext, label, *_rest, state) = row
+        return Pass(
+            id=external_id, garage_id=garage_ext, label=label, holder=None, terms=None,
+            state=State(state), unreadable=refusal.as_unreadable(),
+        )
+
+
+def _readable_pass_from_row(
+    cursor: Any, tenant_uuid: UUID, external_id: str, row: tuple
+) -> Pass:
     (pass_uuid, garage_ext, label, email, name, phone, valid_from, valid_to, max_stay,
      count, per, entry, exit_, lanes_stated, state) = row
     cursor.execute(
@@ -281,6 +314,14 @@ def register_vehicle(
     identity = require_text(vehicle_identity, "vehicle_identity")
     garage_uuid, _garage = load_garage(cursor, tenant_uuid, garage_external_id)
     pass_uuid, pass_ = load_pass(cursor, tenant_uuid, garage_uuid, pass_external_id)
+    if pass_.unreadable is not None or pass_.terms is None:
+        # Nothing can be registered against terms the module cannot read; the
+        # refusal that made the pass unreadable is the refusal here, by name.
+        u = pass_.unreadable
+        raise Refused(
+            u.code if u else REFUSAL_FIELD_BLANK, u.field if u else "pass.terms",
+            f"pass {pass_external_id!r} is stored unreadable: {u.detail if u else 'no terms'}",
+        )
     last_day = pass_.terms.valid_to
     if end_day is not None:
         if end_day <= effective_day:

@@ -19,6 +19,18 @@ that way. The pre-flight answers that whole failure mode in a second.
 **Restores are written back, never `git checkout`.** Each plant is a context
 manager whose ``finally`` writes the original bytes and verifies them.
 
+**A RED IS READ BY ITS REASON, NOT ITS COLOUR.** Under each plant the runner
+records every failure's reason line (``--tb=line``) and requires AT LEAST ONE
+red that is an ASSERTION about the subject -- ``AssertionError``, or pytest's
+own ``Failed`` from ``pytest.raises``/``pytest.fail``. A control whose only reds
+are some other exception is reporting on the plant, not the subject: this
+module has produced that shape three times (a plant that dropped two SQL
+placeholders; a plant that dereferenced ``None`` on the next line; and a
+near-miss where one of six reds was a driver's aborted-transaction error). The
+first two looked exactly like controls that work. A control may produce
+non-assertion reds BESIDE its assertions -- that near-miss is allowed -- but
+zero assertions is reported EXCEPTION-ONLY and counted dead.
+
 **AND A CONTROL THAT REPORTS UNMEASURED IS REPORTING ON THE RUNNER.** If a target
 is already red before anything is planted, or ran no tests at all, this says
 UNMEASURED rather than counting a pass. Check the runner (is the package
@@ -68,6 +80,8 @@ G9 = "tests/test_g9_visits_and_stays_from_the_ledger.py"
 G10 = "tests/test_g10_rls_from_migration_0001.py"
 G11 = "tests/test_g11_nothing_real_in_the_tree.py"
 G12 = "tests/test_g12_state_changes_are_append_only.py"
+G13 = "tests/test_g13_the_label_is_only_a_label.py"
+G17 = "tests/test_g17_a_stored_row_the_module_cannot_read_still_answers.py"
 MIGRATION = "migrations/0001_garages_passes_registrations_and_rls.sql"
 
 #: control id -> (test target, source file, anchor, replacement, what breaks)
@@ -134,9 +148,9 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
     ),
     "G3/answer": (
         G3, "access.py",
-        "    exit_note: str | None\n",
+        "    unmeasured: str | None\n",
         source(
-            "    exit_note: str | None",
+            "    unmeasured: str | None",
             "    amount_minor: int = 0  # PLANTED: money on the answer",
             "",
         ),
@@ -161,7 +175,7 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
     "G4/means": (
         G4, "access.py",
         source(
-            "        if direction is Direction.EXIT:",
+            "        if is_exit:",
             "            means = MEANS_EXIT_OUT_OF_TERMS",
         ),
         source(
@@ -173,31 +187,35 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
     ),
     "G4/note": (
         G4, "access.py",
-        "    exit_note = EXIT_IS_NEVER_REFUSED if direction is Direction.EXIT else None",
+        "    exit_note = EXIT_IS_NEVER_REFUSED if is_exit else None",
         "    exit_note = None  # PLANTED: the sentence is dropped",
         "the exit answers stop carrying the sentence that says the vehicle leaves",
     ),
     "G4/transient-at-exit": (
         G4, "access.py",
-        "    if direction is Direction.ENTRY and garage.transient_available is None:",
+        "    if not is_exit and garage.transient_available is None:",
         "    if garage.transient_available is None:  # PLANTED: exits read the field",
         "an exit at a garage with no stated transient mode is refused an answer -- "
         "an exit that depends on configuration",
     ),
     "G4/revoked-exit": (
         G4, "access.py",
-        '        return not_covered(REVOKED, f"pass {pass_.id!r} is revoked.", pass_)',
+        '            return not_covered(REVOKED, f"pass {pass_.id!r} is revoked.", pass_)',
         source(
-            "        if direction is Direction.EXIT:  # PLANTED: a revoked exit is refused",
-            '            return refused(MISSING_ONE_PASS, "revoked")',
-            '        return not_covered(REVOKED, f"pass {pass_.id!r} is revoked.", pass_)',
+            "            if is_exit:  # PLANTED: a revoked exit is refused an answer",
+            "                return replace(",
+            "                    not_covered(REVOKED, 'revoked', pass_),",
+            '                    outcome=Outcome.REFUSED_TO_ANSWER, missing="revoked",',
+            "                )",
+            '            return not_covered(REVOKED, f"pass {pass_.id!r} is revoked.", pass_)',
         ),
         "a revoked pass refuses an answer at exit",
     ),
     "G5/revoked-branch": (
         G5, "access.py",
-        "    if state == State.REVOKED.value:",
-        "    if False:  # PLANTED: revoked falls through to its terms",
+        "        if pass_.state is State.REVOKED:\n            return not_covered(REVOKED",
+        "        if False:  # PLANTED: revoked falls through to its terms\n"
+        "            return not_covered(REVOKED",
         "a revoked pass with satisfiable terms is covered at entry",
     ),
     "G5/terminal": (
@@ -269,9 +287,8 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
     ),
     "G8/blank": (
         G8, "access.py",
-        "    if not identity:\n        return refused(MISSING_VEHICLE_IDENTITY",
-        "    if False:  # PLANTED: a blank identity is looked up\n"
-        "        return refused(MISSING_VEHICLE_IDENTITY",
+        "    if not identity:\n        if is_exit:",
+        "    if False:  # PLANTED: a blank identity is looked up\n        if is_exit:",
         "a blank identity is looked up as if it were a vehicle and answered NO_PASS",
     ),
     "G9/per-window": (
@@ -294,15 +311,29 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
     ),
     "G9/missing-entry": (
         G9, "access.py",
-        "        if open_visit is None or at < open_visit.entered_at:",
-        "        if False:  # PLANTED: no entry, and the stay is measured anyway",
-        "an exit with no recorded entry is no longer refused an answer",
+        source(
+            "                unmeasured = (",
+            '                    f"max_stay {terms.max_stay} of pass {pass_.id!r} could not be '
+            'measured for "',
+        ),
+        source(
+            "                unmeasured = None  # PLANTED: silently satisfied",
+            "                _unused = (",
+            '                    f"max_stay {terms.max_stay} of pass {pass_.id!r} could not be '
+            'measured for "',
+        ),
+        "an exit with no recorded entry treats the maximum stay as satisfied SILENTLY -- "
+        "wrong-silently, which this project does not do. (The first cut planted the None "
+        "check to `if False:` and crashed on the next line: both reds were AttributeError, "
+        "an exception-only red that proved nothing; the runner now refuses that shape.)",
     ),
     "G10/force": (
         G10, MIGRATION,
         "ALTER TABLE passes FORCE  ROW LEVEL SECURITY;",
         "-- PLANTED: FORCE removed from passes",
-        "one table ships without FORCE ROW LEVEL SECURITY",
+        "one table ships without FORCE ROW LEVEL SECURITY. (Catalogue-only: the application "
+        "role is not the table owner, so FORCE never bites at runtime and no behavioural test "
+        "can see this plant; the catalogue assertion is the right and only witness.)",
     ),
     "G10/composite": (
         G10, MIGRATION,
@@ -313,7 +344,9 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
         ),
         "  CONSTRAINT visits_pass_in_tenant FOREIGN KEY (pass_id) REFERENCES passes (id)"
         "  -- PLANTED",
-        "one pass reference is a bare key, which a raw insert can point across tenants",
+        "one pass reference is a bare key, which a raw insert can point across tenants. "
+        "(Catalogue-only: the behavioural cross-tenant-key test is on passes.garage_id; this "
+        "plant on visits.pass_id is seen by the catalogue assertion alone.)",
     ),
     "G10/with-check": (
         G10, MIGRATION,
@@ -380,11 +413,11 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
     ),
     "G13": (
         "tests/test_g13_the_label_is_only_a_label.py", "access.py",
-        "    # --- the state, in the order that is the contract ------------------------",
+        "        # --- the state ------------------------------------------------------",
         source(
-            '    if pass_.label == "Vendor":  # PLANTED: behaviour keyed on the label',
-            '        return not_covered(NO_PASS, "vendors are refused", pass_)',
-            "    # --- the state, in the order that is the contract ------------------------",
+            '        if pass_.label == "Vendor":  # PLANTED: behaviour keyed on the label',
+            '            return not_covered(NO_PASS, "vendors are refused", pass_)',
+            "        # --- the state ------------------------------------------------------",
         ),
         "a label decides an answer -- the fifth pass type, by the back door",
     ),
@@ -419,6 +452,338 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
         "        elif False:  # PLANTED: a module with no mark is accepted",
         "a test module carrying no guarantee mark stops being reported",
     ),
+
+    # --- the fix round's controls ------------------------------------------------
+    "G2/slack-maximum": (
+        "tests/test_g2_contradictions_refuse_at_creation.py", "terms.py",
+        "        # A maximum LONGER than a window is not a contradiction. Windows bind",
+        source(
+            "        for _i, _w in enumerate(terms.windows):  # PLANTED: the removed refusal",
+            "            if terms.max_stay > _w.length:",
+            '                raise Refused(REFUSAL_MAX_STAY_NOT_POSITIVE, "max_stay", "PLANTED")',
+            "        # A maximum LONGER than a window is not a contradiction. Windows bind",
+        ),
+        "a maximum longer than a window is refused at creation again -- a legitimate pass "
+        "(6h beside two 4h windows) cannot be created",
+    ),
+    "G4/exit-refused": (
+        G4, "access.py",
+        source(
+            "        if is_exit:",
+            '            return not_covered(BLANK_IDENTITY, '
+            'f"vehicle_identity is {vehicle_identity!r}.")',
+        ),
+        source(
+            "        if False:  # PLANTED: a blank identity is refused an answer at exit too",
+            '            return not_covered(BLANK_IDENTITY, '
+            'f"vehicle_identity is {vehicle_identity!r}.")',
+        ),
+        "refused-to-answer reaches an exit path, and the "
+        "exit produces no covered/not-covered answer",
+    ),
+    "G12/delete-grant": (
+        G12, MIGRATION,
+        source(
+            "GRANT SELECT, INSERT, UPDATE ON",
+            "  tenants, garages, passes, pass_windows, pass_lanes",
+            "TO garage_pass_app;",
+        ),
+        source(
+            "GRANT SELECT, INSERT, UPDATE ON",
+            "  tenants, garages, passes, pass_windows, pass_lanes",
+            "TO garage_pass_app;",
+            "GRANT DELETE ON passes TO garage_pass_app;  -- PLANTED: the history erasable again",
+        ),
+        "the application role can erase the append-only history by deleting the pass it "
+        "belongs to, through ON DELETE CASCADE",
+    ),
+    "G17/pass-catch": (
+        G17, "store/records.py",
+        source(
+            "    try:",
+            "        return _readable_pass_from_row(cursor, tenant_uuid, external_id, row)",
+            "    except Refused as refusal:",
+        ),
+        source(
+            "    try:",
+            "        return _readable_pass_from_row(cursor, tenant_uuid, external_id, row)",
+            "    except ImportError as refusal:  # PLANTED: a stored contradiction raises again",
+        ),
+        "a stored pass the validator refuses raises at load, so every access call about it "
+        "-- exits included -- is an exception",
+    ),
+    "G17/garage-catch": (
+        G17, "garage.py",
+        "    except UnknownTimezone as exc:",
+        "    except ImportError as exc:  # PLANTED: a stored bad timezone raises again",
+        "a stored garage whose timezone the system lacks raises at load; the exit is an "
+        "exception",
+    ),
+    "G16/reason": (
+        "tests/test_guarantee_guard.py", "scripts/fail_controls.py",
+        '    if not assertions:\n        print(f"    EXCEPTION-ONLY:',
+        '    if False:  # PLANTED: an exception-only red counts as a control\n'
+        '        print(f"    EXCEPTION-ONLY:',
+        "a control whose only reds are exceptions -- a plant that crashes on the next line "
+        "-- is counted as a control that fired",
+    ),
+    "G10/predicate-tenants": (
+        G10, MIGRATION,
+        source(
+            "CREATE POLICY tenants_self_only ON tenants",
+            "  USING      (id = current_tenant_id())",
+            "  WITH CHECK (id = current_tenant_id());",
+        ),
+        source(
+            "CREATE POLICY tenants_self_only ON tenants",
+            "  USING      (true)",
+            "  WITH CHECK (true);  -- PLANTED: the tenant predicate stripped",
+        ),
+        "the policy on tenants still EXISTS -- the catalogue is satisfied -- but isolates "
+        "nothing: every tenant reads and writes every other's rows there",
+    ),
+    "G10/predicate-garages": (
+        G10, MIGRATION,
+        source(
+            "CREATE POLICY garages_tenant_isolation ON garages",
+            "  USING      (tenant_id = current_tenant_id())",
+            "  WITH CHECK (tenant_id = current_tenant_id());",
+        ),
+        source(
+            "CREATE POLICY garages_tenant_isolation ON garages",
+            "  USING      (true)",
+            "  WITH CHECK (true);  -- PLANTED: the tenant predicate stripped",
+        ),
+        "the policy on garages still EXISTS -- the catalogue is satisfied -- but isolates "
+        "nothing: every tenant reads and writes every other's rows there",
+    ),
+    "G10/predicate-passes": (
+        G10, MIGRATION,
+        source(
+            "CREATE POLICY passes_tenant_isolation ON passes",
+            "  USING      (tenant_id = current_tenant_id())",
+            "  WITH CHECK (tenant_id = current_tenant_id());",
+        ),
+        source(
+            "CREATE POLICY passes_tenant_isolation ON passes",
+            "  USING      (true)",
+            "  WITH CHECK (true);  -- PLANTED: the tenant predicate stripped",
+        ),
+        "the policy on passes still EXISTS -- the catalogue is satisfied -- but isolates "
+        "nothing: every tenant reads and writes every other's rows there",
+    ),
+    "G10/predicate-pass_windows": (
+        G10, MIGRATION,
+        source(
+            "CREATE POLICY pass_windows_tenant_isolation ON pass_windows",
+            "  USING      (tenant_id = current_tenant_id())",
+            "  WITH CHECK (tenant_id = current_tenant_id());",
+        ),
+        source(
+            "CREATE POLICY pass_windows_tenant_isolation ON pass_windows",
+            "  USING      (true)",
+            "  WITH CHECK (true);  -- PLANTED: the tenant predicate stripped",
+        ),
+        "the policy on pass_windows still EXISTS -- the catalogue is satisfied -- but isolates "
+        "nothing: every tenant reads and writes every other's rows there",
+    ),
+    "G10/predicate-pass_lanes": (
+        G10, MIGRATION,
+        source(
+            "CREATE POLICY pass_lanes_tenant_isolation ON pass_lanes",
+            "  USING      (tenant_id = current_tenant_id())",
+            "  WITH CHECK (tenant_id = current_tenant_id());",
+        ),
+        source(
+            "CREATE POLICY pass_lanes_tenant_isolation ON pass_lanes",
+            "  USING      (true)",
+            "  WITH CHECK (true);  -- PLANTED: the tenant predicate stripped",
+        ),
+        "the policy on pass_lanes still EXISTS -- the catalogue is satisfied -- but isolates "
+        "nothing: every tenant reads and writes every other's rows there",
+    ),
+    "G10/predicate-pass_state_changes": (
+        G10, MIGRATION,
+        source(
+            "CREATE POLICY pass_state_changes_tenant_isolation ON pass_state_changes",
+            "  USING      (tenant_id = current_tenant_id())",
+            "  WITH CHECK (tenant_id = current_tenant_id());",
+        ),
+        source(
+            "CREATE POLICY pass_state_changes_tenant_isolation ON pass_state_changes",
+            "  USING      (true)",
+            "  WITH CHECK (true);  -- PLANTED: the tenant predicate stripped",
+        ),
+        "the policy on pass_state_changes still EXISTS -- the catalogue is satisfied -- "
+        "but isolates "
+        "nothing: every tenant reads and writes every other's rows there",
+    ),
+    "G10/predicate-vehicle_registrations": (
+        G10, MIGRATION,
+        source(
+            "CREATE POLICY vehicle_registrations_tenant_isolation ON vehicle_registrations",
+            "  USING      (tenant_id = current_tenant_id())",
+            "  WITH CHECK (tenant_id = current_tenant_id());",
+        ),
+        source(
+            "CREATE POLICY vehicle_registrations_tenant_isolation ON vehicle_registrations",
+            "  USING      (true)",
+            "  WITH CHECK (true);  -- PLANTED: the tenant predicate stripped",
+        ),
+        "the policy on vehicle_registrations still EXISTS -- the catalogue is satisfied -- "
+        "but isolates "
+        "nothing: every tenant reads and writes every other's rows there",
+    ),
+    "G10/predicate-visits": (
+        G10, MIGRATION,
+        source(
+            "CREATE POLICY visits_tenant_isolation ON visits",
+            "  USING      (tenant_id = current_tenant_id())",
+            "  WITH CHECK (tenant_id = current_tenant_id());",
+        ),
+        source(
+            "CREATE POLICY visits_tenant_isolation ON visits",
+            "  USING      (true)",
+            "  WITH CHECK (true);  -- PLANTED: the tenant predicate stripped",
+        ),
+        "the policy on visits still EXISTS -- the catalogue is satisfied -- but isolates "
+        "nothing: every tenant reads and writes every other's rows there",
+    ),
+    "G13/spelling-in-tuple": (
+        G13, "access.py",
+        '        # --- the state ------------------------------------------------------',
+        source(
+            '        if pass_.label in ("Vendor",):  # PLANTED',
+            '            return not_covered(NO_PASS, "vendors", pass_)',
+            '        # --- the state ------------------------------------------------------',
+        ),
+        "behaviour keyed on the label, spelled `in-tuple` -- one of the twelve spellings the "
+        "L3 planted; the matrix must catch every one that changes an answer",
+    ),
+    "G13/spelling-dict-lookup": (
+        G13, "access.py",
+        '        # --- the state ------------------------------------------------------',
+        source(
+            '        _RULES = {"Vendor": True}  # PLANTED',
+            '        if _RULES.get(pass_.label, False):',
+            '            return not_covered(NO_PASS, "vendors", pass_)',
+            '        # --- the state ------------------------------------------------------',
+        ),
+        "behaviour keyed on the label, spelled `dict-lookup` -- one of the twelve spellings the "
+        "L3 planted; the matrix must catch every one that changes an answer",
+    ),
+    "G13/spelling-lower-eq": (
+        G13, "access.py",
+        '        # --- the state ------------------------------------------------------',
+        source(
+            '        if pass_.label.lower() == "vendor":  # PLANTED',
+            '            return not_covered(NO_PASS, "vendors", pass_)',
+            '        # --- the state ------------------------------------------------------',
+        ),
+        "behaviour keyed on the label, spelled `lower-eq` -- one of the twelve spellings the "
+        "L3 planted; the matrix must catch every one that changes an answer",
+    ),
+    "G13/spelling-match": (
+        G13, "access.py",
+        '        # --- the state ------------------------------------------------------',
+        source(
+            '        match pass_.label:  # PLANTED',
+            '            case "Vendor":',
+            '                return not_covered(NO_PASS, "vendors", pass_)',
+            '        # --- the state ------------------------------------------------------',
+        ),
+        "behaviour keyed on the label, spelled `match` -- one of the twelve spellings the "
+        "L3 planted; the matrix must catch every one that changes an answer",
+    ),
+    "G13/spelling-variable-first": (
+        G13, "access.py",
+        '        # --- the state ------------------------------------------------------',
+        source(
+            '        _lbl = pass_.label  # PLANTED',
+            '        if _lbl == "Vendor":',
+            '            return not_covered(NO_PASS, "vendors", pass_)',
+            '        # --- the state ------------------------------------------------------',
+        ),
+        "behaviour keyed on the label, spelled `variable-first` -- one of the twelve spellings the "
+        "L3 planted; the matrix must catch every one that changes an answer",
+    ),
+    "G13/spelling-strip-eq": (
+        G13, "access.py",
+        '        # --- the state ------------------------------------------------------',
+        source(
+            '        if pass_.label.strip() == "Vendor":  # PLANTED',
+            '            return not_covered(NO_PASS, "vendors", pass_)',
+            '        # --- the state ------------------------------------------------------',
+        ),
+        "behaviour keyed on the label, spelled `strip-eq` -- one of the twelve spellings the "
+        "L3 planted; the matrix must catch every one that changes an answer",
+    ),
+    "G13/spelling-len-gt": (
+        G13, "access.py",
+        '        # --- the state ------------------------------------------------------',
+        source(
+            '        if len(pass_.label) > 5:  # PLANTED',
+            '            return not_covered(NO_PASS, "long", pass_)',
+            '        # --- the state ------------------------------------------------------',
+        ),
+        "behaviour keyed on the label, spelled `len-gt` -- one of the twelve spellings the "
+        "L3 planted; the matrix must catch every one that changes an answer",
+    ),
+    "G13/spelling-getattr": (
+        G13, "access.py",
+        '        # --- the state ------------------------------------------------------',
+        source(
+            '        if getattr(pass_, "label") == "Vendor":  # PLANTED',
+            '            return not_covered(NO_PASS, "vendors", pass_)',
+            '        # --- the state ------------------------------------------------------',
+        ),
+        "behaviour keyed on the label, spelled `getattr` -- one of the twelve spellings the "
+        "L3 planted; the matrix must catch every one that changes an answer",
+    ),
+    "G13/spelling-fstring-in": (
+        G13, "access.py",
+        '        # --- the state ------------------------------------------------------',
+        source(
+            '        if "Vendor" in f"{pass_.label}":  # PLANTED',
+            '            return not_covered(NO_PASS, "vendors", pass_)',
+            '        # --- the state ------------------------------------------------------',
+        ),
+        "behaviour keyed on the label, spelled `fstring-in` -- one of the twelve spellings the "
+        "L3 planted; the matrix must catch every one that changes an answer",
+    ),
+    "G13/spelling-startswith": (
+        G13, "access.py",
+        '        # --- the state ------------------------------------------------------',
+        source(
+            '        if pass_.label.startswith("Vend"):  # PLANTED',
+            '            return not_covered(NO_PASS, "vendors", pass_)',
+            '        # --- the state ------------------------------------------------------',
+        ),
+        "behaviour keyed on the label, spelled `startswith` -- one of the twelve spellings the "
+        "L3 planted; the matrix must catch every one that changes an answer",
+    ),
+    "G13/spelling-first-char": (
+        G13, "access.py",
+        '        # --- the state ------------------------------------------------------',
+        source(
+            '        if pass_.label[0] == "V":  # PLANTED',
+            '            return not_covered(NO_PASS, "v", pass_)',
+            '        # --- the state ------------------------------------------------------',
+        ),
+        "behaviour keyed on the label, spelled `first-char` -- one of the twelve spellings the "
+        "L3 planted; the matrix must catch every one that changes an answer",
+    ),
+    "G13/spelling-label-as-lane": (
+        G13, "access.py",
+        '        # --- the state ------------------------------------------------------',
+        source(
+            '        if lane_name == pass_.label:  # PLANTED',
+            '            return not_covered(NO_PASS, "x", pass_)',
+            '        # --- the state ------------------------------------------------------',
+        ),
+        "behaviour keyed on the label, spelled `label-as-lane` -- one of the twelve spellings the "
+        "L3 planted; the matrix must catch every one that changes an answer",
+    ),
     "G16/conftest": (
         "tests/test_guarantee_guard.py", "tests/conftest.py",
         "    session.exitstatus = 1",
@@ -450,11 +815,38 @@ def check_anchors() -> int:
 
 def _pytest(target: str) -> subprocess.CompletedProcess:
     return subprocess.run(
-        [sys.executable, "-m", "pytest", target, "-q", "--no-header", "-p", "no:cacheprovider"],
+        [
+            sys.executable, "-m", "pytest", target, "-q", "--no-header", "-p", "no:cacheprovider",
+            "--tb=line", "-rf",
+        ],
         cwd=ROOT,
         capture_output=True,
         text=True,
     )
+
+
+#: One line per failure under ``--tb=line``: ``<path>:<line>: <Exception>: <message>``,
+#: or, for a bare ``assert`` with no message, ``<path>:<line>: assert <expression>``.
+#: pytest's own ``Failed`` is what ``pytest.raises`` / ``pytest.fail`` raise --
+#: "DID NOT RAISE" is an assertion about the subject, spelled by pytest.
+_REASON = re.compile(
+    r"^(?P<where>\S+?\.py:\d+): (?P<exception>[A-Za-z_][\w.]*)(?::| |$)(?P<rest>.*)$"
+)
+_ASSERTION_EXCEPTIONS = {"AssertionError", "Failed", "assert"}
+
+
+def failure_reasons(stdout: str) -> list[tuple[str, str, str]]:
+    """Every failure's (where, exception, message) from a ``--tb=line`` run."""
+    out = []
+    for line in stdout.splitlines():
+        match = _REASON.match(line.strip())
+        if match and not line.startswith(("FAILED", "ERROR", "E ")):
+            out.append((match["where"], match["exception"], match["rest"].strip()))
+    return out
+
+
+def assertion_reds(reasons: list[tuple[str, str, str]]) -> list[tuple[str, str, str]]:
+    return [r for r in reasons if r[1].rsplit(".", 1)[-1] in _ASSERTION_EXCEPTIONS]
 
 
 #: ``"0 passed" in stdout`` would be WRONG: "10 passed" contains it.
@@ -480,14 +872,31 @@ def run_control(gid: str) -> bool:
     with planted(path, anchor, replacement):
         red = _pytest(target)
 
-    tail = [ln for ln in red.stdout.splitlines() if ln.startswith(("FAILED", "ERROR"))]
     summary = red.stdout.strip().splitlines()[-1] if red.stdout.strip() else ""
     if red.returncode == 0:
         print(f"    NOT A CONTROL: {target} stayed GREEN with its subject broken.")
         return False
-    print(f"    RED, as required — {summary}")
-    for line in tail[:6]:
-        print(f"      {line}")
+    reasons = failure_reasons(red.stdout)
+    assertions = assertion_reds(reasons)
+    others = [r for r in reasons if r not in assertions]
+    if not reasons:
+        # A red with no failure line is a collection error or a crash before
+        # any test ran -- a plant that broke the import, say. Not a control.
+        print(f"    EXCEPTION-ONLY: {target} went red with no test failure to read.")
+        print(red.stdout[-1200:])
+        return False
+    if not assertions:
+        print(f"    EXCEPTION-ONLY: {target} went red, but not one red is an assertion about "
+              f"the subject -- {len(others)} exception(s): "
+              + "; ".join(f"{e} at {w}" for w, e, _m in others[:4]) + ". The plant is "
+              "reporting on itself, not on the subject. NOT A CONTROL.")
+        return False
+    print(f"    RED, as required — {summary} — {len(assertions)} assertion red(s)"
+          + (f", {len(others)} other exception(s) beside them" if others else ""))
+    for where, exception, message in assertions[:4]:
+        print(f"      {where}: {exception}: {message[:140]}")
+    for where, exception, message in others[:2]:
+        print(f"      (beside) {where}: {exception}: {message[:100]}")
     return True
 
 

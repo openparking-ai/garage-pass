@@ -54,11 +54,14 @@ def effective_state(pass_: Pass, today: date) -> str:
     """The state the access call reads: the typed one, or ``expired``.
 
     Revoked outranks expiry -- a revoked pass is revoked, not "expired", and
-    the reason a lane is given says so.
+    the reason a lane is given says so. An UNREADABLE pass (store load path)
+    has no terms to derive expiry from; the access call answers it before
+    expiry is asked, so this returns its typed state.
     """
     if pass_.state is State.REVOKED:
         return State.REVOKED.value
-    if pass_.terms.valid_to is not None and today > pass_.terms.valid_to:
+    terms = pass_.terms
+    if terms is not None and terms.valid_to is not None and today > terms.valid_to:
         return EXPIRED
     return pass_.state.value
 

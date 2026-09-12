@@ -26,6 +26,7 @@ documentation rather than left looking measured.
 from __future__ import annotations
 
 import json
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -217,10 +218,57 @@ def render(template: str) -> str:
     return out
 
 
+SOURCE = ROOT / "src" / "garage_pass"
+
+
+def orphan_codes() -> dict[str, list[str]]:
+    """Every registered refusal, not-covered reason, barrier meaning and
+    refused-to-answer field that NOTHING in the package uses -- a sentence
+    published for a code nothing raises or returns. Read from the package's
+    source outside ``findings.py`` by the constant's NAME; a code used only by
+    its string value is reported too, because the raise site would then be a
+    typo away from an unregistered code.
+
+    Measured before this existed: an orphan refusal planted into the registry
+    and the contract regenerated -- the whole suite stayed green and the
+    document said "34 refusals". ``--check`` now fails on it.
+    """
+    sources = "\n".join(
+        path.read_text() for path in sorted(SOURCE.rglob("*.py")) if path.name != "findings.py"
+    )
+    import garage_pass.findings as findings_module
+
+    names_by_value = {}
+    for name, value in vars(findings_module).items():
+        if isinstance(value, str) and name.isupper() and not name.startswith("_"):
+            names_by_value.setdefault(value, []).append(name)
+    orphans: dict[str, list[str]] = {}
+    for registry_name, registry in (
+        ("REFUSALS", REFUSALS),
+        ("NOT_COVERED_REASONS", NOT_COVERED_REASONS),
+        ("BARRIER_MEANINGS", BARRIER_MEANINGS),
+        ("REFUSED_TO_ANSWER", REFUSED_TO_ANSWER),
+    ):
+        for code in registry:
+            names = names_by_value.get(code, [])
+            if not any(re.search(rf"\b{re.escape(name)}\b", sources) for name in names):
+                orphans.setdefault(registry_name, []).append(code)
+    return orphans
+
+
 def main(argv: list[str]) -> int:
     current = DOC.read_text()
     generated = render(current)
     if "--check" in argv:
+        orphans = orphan_codes()
+        if orphans:
+            for registry_name, codes in orphans.items():
+                print(
+                    f"{registry_name} publishes {', '.join(codes)}, which nothing in "
+                    "src/garage_pass raises or returns. A sentence published for a code "
+                    "nothing produces is a promise nothing keeps: remove it, or use it."
+                )
+            return 1
         if current != generated:
             print(
                 "docs/CONTRACT.md does not match its generator. A number or a "

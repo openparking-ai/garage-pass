@@ -5,7 +5,8 @@ anywhere in this file:
 
 1. **valid_from / valid_to** -- inclusive calendar days in the garage's local day.
 2. **windows** -- recurring: days of the week plus minutes of the local day.
-3. **max_stay** -- a duration, measured at exit from the recorded entry.
+3. **max_stay** -- a duration, measured at exit from the recorded entry. It
+   may be longer than any window: windows bind instants, not stays.
 4. **visit_allowance** -- a count, over the pass's life or per window.
 5. **directions** -- entry, exit, or both. Stated, because nothing is implicit.
 6. **allowed_lanes** -- a named set; absent means every lane of the garage.
@@ -25,7 +26,6 @@ from garage_pass.findings import (
     REFUSAL_ALLOWANCE_PER_WINDOW_WITHOUT_WINDOWS,
     REFUSAL_LANE_NAME_BLANK,
     REFUSAL_LANES_STATED_BUT_EMPTY,
-    REFUSAL_MAX_STAY_LONGER_THAN_WINDOW,
     REFUSAL_MAX_STAY_NOT_POSITIVE,
     REFUSAL_NO_DIRECTIONS,
     REFUSAL_VALID_TO_BEFORE_VALID_FROM,
@@ -183,14 +183,14 @@ def check_terms(terms: Terms) -> None:
             raise Refused(
                 REFUSAL_MAX_STAY_NOT_POSITIVE, "max_stay", f"max_stay is {terms.max_stay}."
             )
-        for index, window in enumerate(terms.windows):
-            if terms.max_stay > window.length:
-                raise Refused(
-                    REFUSAL_MAX_STAY_LONGER_THAN_WINDOW,
-                    "max_stay",
-                    f"max_stay {terms.max_stay} is longer than windows[{index}] "
-                    f"({window.describe()}, {window.length}).",
-                )
+        # A maximum LONGER than a window is not a contradiction. Windows bind
+        # the two instants -- the entry and the exit -- never the stay between
+        # them: a stay may leave the window it began in (answered out-of-terms
+        # at exit, never refused) or end inside a later occurrence (covered). So
+        # a 6-hour maximum beside two 4-hour windows is reachable and binding,
+        # measured: exit at 14:59 covered, 15:01 over the maximum. The first
+        # cut refused it, and refused a legitimate pass; the L3 settled it by
+        # execution and a test now creates exactly that pass.
 
     if terms.visit_allowance is not None:
         if terms.visit_allowance.count <= 0:

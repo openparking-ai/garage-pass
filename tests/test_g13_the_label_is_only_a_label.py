@@ -1,12 +1,24 @@
 """G13 -- the label is only a label. No behaviour keys off it.
 
-Two passes identical in everything but ``label`` answer identically across the
-whole matrix -- every state, both directions, every terms configuration -- and
-the source reads ``label`` nowhere but to report it. The second half is read
-from the AST rather than by grep: a comparison against the label anywhere in
-the package is a branch on it, whatever it is spelled like.
+**THE MATRIX IS THE GUARANTEE.** Two passes identical in everything but
+``label`` answer identically across the whole matrix -- every state, both
+directions, every terms configuration. Its power is MEASURED, not assumed:
+``scripts/fail_controls.py`` plants twelve spellings of a label-keyed branch
+(``in`` a tuple, a dict lookup, ``.lower()``, ``match``, the label read into a
+variable first, ``.strip()``, ``len()``, ``getattr``, an f-string, ``startswith``,
+the first character, the label compared to the lane) and the matrix must go
+red on every one that changes an answer -- the L3 measured eleven of twelve do;
+the twelfth (label compared to the lane) changes no answer for any fixture and
+is caught by the scan alone.
 
-Control: a special case for one label planted into the access call.
+**THE AST SCAN IS A REPORT, NOT THE PROOF.** It lists the spellings it knows --
+a comparison whose side is ``.label``, a string predicate called on it, a
+``match`` on it -- and the L3 showed it blind to seven of the twelve above. A
+scan that must know every way to read a string is the wrong instrument, so its
+sentence is narrowed to what it measures rather than widened to chase spelling
+thirteen.
+
+Controls: the twelve spellings above, plus the original special case.
 """
 
 from __future__ import annotations
@@ -87,7 +99,9 @@ def _label_comparisons() -> list[str]:
 
 
 @pytest.mark.guarantee("G13")
-def test_the_source_compares_the_label_nowhere():
+def test_the_scan_reports_no_label_comparison_of_the_spellings_it_knows():
+    """A report over the spellings the scan knows -- see the module docstring
+    for the seven it cannot see. The matrix above is the proof."""
     assert _label_comparisons() == []
 
 

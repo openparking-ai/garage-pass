@@ -22,6 +22,12 @@ import pytest
 from _guarantees import ALLOW_ENV, GUARANTEES
 
 _ran: set[str] = set()
+#: Per guarantee: how many marked tests were skipped, and how many were
+#: collected. A guarantee half of whose tests skipped is NOT covered, and a
+#: binary "ran or not" cannot say so -- the first cut's report named only the
+#: guarantees with no passing test, and a receipt copied a wrong list off it.
+_skipped: dict[str, int] = {}
+_collected: dict[str, int] = {}
 
 
 def pytest_configure(config):
@@ -32,10 +38,18 @@ def pytest_configure(config):
 def pytest_runtest_makereport(item, call):
     outcome = yield
     report = outcome.get_result()
+    marker = item.get_closest_marker("guarantee")
+    if not marker:
+        return
+    if report.skipped:
+        # A skipif mark skips in the SETUP phase; a pytest.skip() inside the
+        # test skips in CALL. Either way the test did not run.
+        for gid in marker.args:
+            _skipped[gid] = _skipped.get(gid, 0) + 1
+        return
     if report.when != "call":
         return
-    marker = item.get_closest_marker("guarantee")
-    if marker and report.passed:
+    if report.passed:
         for gid in marker.args:
             _ran.add(gid)
 
@@ -59,6 +73,11 @@ def pytest_collection_modifyitems(config, items):
             "guarantee mark(s) naming an id that is not in tests/_guarantees.py:\n  "
             + "\n  ".join(unknown)
         )
+    for item in items:
+        marker = item.get_closest_marker("guarantee")
+        if marker:
+            for gid in marker.args:
+                _collected[gid] = _collected.get(gid, 0) + 1
 
 
 def _is_a_full_run(session) -> bool:
@@ -92,18 +111,38 @@ def pytest_sessionfinish(session, exitstatus):
     allowed = {
         part.strip() for part in os.environ.get(ALLOW_ENV, "").split(",") if part.strip()
     }
-    unaccounted = sorted(set(GUARANTEES) - _ran - allowed)
-    if not unaccounted:
+    report = unrun_report(allowed)
+    if not report:
         return
-    lines = "\n".join(f"    {gid}  {GUARANTEES[gid]}" for gid in unaccounted)
     print(
-        "\nREGISTERED GUARANTEES THAT DID NOT RUN AND PASS:\n"
-        f"{lines}\n"
-        "\nA guarantee whose test does not run is not a guarantee. Either make it run,\n"
-        f"or name the id in {ALLOW_ENV} -- which is a decision somebody writes down,\n"
-        "not a default.\n"
+        "\nREGISTERED GUARANTEES THAT DID NOT RUN AND PASS IN FULL:\n"
+        f"{report}\n"
+        "\nA guarantee whose test does not run is not a guarantee, and a guarantee half\n"
+        "of whose tests skipped is not covered. Either make them run, or name the id in\n"
+        f"{ALLOW_ENV} -- which is a decision somebody writes down, not a default.\n"
     )
     session.exitstatus = 1
+
+
+def unrun_report(allowed: set[str]) -> str:
+    """Every guarantee that did not run and pass IN FULL, derived: the ones
+    with no passing test ("no test ran"), and the ones with skipped tests
+    ("N of M tests skipped") -- one line each, so a partly-covered guarantee
+    is named and not hidden behind the ones that ran."""
+    lines = []
+    for gid in sorted(GUARANTEES, key=lambda g: int(g[1:])):
+        if gid in allowed:
+            continue
+        skipped = _skipped.get(gid, 0)
+        if gid not in _ran:
+            lines.append(f"    {gid}  no test ran and passed"
+                         + (f" ({skipped} of {_collected.get(gid, skipped)} skipped)"
+                            if skipped else "")
+                         + f"  {GUARANTEES[gid][:80]}...")
+        elif skipped:
+            lines.append(f"    {gid}  {skipped} of {_collected.get(gid, skipped)} tests skipped"
+                         f"  {GUARANTEES[gid][:80]}...")
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------

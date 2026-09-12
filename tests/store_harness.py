@@ -148,3 +148,21 @@ def store_test(function):
     for mark in needs_postgres:
         function = mark(function)
     return function
+
+
+def seed_full_graph(app: Any, tenant_id: UUID) -> None:
+    """A row in EVERY table, as one tenant, through the module: a garage, a
+    pass with a window and a lane (and its creation in the history), a
+    registration and a recorded entry. The isolation test's denominator."""
+    from datetime import date
+
+    from fixtures import TWO_HOURS_BEFORE, a_pass, everything_terms, transient_garage
+    from garage_pass.store.records import record_entry, register_vehicle
+
+    garage = transient_garage()
+    pass_ = a_pass(garage_id=garage.id, terms=everything_terms())
+    seed(app, tenant_id, garage, (pass_,))
+    with tenant(app, tenant_id) as cursor:
+        register_vehicle(cursor, tenant_id, garage.id, pass_.id, "CAR-1", date(2026, 1, 1))
+        record_entry(cursor, tenant_id, garage.id, pass_.id, "CAR-1", "L1", TWO_HOURS_BEFORE)
+    app.commit()

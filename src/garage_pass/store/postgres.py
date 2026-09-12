@@ -193,3 +193,52 @@ def columns_named_like(connection: Any, words: tuple[str, ...]) -> list[str]:
             for table, column in cursor.fetchall()
             if any(word in column.lower() for word in words)
         ]
+
+
+def tables_cascading_into(connection: Any, table: str) -> frozenset[str]:
+    """Every table whose DELETE cascades -- directly or through other tables --
+    into ``table``, read from ``pg_constraint`` (``confdeltype = 'c'``) and
+    walked transitively. A hand-written list of the parents would pass the day
+    somebody adds a sixth."""
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT child.relname, parent.relname
+            FROM pg_constraint k
+            JOIN pg_class child ON child.oid = k.conrelid
+            JOIN pg_class parent ON parent.oid = k.confrelid
+            JOIN pg_namespace n ON n.oid = child.relnamespace
+            WHERE n.nspname = 'public' AND k.contype = 'f' AND k.confdeltype = 'c'
+            """
+        )
+        edges = cursor.fetchall()
+    parents_of: dict[str, set[str]] = {}
+    for child, parent in edges:
+        parents_of.setdefault(child, set()).add(parent)
+    found: set[str] = set()
+    frontier = [table]
+    while frontier:
+        current = frontier.pop()
+        for parent in parents_of.get(current, ()):
+            if parent not in found:
+                found.add(parent)
+                frontier.append(parent)
+    return frozenset(found)
+
+
+def tables_with_tenant_column(connection: Any) -> list[str]:
+    """Every ordinary table in `public` carrying a ``tenant_id`` column -- the
+    denominator of the isolation test, read from the catalogue."""
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT c.relname
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            JOIN pg_attribute a ON a.attrelid = c.oid AND a.attname = 'tenant_id'
+                 AND a.attnum > 0 AND NOT a.attisdropped
+            WHERE n.nspname = 'public' AND c.relkind = 'r'
+            ORDER BY c.relname
+            """
+        )
+        return [row[0] for row in cursor.fetchall()]

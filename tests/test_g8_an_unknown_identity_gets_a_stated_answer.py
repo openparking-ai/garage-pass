@@ -1,5 +1,6 @@
 """G8 -- an unknown identity produces a STATED answer, never an accidental
-refusal and never a silent pass; a blank one is refused an answer by name.
+refusal and never a silent pass; a blank one is refused an answer by name AT AN
+ENTRY (an exit is never refused an answer -- G4 holds the exit half).
 
 Controls: the not-covered NO_PASS branch planted to refuse an answer instead;
 the blank-identity check planted away (a blank identity is then looked up as
@@ -70,7 +71,7 @@ def test_a_registration_ended_by_revocation_reads_as_revoked_not_no_pass():
 
 @pytest.mark.guarantee("G8")
 @pytest.mark.parametrize("blank", ["", "   ", None, 12], ids=["empty", "spaces", "None", "int"])
-def test_a_blank_identity_is_refused_an_answer_naming_the_field(blank):
+def test_a_blank_identity_is_refused_an_answer_naming_the_field_at_entry(blank):
     answer = ask(blank)
     assert answer.outcome is Outcome.REFUSED_TO_ANSWER
     assert answer.missing == f.MISSING_VEHICLE_IDENTITY
@@ -84,9 +85,10 @@ def test_a_blank_lane_is_refused_an_answer_naming_the_field():
 
 
 @pytest.mark.guarantee("G8")
-def test_two_passes_holding_one_identity_is_refused_an_answer_not_picked():
+def test_two_passes_holding_one_identity_is_refused_an_answer_not_picked_at_entry():
     """The state G1 prevents in the store; a library caller can still hand it
-    in. Refused by name in either order, never decided by list position."""
+    in. Refused by name in either order, never decided by list position. (At
+    an exit every pass is evaluated instead -- G4.)"""
     a, z = a_pass(id="pass-a"), a_pass(id="pass-z")
     for order in ((a, z), (z, a)):
         answer = ask("CAR-1", [registered(a, "CAR-1"), registered(z, "CAR-1")], order)

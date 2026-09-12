@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from enum import Enum
 
-from garage_pass.findings import REFUSAL_HOLDER_EMAIL_MALFORMED, Refused
+from garage_pass.findings import REFUSAL_HOLDER_EMAIL_MALFORMED, Refused, Unreadable
 from garage_pass.garage import require_text
 from garage_pass.localday import require_aware
 from garage_pass.terms import Terms
@@ -57,9 +57,17 @@ class Pass:
     id: str
     garage_id: str
     label: str
-    holder: Holder
-    terms: Terms
+    #: None only on an unreadable pass whose holder is the unreadable part.
+    holder: Holder | None
+    #: None only on an unreadable pass whose terms are the unreadable part.
+    terms: Terms | None
     state: State = State.DRAFT
+    #: Set by the store's LOAD path only: a stored row whose terms or holder
+    #: this module refuses to read. Never constructed by a caller building a
+    #: pass -- ``Terms`` and ``Holder`` refuse at creation. Terms are re-validated
+    #: on every load, so a validator tightened after a pass was stored strands
+    #: it; a stranded pass degrades to a STATED answer, never an exception.
+    unreadable: Unreadable | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "id", require_text(self.id, "pass.id"))
@@ -67,6 +75,13 @@ class Pass:
         object.__setattr__(self, "label", require_text(self.label, "pass.label"))
         if not isinstance(self.state, State):
             raise TypeError(f"state must be a State, not {self.state!r}")
+        if self.unreadable is None:
+            if not isinstance(self.holder, Holder):
+                raise TypeError(f"holder must be a Holder, not {self.holder!r}")
+            if not isinstance(self.terms, Terms):
+                raise TypeError(f"terms must be a Terms, not {self.terms!r}")
+        elif not isinstance(self.unreadable, Unreadable):
+            raise TypeError(f"unreadable must be an Unreadable, not {self.unreadable!r}")
 
 
 @dataclass(frozen=True)

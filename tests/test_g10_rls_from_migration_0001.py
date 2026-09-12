@@ -17,8 +17,18 @@ unset. CI always sets it, so CI never skips them -- and `GARAGE_PASS_ALLOW_UNRUN
 is empty in CI, so a run where these did not execute FAILS rather than passing
 quietly.
 
+**ISOLATION IS PROVEN ON EVERY TABLE, FROM THE CATALOGUE.** One full graph is
+seeded as tenant A through the module -- every table gets a row, and a table
+with no row is UNMEASURED, not clean -- then for every table carrying a
+tenant column tenant B reads none of A's rows and updates none of them. The
+first cut proved isolation on ``garages`` only; a stripped predicate on
+``tenants``, ``pass_windows`` or ``pass_lanes`` left the suite green
+(measured), and four more tables reddened only by accident.
+
 Controls: FORCE removed from one table in the migration; a composite key
-removed from one table in the migration; the policy's WITH CHECK removed.
+removed from one table in the migration; the policy split into isolated reads
+and open writes; the tenant predicate stripped from each of the eight tables'
+policies in turn -- eight controls, each required to redden this file.
 """
 
 from __future__ import annotations
@@ -30,12 +40,13 @@ from fixtures import transient_garage
 from garage_pass.store.postgres import (
     assert_role_cannot_bypass_rls,
     references_without_a_composite_key,
+    tables_with_tenant_column,
     tables_without_rls,
     tables_without_tenant_column,
     tenant,
 )
 from garage_pass.store.records import store_garage
-from store_harness import needs_postgres, new_tenant
+from store_harness import needs_postgres, new_tenant, seed_full_graph
 
 pytestmark = needs_postgres
 
@@ -151,3 +162,46 @@ def test_a_tenant_cannot_name_another_tenants_garage_even_by_a_raw_insert(app, o
                 (alpha, garage_uuid),
             )
     app.rollback()
+
+
+@pytest.mark.guarantee("G10")
+def test_every_table_isolates_one_tenant_from_another_read_and_write(app, owner):
+    """For EVERY table in the catalogue: tenant A has rows there (the
+    denominator -- none means the seed missed the table and nothing below is
+    measured), tenant B reads none of them, and tenant B's UPDATE touches
+    none of them. ``tenants`` carries its tenant in ``id`` and is included."""
+    assert_role_cannot_bypass_rls(app)
+    alpha, beta = new_tenant(owner), new_tenant(owner)
+    seed_full_graph(app, alpha)
+    tables = [(name, "tenant_id") for name in tables_with_tenant_column(app)]
+    tables.append(("tenants", "id"))
+    assert len(tables) >= 8, f"only {len(tables)} tenant-bearing tables; the migration did not run"
+    unmeasured, leaks, writes = [], [], []
+    for table, column in tables:
+        with tenant(app, alpha) as cursor:
+            cursor.execute(f"SELECT count(*) FROM {table} WHERE {column} = %s", (alpha,))
+            (mine,) = cursor.fetchone()
+        app.rollback()
+        if mine == 0:
+            unmeasured.append(table)
+            continue
+        with tenant(app, beta) as cursor:
+            cursor.execute(f"SELECT count(*) FROM {table} WHERE {column} = %s", (alpha,))
+            (seen,) = cursor.fetchone()
+        app.rollback()
+        try:
+            with tenant(app, beta) as cursor:
+                cursor.execute(
+                    f"UPDATE {table} SET {column} = {column} WHERE {column} = %s", (alpha,)
+                )
+                touched = cursor.rowcount
+        except psycopg.errors.InsufficientPrivilege:
+            touched = 0  # no UPDATE grant at all on this table: refused before the policy
+        app.rollback()
+        if seen:
+            leaks.append(f"{table}: tenant beta read {seen} of alpha's {mine} rows")
+        if touched:
+            writes.append(f"{table}: tenant beta updated {touched} of alpha's rows")
+    assert unmeasured == [], f"tenant alpha has no rows in {unmeasured}: UNMEASURED, not clean"
+    assert leaks == [], leaks
+    assert writes == [], writes

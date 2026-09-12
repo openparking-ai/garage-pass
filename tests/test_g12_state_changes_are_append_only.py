@@ -4,9 +4,17 @@ history; the transitions are the published ones; expired is derived.
 And the store half of G5: revoking a pass ends its registrations on the
 revocation day in the garage's local calendar.
 
+**AND NO ROUTE AROUND THE GRANT.** The history cascades from ``passes`` and
+``tenants``; a DELETE on either would erase it. The application role holds no
+DELETE on any table whose deletion cascades into the history -- the set is read
+from the catalogue and walked transitively, never typed -- and the module
+issues no DELETE at all. Measured before the fix: ``DELETE FROM passes`` as the
+application role took the history from one row to none.
+
 Controls: the INSERT of the history row planted away; the grant on the
 history widened to UPDATE in the migration; the who/why check planted away;
-the revocation's registration update planted away.
+the revocation's registration update planted away; DELETE on ``passes`` granted
+back to the application role.
 """
 
 from __future__ import annotations
@@ -20,7 +28,7 @@ from fixtures import NOON_MONDAY, a_pass, at, transient_garage
 from garage_pass import findings as f
 from garage_pass.passes import EXPIRED, State
 from garage_pass.states import ALLOWED_TRANSITIONS, effective_state, parse_state, transition
-from garage_pass.store.postgres import grants_on, tenant
+from garage_pass.store.postgres import grants_on, tables_cascading_into, tenant
 from garage_pass.store.records import ENDED_BY_REVOCATION, change_state, register_vehicle
 from store_harness import query, seed, store_test
 
@@ -135,6 +143,46 @@ def test_the_history_is_append_only_by_grant_and_by_a_refused_update(app, tenant
             with tenant(app, tenant_id) as cursor:
                 cursor.execute(statement)
         app.rollback()
+
+
+@pytest.mark.guarantee("G12")
+@store_test
+def test_no_table_whose_deletion_cascades_into_the_history_grants_the_app_role_delete(
+    app, tenant_id
+):
+    """Derived, not listed: every ancestor by ON DELETE CASCADE, transitively."""
+    cascading = tables_cascading_into(app, "pass_state_changes")
+    assert {"passes", "tenants"} <= cascading, (
+        f"the walk did not find the two known parents; found {sorted(cascading)}"
+    )
+    assert "garages" not in cascading, "garages -> passes is RESTRICT; the walk over-reached"
+    offenders = sorted(t for t in cascading if "DELETE" in grants_on(app, t))
+    assert offenders == [], f"the application role can erase the history through {offenders}"
+    # and it really cannot: the way the code would make the call, at its role
+    seed(app, tenant_id, GARAGE, (a_pass(),))
+    with pytest.raises(psycopg.errors.InsufficientPrivilege):
+        with tenant(app, tenant_id) as cursor:
+            cursor.execute("DELETE FROM passes")
+    app.rollback()
+    assert query(app, tenant_id, "SELECT count(*) FROM pass_state_changes") == [(1,)]
+
+
+@pytest.mark.guarantee("G12")
+@store_test
+def test_the_cascade_walk_can_see_a_new_parent(owner):
+    """The control on the walk: a scratch table that passes cascade into is
+    reported as an ancestor, transitively, then dropped."""
+    with owner.cursor() as cursor:
+        cursor.execute(
+            "CREATE TABLE _l3_root (id uuid PRIMARY KEY DEFAULT gen_random_uuid()); "
+            "ALTER TABLE passes ADD COLUMN _l3_root_id uuid "
+            "REFERENCES _l3_root(id) ON DELETE CASCADE"
+        )
+        try:
+            assert "_l3_root" in tables_cascading_into(owner, "pass_state_changes")
+        finally:
+            cursor.execute("ALTER TABLE passes DROP COLUMN _l3_root_id; DROP TABLE _l3_root")
+    assert "_l3_root" not in tables_cascading_into(owner, "pass_state_changes")
 
 
 @pytest.mark.guarantee("G12")

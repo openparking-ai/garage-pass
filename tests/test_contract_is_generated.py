@@ -152,3 +152,21 @@ def test_the_worked_example_is_produced_by_running_and_its_prose_follows_the_out
 def test_the_render_refuses_a_document_missing_a_block():
     with pytest.raises(SystemExit, match="has no"):
         gen.render("no markers here")
+
+
+@pytest.mark.guarantee("G15")
+def test_a_code_published_but_produced_nowhere_fails_the_check():
+    """An orphan refusal in the registry: before this, regenerating the
+    contract silenced it and the suite stayed green (measured). Now the
+    orphan scan names it; and, the control, the shipped registries have none."""
+    assert gen.orphan_codes() == {}, gen.orphan_codes()
+    gen.REFUSALS["REFUSAL_PLANTED_ORPHAN"] = "A planted sentence for a code nothing raises."
+    try:
+        assert gen.orphan_codes() == {"REFUSALS": ["REFUSAL_PLANTED_ORPHAN"]}
+    finally:
+        del gen.REFUSALS["REFUSAL_PLANTED_ORPHAN"]
+    gen.NOT_COVERED_REASONS["PLANTED_REASON"] = "A planted reason nothing returns."
+    try:
+        assert gen.orphan_codes() == {"NOT_COVERED_REASONS": ["PLANTED_REASON"]}
+    finally:
+        del gen.NOT_COVERED_REASONS["PLANTED_REASON"]

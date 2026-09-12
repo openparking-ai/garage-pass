@@ -6,7 +6,8 @@ the passes, registrations and recorded visits the caller holds -- one of:
 * **covered** -- with the pass, its label and the term that covers it;
 * **not covered** -- with a plain reason from ``findings.NOT_COVERED_REASONS``;
 * **refused to answer** -- the call cannot answer without guessing, and names
-  the field that would let it (``findings.REFUSED_TO_ANSWER``).
+  the field that would let it (``findings.REFUSED_TO_ANSWER``). **An ENTRY
+  outcome only: an exit is never refused an answer.**
 
 **NO FEE, NO AMOUNT, NO BALANCE, EVER CROSSES THIS CALL.** It is an access fact.
 There is no field on ``Answer`` that could carry money, and a control plants
@@ -19,41 +20,55 @@ LEDGER of the visits the lane told it about -- ``record_entry`` and
 are computed from the module's own recorded visits and from nothing else. A
 ledger is not a count of who is inside: nothing here answers that question.
 
-**AN EXIT IS NEVER REFUSED.** A pass's terms govern entry and which lanes may
-be used. At exit the same terms are EVALUATED -- an exit outside them is
-answered not-covered, reason named, so that a transient garage can charge the
-stay -- but the answer's meaning at the barrier is always
-``findings.MEANS_EXIT_OUT_OF_TERMS`` and every exit answer, whatever its
-outcome, carries ``findings.EXIT_IS_NEVER_REFUSED``. A garage whose transient
-mode is unstated is refused an answer at ENTRY only; the exit half of the call
-does not read that field at all, because nothing about an exit may depend on
-configuration.
+**AN EXIT IS NEVER REFUSED, AND EVERY EXIT IS ANSWERED.** A pass's terms govern
+entry and which lanes may be used. At exit the same terms are EVALUATED -- an
+exit outside them is answered not-covered, reason named, so that a transient
+garage can charge the stay -- but the answer's meaning at the barrier is always
+``findings.MEANS_EXIT_OUT_OF_TERMS``, every exit answer carries
+``findings.EXIT_IS_NEVER_REFUSED``, and **an exit's outcome is always covered or
+not covered**. Whatever cannot be evaluated at an exit is NAMED, never guessed
+and never a refusal: a blank identity or lane is not-covered naming the blank
+field; a maximum stay with no open recorded entry to measure from is answered
+on the terms that can be evaluated with the stay marked UNMEASURED in
+``Answer.unmeasured``; a stored pass or garage this module cannot read is
+not-covered naming the pass and the field; two passes that both hold the
+vehicle -- a state this module refuses to create -- are each evaluated and the
+vehicle is covered if any of them covers it, the inconsistency named. A garage
+whose transient mode is unstated is refused an answer at ENTRY only; the exit
+half of the call does not read that field at all, because nothing about an
+exit may depend on configuration.
 
-**THE ORDER OF THE CHECKS IS PART OF THE CONTRACT.** Revoked outranks
-everything (revoked is revoked). Then expiry, which is derived. Then the typed
-state. Then the terms: direction, lane, window, and -- at entry -- the visit
-allowance; at exit, the maximum stay. The first thing that fails is the
+**THE ORDER OF THE CHECKS IS PART OF THE CONTRACT.** An unreadable garage
+answers first (without a clock nothing else can be read). Then the blank
+identity and lane. Then, at entry, the transient mode. Then which pass. Per
+pass: revoked outranks everything (revoked is revoked); then an unreadable
+pass (its expiry cannot be derived); then expiry, which is derived; then the
+typed state; then the terms: direction, lane, window, and -- at entry -- the
+visit allowance; at exit, the maximum stay. The first thing that fails is the
 reason; nothing after it is evaluated or reported.
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from enum import Enum
 
 from garage_pass.findings import (
+    BLANK_IDENTITY,
+    BLANK_LANE,
     DIRECTION_NOT_ALLOWED,
     EXIT_IS_NEVER_REFUSED,
     EXPIRED,
+    GARAGE_UNREADABLE,
     MEANS_COVERED,
     MEANS_EXIT_OUT_OF_TERMS,
     MEANS_NOTHING_TO_ADMIT_AS,
     MEANS_TRANSIENT_STAY,
     MISSING_LANE,
     MISSING_ONE_PASS,
-    MISSING_RECORDED_ENTRY,
+    MISSING_TIMEZONE,
     MISSING_TRANSIENT_MODE,
     MISSING_VEHICLE_IDENTITY,
     NO_PASS,
@@ -62,10 +77,12 @@ from garage_pass.findings import (
     OUT_OF_VISITS,
     OUTSIDE_WINDOW,
     OVER_MAX_STAY,
+    PASS_UNREADABLE,
     REFUSAL_PASS_NOT_FOUND,
     REFUSED_TO_ANSWER,
     REVOKED,
     SUSPENDED,
+    UNREADABLE_TERMS,
     WRONG_LANE,
     Refused,
 )
@@ -105,13 +122,18 @@ class Answer:
     covering_term: str | None
     #: For a not-covered answer: a key of ``findings.NOT_COVERED_REASONS``.
     reason: str | None
-    #: For a refused answer: a key of ``findings.REFUSED_TO_ANSWER``.
+    #: For a refused answer: a key of ``findings.REFUSED_TO_ANSWER``. Entry only.
     missing: str | None
     #: A key of ``findings.BARRIER_MEANINGS``, or None when nothing was answered.
     means: str | None
     detail: str
     #: ``findings.EXIT_IS_NEVER_REFUSED`` on every exit answer; None on entry.
     exit_note: str | None
+    #: A term that could not be measured and was NOT treated as satisfied
+    #: silently: names the term and why. Only a maximum stay at an exit with no
+    #: open recorded entry to measure from, today. None when everything the
+    #: answer rests on was measured.
+    unmeasured: str | None
 
 
 def access(
@@ -128,13 +150,15 @@ def access(
     require_aware(at, "at")
     if not isinstance(direction, Direction):
         raise TypeError(f"direction must be a Direction, not {direction!r}")
-    tz = zone(garage.timezone)
-    today = day_of(at, tz)
     identity = vehicle_identity.strip() if isinstance(vehicle_identity, str) else ""
     lane_name = lane.strip() if isinstance(lane, str) else ""
-    exit_note = EXIT_IS_NEVER_REFUSED if direction is Direction.EXIT else None
+    is_exit = direction is Direction.EXIT
+    exit_note = EXIT_IS_NEVER_REFUSED if is_exit else None
 
     def refused(missing: str, detail: str, pass_: Pass | None = None) -> Answer:
+        """ENTRY ONLY. No exit path reaches here -- G4's tests prove it, and
+        deliberately not an ``assert``: an assertion that fired here would be an
+        exception at an exit lane, the one thing this module may never produce."""
         return Answer(
             outcome=Outcome.REFUSED_TO_ANSWER,
             direction=direction,
@@ -148,10 +172,13 @@ def access(
             means=None,
             detail=f"{REFUSED_TO_ANSWER[missing]} {detail}".strip(),
             exit_note=exit_note,
+            unmeasured=None,
         )
 
-    def not_covered(reason: str, detail: str, pass_: Pass | None = None) -> Answer:
-        if direction is Direction.EXIT:
+    def not_covered(
+        reason: str, detail: str, pass_: Pass | None = None, unmeasured: str | None = None
+    ) -> Answer:
+        if is_exit:
             means = MEANS_EXIT_OUT_OF_TERMS
         elif garage.transient_available:
             means = MEANS_TRANSIENT_STAY
@@ -170,9 +197,10 @@ def access(
             means=means,
             detail=detail,
             exit_note=exit_note,
+            unmeasured=unmeasured,
         )
 
-    def covered(pass_: Pass, term: str) -> Answer:
+    def covered(pass_: Pass, term: str, unmeasured: str | None = None) -> Answer:
         return Answer(
             outcome=Outcome.COVERED,
             direction=direction,
@@ -186,18 +214,31 @@ def access(
             means=MEANS_COVERED,
             detail=f"covered by pass {pass_.id!r} ({pass_.label}).",
             exit_note=exit_note,
+            unmeasured=unmeasured,
         )
 
-    # --- what cannot be answered at all -----------------------------------
+    # --- what cannot be evaluated at all -------------------------------------
+    # The garage first: without a clock no day, window or range can be read.
+    if garage.unreadable is not None:
+        what = f"garage {garage.id!r}: {garage.unreadable.describe()}"
+        if is_exit:
+            return not_covered(GARAGE_UNREADABLE, what)
+        return refused(MISSING_TIMEZONE, what)
+    tz = zone(garage.timezone)
+    today = day_of(at, tz)
     if not identity:
+        if is_exit:
+            return not_covered(BLANK_IDENTITY, f"vehicle_identity is {vehicle_identity!r}.")
         return refused(MISSING_VEHICLE_IDENTITY, f"got {vehicle_identity!r}.")
     if not lane_name:
+        if is_exit:
+            return not_covered(BLANK_LANE, f"lane is {lane!r}.")
         return refused(MISSING_LANE, f"got {lane!r}.")
     # The transient mode decides what an uncovered ENTRY means. It is read
     # here, before anything else, so that a garage that has not stated it is
     # discovered at the first car and not at the first uncovered one. An EXIT
     # never reads it: see the module docstring.
-    if direction is Direction.ENTRY and garage.transient_available is None:
+    if not is_exit and garage.transient_available is None:
         return refused(MISSING_TRANSIENT_MODE, f"garage {garage.id!r}.")
 
     # --- which pass, if any -------------------------------------------------
@@ -216,11 +257,6 @@ def access(
             )
         here.append(registration)
     effective = [r for r in here if r.covers(today)]
-    if len(effective) > 1:
-        return refused(
-            MISSING_ONE_PASS,
-            "passes " + ", ".join(sorted(repr(r.pass_id) for r in effective)) + ".",
-        )
     if not effective:
         # A stated answer for an unknown identity -- never an accidental
         # refusal and never a silent pass. Where a registration exists but is
@@ -251,97 +287,141 @@ def access(
             f"no registration of {identity!r} at garage {garage.id!r} on {today}.",
         )
 
-    registration = effective[0]
-    pass_ = by_id[registration.pass_id]
-    terms = pass_.terms
-
-    # --- the state, in the order that is the contract ------------------------
-    state = effective_state(pass_, today)
-    if state == State.REVOKED.value:
-        return not_covered(REVOKED, f"pass {pass_.id!r} is revoked.", pass_)
-    if state == EXPIRED_STATE:
-        return not_covered(
-            EXPIRED, f"pass {pass_.id!r} valid_to {terms.valid_to} is before {today}.", pass_
-        )
-    if state == State.SUSPENDED.value:
-        return not_covered(SUSPENDED, f"pass {pass_.id!r} is suspended.", pass_)
-    if state in (State.DRAFT.value, State.AWAITING_ENROLMENT.value):
-        return not_covered(NOT_ACTIVE, f"pass {pass_.id!r} is {state}.", pass_)
-    if terms.valid_from is not None and today < terms.valid_from:
-        return not_covered(
-            NOT_STARTED, f"pass {pass_.id!r} valid_from {terms.valid_from} is after {today}.",
-            pass_,
-        )
-
-    # --- the terms --------------------------------------------------------------
-    if direction not in terms.directions:
-        return not_covered(
-            DIRECTION_NOT_ALLOWED,
-            f"pass {pass_.id!r} states {sorted(d.value for d in terms.directions)}, "
-            f"not {direction.value!r}.",
-            pass_,
-        )
-    if terms.allowed_lanes is not None and lane_name not in terms.allowed_lanes:
-        return not_covered(
-            WRONG_LANE,
-            f"pass {pass_.id!r} allows lanes {sorted(terms.allowed_lanes)}, not {lane_name!r}.",
-            pass_,
-        )
-
-    window: Window | None = None
-    if terms.windows:
-        weekday = iso_weekday_of(at, tz)
-        minute = minute_of_day(at, tz)
-        for candidate in terms.windows:
-            inside = candidate.start_minute <= minute < candidate.end_minute
-            if weekday in candidate.days and inside:
-                window = candidate
-                break
-        if window is None:
+    def evaluate(pass_: Pass) -> Answer:
+        """One pass, in the order that is the contract."""
+        # --- the state ------------------------------------------------------
+        if pass_.state is State.REVOKED:
+            return not_covered(REVOKED, f"pass {pass_.id!r} is revoked.", pass_)
+        if pass_.unreadable is not None:
+            # Its expiry cannot be derived (valid_to lives in the terms), so
+            # nothing below can be read. Stated, naming the pass and the field.
+            what = (
+                f"pass {pass_.id!r} ({pass_.label}) is stored with a value this module "
+                f"refuses to read -- {pass_.unreadable.describe()}"
+            )
+            if is_exit:
+                return not_covered(PASS_UNREADABLE, what, pass_)
+            return refused(UNREADABLE_TERMS, what, pass_)
+        terms = pass_.terms
+        assert terms is not None
+        state = effective_state(pass_, today)
+        if state == EXPIRED_STATE:
             return not_covered(
-                OUTSIDE_WINDOW,
-                f"{at.isoformat()} is {today} ({_day_name(weekday)}) {minute // 60:02d}:"
-                f"{minute % 60:02d} in {garage.timezone}, inside none of: "
-                + "; ".join(w.describe() for w in terms.windows) + ".",
+                EXPIRED, f"pass {pass_.id!r} valid_to {terms.valid_to} is before {today}.",
+                pass_,
+            )
+        if state == State.SUSPENDED.value:
+            return not_covered(SUSPENDED, f"pass {pass_.id!r} is suspended.", pass_)
+        if state in (State.DRAFT.value, State.AWAITING_ENROLMENT.value):
+            return not_covered(NOT_ACTIVE, f"pass {pass_.id!r} is {state}.", pass_)
+        if terms.valid_from is not None and today < terms.valid_from:
+            return not_covered(
+                NOT_STARTED,
+                f"pass {pass_.id!r} valid_from {terms.valid_from} is after {today}.",
                 pass_,
             )
 
-    covering = [terms.describe()]
-    if window is not None:
-        covering.append(f"in window {window.describe()} on {today}")
-
-    if direction is Direction.ENTRY and terms.visit_allowance is not None:
-        used, denominator = _visits_used(visits, pass_, window, at, tz)
-        allowed = terms.visit_allowance.count
-        if used >= allowed:
+        # --- the terms ----------------------------------------------------------
+        if direction not in terms.directions:
             return not_covered(
-                OUT_OF_VISITS, f"{used} of {allowed} visit(s) used; {denominator}.", pass_
-            )
-        covering.append(f"visit {used + 1} of {allowed}; {denominator}")
-
-    if direction is Direction.EXIT and terms.max_stay is not None:
-        open_visit = _open_visit(visits, pass_, identity)
-        if open_visit is None or at < open_visit.entered_at:
-            return refused(
-                MISSING_RECORDED_ENTRY,
-                f"pass {pass_.id!r}, vehicle {identity!r}, at {at.isoformat()}"
-                + (
-                    f"; the open entry is at {open_visit.entered_at.isoformat()}, later."
-                    if open_visit else "."
-                ),
+                DIRECTION_NOT_ALLOWED,
+                f"pass {pass_.id!r} states {sorted(d.value for d in terms.directions)}, "
+                f"not {direction.value!r}.",
                 pass_,
             )
-        stayed = elapsed(open_visit.entered_at, at)
-        if stayed > terms.max_stay:
+        if terms.allowed_lanes is not None and lane_name not in terms.allowed_lanes:
             return not_covered(
-                OVER_MAX_STAY,
-                f"entered {open_visit.entered_at.isoformat()}, exiting {at.isoformat()}: "
-                f"{stayed} elapsed, more than {terms.max_stay}.",
+                WRONG_LANE,
+                f"pass {pass_.id!r} allows lanes {sorted(terms.allowed_lanes)}, "
+                f"not {lane_name!r}.",
                 pass_,
             )
-        covering.append(f"stayed {stayed} of at most {terms.max_stay}")
 
-    return covered(pass_, "; ".join(covering))
+        window: Window | None = None
+        if terms.windows:
+            weekday = iso_weekday_of(at, tz)
+            minute = minute_of_day(at, tz)
+            for candidate in terms.windows:
+                inside = candidate.start_minute <= minute < candidate.end_minute
+                if weekday in candidate.days and inside:
+                    window = candidate
+                    break
+            if window is None:
+                return not_covered(
+                    OUTSIDE_WINDOW,
+                    f"{at.isoformat()} is {today} ({_day_name(weekday)}) {minute // 60:02d}:"
+                    f"{minute % 60:02d} in {garage.timezone}, inside none of: "
+                    + "; ".join(w.describe() for w in terms.windows) + ".",
+                    pass_,
+                )
+
+        covering = [terms.describe()]
+        if window is not None:
+            covering.append(f"in window {window.describe()} on {today}")
+
+        if not is_exit and terms.visit_allowance is not None:
+            used, denominator = _visits_used(visits, pass_, window, at, tz)
+            allowed = terms.visit_allowance.count
+            if used >= allowed:
+                return not_covered(
+                    OUT_OF_VISITS, f"{used} of {allowed} visit(s) used; {denominator}.", pass_
+                )
+            covering.append(f"visit {used + 1} of {allowed}; {denominator}")
+
+        unmeasured: str | None = None
+        if is_exit and terms.max_stay is not None:
+            open_visit = _open_visit(visits, pass_, identity)
+            if open_visit is None or at < open_visit.entered_at:
+                # UNMEASURED, and said so by name -- never treated as satisfied
+                # silently, never a refusal: the exit is answered on the terms
+                # that can be evaluated and the lane is told what was not.
+                unmeasured = (
+                    f"max_stay {terms.max_stay} of pass {pass_.id!r} could not be measured for "
+                    f"vehicle {identity!r} at {at.isoformat()}: "
+                    + (
+                        f"the open recorded entry is at {open_visit.entered_at.isoformat()}, "
+                        "later than this exit."
+                        if open_visit else
+                        "no open recorded entry of this vehicle on this pass."
+                    )
+                )
+                covering.append("max stay UNMEASURED (see unmeasured)")
+            else:
+                stayed = elapsed(open_visit.entered_at, at)
+                if stayed > terms.max_stay:
+                    return not_covered(
+                        OVER_MAX_STAY,
+                        f"entered {open_visit.entered_at.isoformat()}, exiting "
+                        f"{at.isoformat()}: {stayed} elapsed, more than {terms.max_stay}.",
+                        pass_,
+                    )
+                covering.append(f"stayed {stayed} of at most {terms.max_stay}")
+
+        return covered(pass_, "; ".join(covering), unmeasured)
+
+    if len(effective) == 1:
+        return evaluate(by_id[effective[0].pass_id])
+
+    # More than one pass holds the vehicle today -- a state this module refuses
+    # to create (one car, one pass per garage) and the database's EXCLUDE
+    # backstops; it was handed in or written raw. At an ENTRY the call will
+    # not pick one. At an EXIT every one is evaluated: the vehicle is covered
+    # if any of them covers it, and the inconsistency is named either way,
+    # because the holder who does have a covering pass gets out on it and the
+    # operator has to be able to see the corruption.
+    named = ", ".join(sorted(repr(r.pass_id) for r in effective))
+    if not is_exit:
+        return refused(MISSING_ONE_PASS, f"passes {named}.")
+    answers = [evaluate(by_id[r.pass_id]) for r in effective]
+    inconsistency = (
+        f" INCONSISTENT: {identity!r} is registered on {len(effective)} passes at once "
+        f"({named}), which one car, one pass forbids; every one was evaluated."
+    )
+    for answer in answers:
+        if answer.outcome is Outcome.COVERED:
+            return replace(answer, detail=answer.detail + inconsistency)
+    first = answers[0]
+    return replace(first, detail=first.detail + inconsistency)
 
 
 def _day_name(weekday: int) -> str:
@@ -356,6 +436,7 @@ def _visits_used(
     """How many recorded entries count against the allowance, and the sentence
     that names the denominator -- what was counted, on what, over what."""
     on_pass = [v for v in visits if v.pass_id == pass_.id]
+    assert pass_.terms is not None
     allowance = pass_.terms.visit_allowance
     assert allowance is not None
     if allowance.per is AllowancePeriod.LIFE:
