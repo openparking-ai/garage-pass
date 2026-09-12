@@ -1104,6 +1104,37 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
         "database's ForeignKeyViolation again -- which the generic mapping now renders as "
         "a configuration sentence, exit 2, instead of the refusal by name, exit 3",
     ),
+    # --- the exit that the document boundary refused (V1) ---------------------------
+    "G4/exit-document-refuses": (
+        G18, "cli.py",
+        "    if direction is not Direction.EXIT:\n        return access(",
+        "    if True:  # PLANTED: the exit takes the entry's path; a bad document REFUSES\n"
+        "        return access(",
+        "a document the module cannot read is a refusal at an EXIT again, exit 3 and no "
+        "outcome -- chat's six probes, six refusals; the red must name the exit that went "
+        "unanswered",
+    ),
+    "G4/exit-records-raise": (
+        G18, "access.py",
+        "    named = \"; \".join(u.describe() for u in unreadable)\n    return Answer(",
+        "    named = \"; \".join(u.describe() for u in unreadable)\n"
+        "    from garage_pass.findings import REFUSAL_FIELD_BLANK, Refused  # PLANTED\n"
+        "    raise Refused(REFUSAL_FIELD_BLANK, unreadable[0].field, named)  # PLANTED\n"
+        "    return Answer(",
+        "the exit on an unreadable registration or visit is a Refused again -- rendered "
+        "as exit 3 by the boundary -- instead of the not-covered answer",
+    ),
+    "G4/carrier-not-built": (
+        G18, "documents.py",
+        "        names = CARRIER_FIELDS.get(cls)\n"
+        "        if not names or not isinstance(document, dict):",
+        "        names = None  # PLANTED: no pass or garage document is ever a carrier\n"
+        "        if not names or not isinstance(document, dict):",
+        "a pass document the module cannot read is no longer the unreadable pass a stored "
+        "row becomes: it is RECORD_UNREADABLE even when the car is on ANOTHER, readable "
+        "pass, and the parity with the store is gone (an unreadable pass is an unreadable "
+        "pass, A1.2)",
+    ),
     "G12/garage-who-why": (
         G12, "store/records.py",
         source(

@@ -9,8 +9,12 @@ Exit status: 0 covered, 1 not covered, 2 refused to answer OR the machine's
 configuration (a sentence on stderr: no DSN, a database that does not connect
 or is not migrated, a role without its grants, no timezone database), 3 the
 request was refused (a contradiction, a bad document, a field of the wrong
-type, an unknown timezone, a malformed instant or day). The answer is printed
-as JSON, and there is no money in it.
+type, an unknown timezone, a malformed instant or day). At an EXIT a document
+that is JSON but cannot be read is not refused but answered not-covered naming
+the field, exit 1 -- the module answers when it holds a record whose content it
+cannot read, and refuses when it holds no record at all (a file missing or not
+JSON) or no instant (``_access_from_documents``). The answer is printed as
+JSON, and there is no money in it.
 
 Against the store (``GARAGE_PASS_DSN``, ``--tenant``): ``create-garage``,
 ``set-garage-timezone`` (the repair for a garage stored with a timezone the
@@ -64,9 +68,10 @@ from enum import Enum
 from typing import Any
 from uuid import UUID
 
-from garage_pass.access import Outcome, access
+from garage_pass.access import Answer, Outcome, access, exit_on_unreadable_records
 from garage_pass.documents import (
     load_garage,
+    load_or_degrade,
     load_pass,
     load_registration,
     load_visit,
@@ -76,8 +81,11 @@ from garage_pass.findings import (
     REFUSAL_DOCUMENT_UNREADABLE,
     REFUSAL_FIELD_BLANK,
     Refused,
+    Unreadable,
 )
+from garage_pass.garage import Garage
 from garage_pass.localday import TimezoneDatabaseUnavailable
+from garage_pass.passes import Pass, Registration, Visit
 from garage_pass.states import parse_state
 from garage_pass.terms import Direction
 
@@ -179,6 +187,59 @@ def _movement(s: argparse.ArgumentParser) -> None:
 
 
 # ---- the boundary: what the libraries raise, rendered as refusals ----------
+
+
+def _access_from_documents(args: argparse.Namespace) -> Answer:
+    """The access answer from documents. THE LINE: the module answers when it
+    holds a record whose content it cannot read; it refuses when it holds no
+    record at all, or no instant to read it at. So the instant (``--at``) and
+    the files (missing, not JSON) refuse in both directions; a document that IS
+    JSON but cannot be read as a garage, pass, registration or visit is refused
+    at an ENTRY and ANSWERED at an EXIT -- degraded the way a stored row with
+    the same content is (``documents.load_or_degrade``), so a pass or garage
+    document becomes the unreadable carrier ``access`` already answers on, and
+    a registration, a visit or a carrier that cannot be built is the
+    not-covered answer ``exit_on_unreadable_records`` states. Measured before
+    this: the same six documents refused at an exit and answered from the
+    store."""
+    direction = Direction(args.direction)
+    at = _at(args.at)
+    garage_document = _document(args.garage, "--garage")
+    pass_documents = [_document(p, "--pass") for p in args.passes]
+    if direction is not Direction.EXIT:
+        return access(
+            garage=load_garage(garage_document),
+            passes=[load_pass(d) for d in pass_documents],
+            registrations=[load_registration(r)
+                           for r in _list(args.registrations, "--registrations")]
+            if args.registrations else [],
+            visits=[load_visit(v) for v in _list(args.visits, "--visits")] if args.visits else [],
+            vehicle_identity=args.vehicle, lane=args.lane, direction=direction, at=at,
+        )
+    loaded: list[Any] = [load_or_degrade(Garage, garage_document, "garage")]
+    loaded += [load_or_degrade(Pass, d, "pass") for d in pass_documents]
+    for option, cls, what in (("registrations", Registration, "registration"),
+                              ("visits", Visit, "visit")):
+        path = getattr(args, option)
+        if not path:
+            continue
+        document = _document(path, f"--{option}")
+        if not isinstance(document, list):
+            loaded.append(Unreadable(REFUSAL_FIELD_BLANK, f"--{option}",
+                                     f"--{option} {path!r} must be a JSON list, not "
+                                     f"{type(document).__name__}."))
+            continue
+        loaded += [load_or_degrade(cls, entry, f"{what}[{i}]") for i, entry in enumerate(document)]
+    unreadable = [u for u in loaded if isinstance(u, Unreadable)]
+    if unreadable:
+        return exit_on_unreadable_records(unreadable, vehicle_identity=args.vehicle, lane=args.lane)
+    return access(
+        garage=loaded[0],
+        passes=[p for p in loaded if isinstance(p, Pass)],
+        registrations=[r for r in loaded if isinstance(r, Registration)],
+        visits=[v for v in loaded if isinstance(v, Visit)],
+        vehicle_identity=args.vehicle, lane=args.lane, direction=direction, at=at,
+    )
 
 
 def _at(text: str, option: str = "--at") -> datetime:
@@ -326,18 +387,7 @@ def _run(args: argparse.Namespace) -> int:
         return 0
 
     if args.command == "access":
-        answer = access(
-            garage=load_garage(_document(args.garage, "--garage")),
-            passes=[load_pass(_document(p, "--pass")) for p in args.passes],
-            registrations=[load_registration(r)
-                           for r in _list(args.registrations, "--registrations")]
-            if args.registrations else [],
-            visits=[load_visit(v) for v in _list(args.visits, "--visits")] if args.visits else [],
-            vehicle_identity=args.vehicle,
-            lane=args.lane,
-            direction=Direction(args.direction),
-            at=_at(args.at),
-        )
+        answer = _access_from_documents(args)
         _print(answer)
         return EXIT_BY_OUTCOME[answer.outcome]
 

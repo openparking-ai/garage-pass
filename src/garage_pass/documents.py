@@ -30,6 +30,21 @@ document key spells its unit -- ``Terms.max_stay`` is ``max_stay_minutes``) and
 ``null`` is refused naming it. A field with a default may be absent, and ``null``
 where the declared type admits it means what the dataclass says it means
 (``Garage.transient_available``: unstated).
+
+**AT AN EXIT, A RECORD WHOSE CONTENT CANNOT BE READ IS ANSWERED, NOT REFUSED.**
+The module answers when it holds a record whose content it cannot read; it
+refuses when it holds no record at all, or no instant to read it at. That is
+the store's line -- a stored row with bad content degrades to an UNREADABLE
+pass or garage and the exit is answered naming it (``records._pass_from_row``,
+``garage.garage_from_stored``) -- and ``load_or_degrade`` is the same line at
+this door: a pass or garage document that refuses becomes the same carrier a
+stored row would, when its carrier fields can be read (``CARRIER_FIELDS``); a
+registration or visit document, or a pass or garage too malformed to carry the
+marker, becomes the bare ``Unreadable`` and the exit is answered not-covered
+naming the document and the field. Measured before this: six malformed
+documents at an exit were six refusals, exit 3, no outcome -- the thing G4
+forbids -- while the identical content from the store answered. At an entry
+every one of them is still refused by name.
 """
 
 from __future__ import annotations
@@ -222,6 +237,23 @@ def _value(value: Any, hint: Any, field: str, unit: str | None = None) -> Any:
     _refuse_wrong_type(field, hint, value)  # pragma: no cover
 
 
+_DEFAULT = object()
+
+
+def _field_value(f: DocumentField, d: dict, what: str) -> Any:
+    """One field's value from the document: converted and checked, or
+    ``_DEFAULT`` when absent and the dataclass has a default for it."""
+    value = d.get(f.key)
+    field = f"{what}.{f.key}"
+    if value is None:
+        if f.required:
+            raise Refused(REFUSAL_FIELD_BLANK, field, f"{field} is required.")
+        if f.key in d and type(None) not in arms(f.hint):
+            _refuse_wrong_type(field, f.hint, value)
+        return _DEFAULT  # the dataclass's own default
+    return _value(value, f.hint, field, f.unit)
+
+
 def load(cls: type, document: Any, what: str) -> Any:
     """A document as an instance of ``cls`` -- every key known, every value of
     its declared type, then the dataclass's own validation (contradictions,
@@ -229,16 +261,60 @@ def load(cls: type, document: Any, what: str) -> Any:
     d = _only(document, keys_of(cls), what)
     kwargs: dict[str, Any] = {}
     for f in document_fields(cls):
-        value = d.get(f.key)
-        field = f"{what}.{f.key}"
-        if value is None:
-            if f.required:
-                raise Refused(REFUSAL_FIELD_BLANK, field, f"{field} is required.")
-            if f.key in d and type(None) not in arms(f.hint):
-                _refuse_wrong_type(field, f.hint, value)
-            continue  # the dataclass's own default
-        kwargs[f.name] = _value(value, f.hint, field, f.unit)
+        value = _field_value(f, d, what)
+        if value is not _DEFAULT:
+            kwargs[f.name] = value
     return cls(**kwargs)
+
+
+#: The fields a document must yield READABLE for a Pass or a Garage to carry
+#: its refusal the way a stored row does: without them there is no object to
+#: hold the marker, and the exit is answered on the bare marker instead.
+CARRIER_FIELDS: dict[type, tuple[str, ...]] = {
+    Pass: ("id", "garage_id", "label", "state"),
+    Garage: ("id", "timezone", "transient_available"),
+}
+
+
+def load_or_degrade(cls: type, document: Any, what: str) -> Any:
+    """``load``, and where it refuses, the refusal DEGRADED instead of raised
+    -- for an EXIT, which is answered on any record the module holds.
+
+    Returns the loaded value; or, for a pass or garage whose carrier fields
+    read, the same UNREADABLE carrier a stored row with that content becomes
+    (``Pass(unreadable=...)``, ``Garage(unreadable=...)``), so ``access``
+    answers PASS_UNREADABLE / GARAGE_UNREADABLE exactly as it does for the
+    store; or the bare ``Unreadable`` naming the document and the field, for a
+    registration, a visit, or a carrier that cannot be built. The set of
+    refusals this covers is not listed: it is every ``Refused`` the load
+    raises, from the type checks and from the dataclasses' own validators.
+    """
+    try:
+        return load(cls, document, what)
+    except Refused as refusal:
+        marker = refusal.as_unreadable()
+        names = CARRIER_FIELDS.get(cls)
+        if not names or not isinstance(document, dict):
+            return marker
+        kwargs: dict[str, Any] = {}
+        try:
+            for f in document_fields(cls):
+                if f.name in names:
+                    value = _field_value(f, document, what)
+                    if value is not _DEFAULT:
+                        kwargs[f.name] = value
+            # every other required field is the unreadable part, carried as None
+            # -- the shape the store builds (holder=None, terms=None)
+            for fld in dataclasses.fields(cls):
+                if fld.name not in kwargs and fld.name != "unreadable" and (
+                    fld.default is dataclasses.MISSING
+                    and fld.default_factory is dataclasses.MISSING
+                ):
+                    kwargs[fld.name] = None
+            carrier = cls(**kwargs, unreadable=marker)
+        except Refused:
+            return marker  # the carrier's own fields are what cannot be read
+        return carrier
 
 
 def load_garage(document: Any) -> Garage:

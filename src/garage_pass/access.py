@@ -55,9 +55,14 @@ name: a machine with no timezone database at all
 (``TimezoneDatabaseUnavailable``), on which nothing can be read. A garage
 carrying a zone this system does not carry cannot be constructed
 (``Garage.__post_init__`` refuses it), and neither can a registration or a
-visit with a wrong-typed field (``typed.require_typed``), so an exit at such a
-garage or on such data is not a path that exists; a STORED garage the system
-cannot read loads unreadable and answers, above. A pass handed in twice under
+visit with a wrong-typed field (``typed.require_typed``) -- through the pure
+API. THE MODULE ANSWERS WHEN IT HOLDS A RECORD WHOSE CONTENT IT CANNOT READ,
+and refuses only when it holds no record at all, or no instant: a STORED row it
+cannot read loads unreadable and answers, above; a DOCUMENT it cannot read is
+answered at an exit the same way (``documents.load_or_degrade`` builds the
+same carrier a stored row becomes, or ``exit_on_unreadable_records`` below
+states the not-covered answer for a registration, a visit, or a carrier that
+cannot be built) and refused by name at an entry. A pass handed in twice under
 one id is inconsistent data like the dangling registration: never resolved by
 order, every copy evaluated, the duplication named.
 
@@ -105,11 +110,13 @@ from garage_pass.findings import (
     PASS_DUPLICATED,
     PASS_NOT_HANDED_IN,
     PASS_UNREADABLE,
+    RECORD_UNREADABLE,
     REFUSED_TO_ANSWER,
     REVOKED,
     SUSPENDED,
     UNREADABLE_TERMS,
     WRONG_LANE,
+    Unreadable,
 )
 from garage_pass.garage import Garage
 from garage_pass.localday import (
@@ -593,6 +600,44 @@ def _require_inputs(
     for name, value in (("vehicle_identity", vehicle_identity), ("lane", lane)):
         if not isinstance(value, str):
             raise TypeError(f"{name} must be text, not {value!r}")
+
+
+def exit_on_unreadable_records(
+    unreadable: Sequence[Unreadable], *, vehicle_identity: str, lane: str
+) -> Answer:
+    """THE EXIT ANSWER WHEN A RECORD HANDED IN CANNOT BE READ. The module holds
+    the record -- a registration or visit document, or a pass or garage document
+    too malformed to carry its refusal the way a stored row does -- and cannot
+    read its content, so the exit is ANSWERED: not-covered, RECORD_UNREADABLE,
+    naming every document and field, with the exit note and the OUT-OF-TERMS
+    meaning every exit answer carries. Never a refusal, never an exception.
+    Exit only: at an entry the same document is refused by name (the command
+    line does that; this is not called). Measured before this: six malformed
+    documents at an exit were six refusals with no outcome."""
+    if not isinstance(vehicle_identity, str) or not isinstance(lane, str):
+        raise TypeError("vehicle_identity and lane must be text")
+    if not unreadable or not all(isinstance(u, Unreadable) for u in unreadable):
+        raise TypeError("unreadable must be one or more Unreadable markers")
+    named = "; ".join(u.describe() for u in unreadable)
+    return Answer(
+        outcome=Outcome.NOT_COVERED,
+        direction=Direction.EXIT,
+        vehicle_identity=vehicle_identity.strip(),
+        lane=lane.strip(),
+        pass_id=None,
+        pass_label=None,
+        covering_term=None,
+        reason=RECORD_UNREADABLE,
+        missing=None,
+        means=MEANS_EXIT_OUT_OF_TERMS,
+        detail=(
+            f"{len(unreadable)} record(s) handed in with this exit could not be read as what "
+            f"they claim to be, so the vehicle cannot be matched to a pass: {named} "
+            "Answered not-covered, never refused."
+        ),
+        exit_note=EXIT_IS_NEVER_REFUSED,
+        unmeasured=None,
+    )
 
 
 def _day_name(weekday: int) -> str:

@@ -20,8 +20,9 @@ on stderr: no DSN, a database that does not connect or is not migrated, a role
 without its grants, no timezone database), 3 the request was refused — and a
 refusal is always the JSON `{"refused", "field", "detail"}`, never a traceback:
 a mistyped timezone, a document that is not JSON, an instant without an offset,
-a day that does not parse, and a field of the wrong type are each refused naming
-the field and the value. **Every value a document carries is checked against
+a day that does not parse, and — at an entry — a field of the wrong type are each
+refused naming the field and the value; at an exit a document the module cannot
+read is answered not-covered naming the field, because an exit is never refused. **Every value a document carries is checked against
 the type the dataclass it loads into declares** — derived from the annotation,
 not from a list, so a field added later is covered the day it is added — and a
 string is never reinterpreted as a list of its characters. What the database
@@ -142,10 +143,21 @@ before there is a movement to answer about, and never answers (the test
 enumerates the signature and hands every parameter a wrong-typed value); and a
 machine with no timezone database at all raises by its own name, never as an
 unknown zone, because nothing can be read on it. Neither is a term, a state, a
-revocation or data. A garage carrying a zone the system does not carry cannot
-be constructed at all, and neither can a registration or a visit with a
-wrong-typed field; a stored garage the system cannot read loads unreadable and
-answers.
+revocation or data.
+
+**The module answers when it holds a record whose content it cannot read, and
+refuses when it holds no record at all, or no instant to read it at.** A stored
+row it cannot read loads unreadable and answers; a document it cannot read — a
+field missing, of the wrong type or unknown, a contradiction, an unknown zone —
+is answered at an exit the same way: a pass or garage document degrades to the
+unreadable pass or garage a stored row becomes, a registration or visit
+document to a not-covered answer naming the document and the field. At an entry
+the same document is refused by name. A file that is missing or is not JSON,
+and an instant that does not parse, are refused in both directions: there is no
+record, or no now. (A missing file breaks the integrator's own invocation at
+every lane in both directions — an outage of the integration, not a wrong
+answer; a malformed record breaks one parker while everything else works, and
+that is the car that must not be stuck.)
 
 ### What not-covered means depends on the garage
 

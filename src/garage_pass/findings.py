@@ -316,6 +316,7 @@ BLANK_IDENTITY = "BLANK_IDENTITY"
 BLANK_LANE = "BLANK_LANE"
 PASS_NOT_HANDED_IN = "PASS_NOT_HANDED_IN"
 PASS_DUPLICATED = "PASS_DUPLICATED"
+RECORD_UNREADABLE = "RECORD_UNREADABLE"
 
 NOT_COVERED_REASONS: dict[str, str] = {
     NO_PASS: (
@@ -394,6 +395,21 @@ NOT_COVERED_REASONS: dict[str, str] = {
         "reason, with each copy's own reason in the detail. (At an entry the call "
         "refuses to answer, naming the id.) The store cannot produce this: one id, one "
         "pass, per garage."
+    ),
+    RECORD_UNREADABLE: (
+        "A record handed in with the call at an EXIT cannot be read as what it claims to "
+        "be -- a registration or a visit document with a field missing, of the wrong "
+        "type or unknown, or a pass or garage document too malformed to carry the marker "
+        "a stored row would (its id, garage, label or state unreadable). The module holds "
+        "the record and cannot read its content, so the exit is ANSWERED, never refused: "
+        "not-covered, naming the document and the field so the integrator can find it, "
+        "with the exit note and the OUT-OF-TERMS meaning every exit answer carries -- at "
+        "a transient garage chargeable, said so. A pass or garage document whose carrier "
+        "fields read is not this: it degrades to the unreadable pass or garage a stored "
+        "row becomes, and answers PASS_UNREADABLE or GARAGE_UNREADABLE only if the "
+        "vehicle is on it. (At an entry the same document is refused by name. The module "
+        "refuses only when it holds no record at all -- a file that is missing or is not "
+        "JSON -- or no instant to read it at.)"
     ),
 }
 

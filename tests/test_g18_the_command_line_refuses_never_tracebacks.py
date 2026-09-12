@@ -802,3 +802,268 @@ def test_create_garage_for_a_tenant_nobody_seeded_is_the_json_refusal_not_the_fo
         cursor.execute("SELECT count(*) FROM garages WHERE tenant_id = %s", (nobody,))
         assert cursor.fetchone() == (0,)
     app.rollback()
+
+
+# ---------------------------------------------------------------------------
+# THE EXIT THAT THE DOCUMENT BOUNDARY USED TO REFUSE (V1). The line: the module
+# answers when it holds a record whose content it cannot read; it refuses when
+# it holds no record at all, or no instant to read it at.
+# ---------------------------------------------------------------------------
+
+EXIT = ["--vehicle", "CAR-1", "--lane", "L1", "--direction", "exit",
+        "--at", "2026-06-01T12:00:00-06:00"]
+
+
+def _either_way(
+    argv_without_direction: list[str], capsys
+) -> tuple[tuple[int, dict], tuple[int, dict]]:
+    """The same call at an ENTRY and at an EXIT: ((status, printed), (status, printed))."""
+    common = argv_without_direction
+    entry = run([*common, "--vehicle", "CAR-1", "--lane", "L1", "--direction", "entry",
+                 "--at", "2026-06-01T12:00:00-06:00"], capsys)
+    exit_ = run([*common, "--vehicle", "CAR-1", "--lane", "L1", "--direction", "exit",
+                 "--at", "2026-06-01T12:00:00-06:00"], capsys)
+    return entry, exit_
+
+
+def _assert_exit_answered(status: int, printed: dict, reason: str, *names: str) -> None:
+    assert status == 1 and printed.get("outcome") == "not_covered", (
+        f"the exit went UNANSWERED: exit {status}, {printed}"
+    )
+    assert printed["reason"] == reason, printed
+    assert printed["exit_note"] == f.EXIT_IS_NEVER_REFUSED
+    assert printed["means"] == f.MEANS_EXIT_OUT_OF_TERMS
+    for name in names:
+        assert name in printed["detail"], (name, printed["detail"])
+
+
+def _assert_entry_refused(status: int, printed: dict, code: str) -> None:
+    assert status == EXIT_REFUSED_REQUEST and printed.get("refused") == code, printed
+
+
+@pytest.mark.guarantee("G4")
+def test_a_document_the_module_cannot_read_is_answered_at_an_exit_and_refused_at_an_entry(
+    tmp_path, capsys
+):
+    """THE SIX PROBES, both directions, the well-formed exit as the control in
+    the same run. Measured before this: six exits, six refusals, no outcome --
+    while the identical content from the STORE answered (a stored row with bad
+    content degrades to an unreadable pass or garage, G17). The document door
+    now takes the same path: a pass or garage document that refuses becomes
+    the carrier a stored row would (PASS_UNREADABLE / GARAGE_UNREADABLE); a
+    registration document that refuses is the ledger the module cannot read
+    (RECORD_UNREADABLE). At an entry every one is still refused by name."""
+    garage, pass_ = _documents(tmp_path)
+    good = _write(tmp_path, "r.json", [REGISTRATION])
+    base = ["access", "--garage", str(garage), "--pass", str(pass_), "--registrations", str(good)]
+    entry, exit_ = _either_way(base, capsys)
+    assert entry[1]["outcome"] == "covered" and exit_[1]["outcome"] == "covered", "the control"
+    # three registration documents
+    for name, broken, code in (
+        ("missing", {k: v for k, v in REGISTRATION.items() if k != "vehicle_identity"},
+         f.REFUSAL_FIELD_BLANK),
+        ("null", {**REGISTRATION, "vehicle_identity": None}, f.REFUSAL_FIELD_BLANK),
+        ("1234", {**REGISTRATION, "vehicle_identity": 1234}, f.REFUSAL_FIELD_WRONG_TYPE),
+    ):
+        bad = _write(tmp_path, f"r_{name}.json", [broken])
+        entry, exit_ = _either_way(["access", "--garage", str(garage), "--pass", str(pass_),
+                                    "--registrations", str(bad)], capsys)
+        _assert_entry_refused(*entry, code)
+        _assert_exit_answered(*exit_, f.RECORD_UNREADABLE, "registration[0].vehicle_identity")
+    # two pass documents: the carrier, so the pass's own reason
+    for value in (5, "L1"):
+        bad = _write(tmp_path, "p_lanes.json",
+                     pass_document(terms={**pass_document()["terms"], "allowed_lanes": value}))
+        entry, exit_ = _either_way(["access", "--garage", str(garage), "--pass", str(bad),
+                                    "--registrations", str(good)], capsys)
+        _assert_entry_refused(*entry, f.REFUSAL_FIELD_WRONG_TYPE)
+        _assert_exit_answered(*exit_, f.PASS_UNREADABLE, "'pass-1'", "allowed_lanes", repr(value))
+        assert exit_[1]["pass_id"] == "pass-1"
+    # the garage document: the carrier, so the garage's own reason
+    (tmp_path / "tz").mkdir()
+    badtz, _ = _documents(tmp_path / "tz", timezone="Mars/Olympus")
+    entry, exit_ = _either_way(["access", "--garage", str(badtz), "--pass", str(pass_),
+                                "--registrations", str(good)], capsys)
+    _assert_entry_refused(*entry, f.REFUSAL_TIMEZONE_UNKNOWN)
+    _assert_exit_answered(*exit_, f.GARAGE_UNREADABLE, "Mars/Olympus", "garage.timezone")
+
+
+@pytest.mark.guarantee("G4")
+def test_the_carrier_rule_and_store_parity_at_an_exit(tmp_path, capsys):
+    """A pass document whose carrier fields (id, garage_id, label, state) READ
+    degrades to the unreadable pass a stored row becomes and answers only if
+    the vehicle is on it; one whose carrier fields cannot be read has no object
+    to hold the marker and is RECORD_UNREADABLE naming the field (A1.3). A
+    registrations document that is JSON but not a list is a record whose
+    content cannot be read; a registration entry that is a number, the same."""
+    garage, pass_ = _documents(tmp_path)
+    good = _write(tmp_path, "r.json", [REGISTRATION])
+    other = _write(tmp_path, "p9.json", pass_document(id="pass-9"))
+    # the car is on pass-9, readable; pass-1 is unreadable: covered by pass-9, parity with the store
+    bad = _write(tmp_path, "p_bad.json", pass_document(holder={"email": "no-at-sign"}))
+    on_nine = _write(tmp_path, "r9.json", [{**REGISTRATION, "pass_id": "pass-9"}])
+    both = ["access", "--garage", str(garage), "--pass", str(bad), "--pass", str(other)]
+    status, printed = run([*both, "--registrations", str(on_nine), *EXIT], capsys)
+    assert status == 0 and printed["outcome"] == "covered", printed
+    assert printed["pass_id"] == "pass-9", printed
+    # the car is on pass-1, the unreadable one: PASS_UNREADABLE naming the field
+    status, printed = run([*both, "--registrations", str(good), *EXIT], capsys)
+    _assert_exit_answered(status, printed, f.PASS_UNREADABLE, "'pass-1'", "holder.email")
+    # a contradiction in the terms: the carrier too (a raw row failing check_terms is the same)
+    contradiction = Path("tests/documents/pass_contradiction.json").resolve()
+    on_it = _write(tmp_path, "rc.json", [{**REGISTRATION, "pass_id": "pass-contradiction"}])
+    entry, exit_ = _either_way(["access", "--garage", str(garage), "--pass", str(contradiction),
+                                "--registrations", str(on_it)], capsys)
+    _assert_entry_refused(*entry, f.REFUSAL_VALID_TO_BEFORE_VALID_FROM)
+    _assert_exit_answered(*exit_, f.PASS_UNREADABLE, "'pass-contradiction'", "valid_to")
+    # the carrier cannot be built: id, state
+    for name, document, field in (
+        ("id5", pass_document(id=5), "pass.id"),
+        ("state", pass_document(state="frozen"), "state"),
+        ("label", pass_document(label=None), "pass.label"),
+    ):
+        broken = _write(tmp_path, f"p_{name}.json", document)
+        entry, exit_ = _either_way(["access", "--garage", str(garage), "--pass", str(broken),
+                                    "--registrations", str(good)], capsys)
+        assert entry[0] == EXIT_REFUSED_REQUEST
+        _assert_exit_answered(*exit_, f.RECORD_UNREADABLE, field)
+    # the garage's carrier cannot be built
+    g5 = _write(tmp_path, "g5.json",
+                {"id": 5, "timezone": "America/Denver", "transient_available": True})
+    entry, exit_ = _either_way(["access", "--garage", str(g5), "--pass", str(pass_),
+                                "--registrations", str(good)], capsys)
+    _assert_entry_refused(*entry, f.REFUSAL_FIELD_WRONG_TYPE)
+    _assert_exit_answered(*exit_, f.RECORD_UNREADABLE, "garage.id")
+    # a registrations document that is JSON but not a list; an entry that is a number
+    not_list = _write(tmp_path, "rd.json", {"pass_id": "pass-1"})
+    entry, exit_ = _either_way(["access", "--garage", str(garage), "--pass", str(pass_),
+                                "--registrations", str(not_list)], capsys)
+    _assert_entry_refused(*entry, f.REFUSAL_FIELD_BLANK)
+    _assert_exit_answered(*exit_, f.RECORD_UNREADABLE, "--registrations")
+    number = _write(tmp_path, "rn.json", [7])
+    entry, exit_ = _either_way(["access", "--garage", str(garage), "--pass", str(pass_),
+                                "--registrations", str(number)], capsys)
+    _assert_entry_refused(*entry, f.REFUSAL_FIELD_BLANK)
+    _assert_exit_answered(*exit_, f.RECORD_UNREADABLE, "registration[0]")
+    # more than one unreadable record: every one named
+    two = _write(tmp_path, "r2.json",
+                 [{**REGISTRATION, "vehicle_identity": 1}, {**REGISTRATION, "pass_id": []}])
+    status, printed = run(["access", "--garage", str(garage), "--pass", str(pass_),
+                           "--registrations", str(two), *EXIT], capsys)
+    _assert_exit_answered(status, printed, f.RECORD_UNREADABLE, "2 record(s)",
+                          "registration[0].vehicle_identity", "registration[1].pass_id")
+
+
+#: What the module REFUSES in both directions: no record at all, or no instant.
+NO_RECORD_OR_NO_INSTANT = ["missing --garage file", "--garage not JSON",
+                           "missing --registrations file", "--at naive", "--at malformed"]
+
+
+@pytest.mark.guarantee("G4")
+def test_every_malformed_case_reads_entry_refuses_and_exit_answers_or_both_refuse(tmp_path, capsys):
+    """A1.1's CONTROL: every malformed case the census knows, classified BOTH
+    ways in one run. Each must read (entry refuses, exit answers) -- a record
+    the module holds and cannot read -- or (entry refuses, exit refuses) -- no
+    record at all, or no instant. Which bucket a case belongs to is derived
+    from the principle, not from a list of readings: the no-record cases are
+    the files and the instant, named once above; EVERYTHING ELSE is content.
+    Any (entry answers, ...) or a content case reading (..., exit refuses) is
+    a defect. The counts are printed for the receipt."""
+    garage, pass_ = _documents(tmp_path)
+    good = _write(tmp_path, "r.json", [REGISTRATION])
+    cases: dict[str, list[str]] = {}
+    for which, key, value, _code in WRONG_TYPED_DOCUMENTS:
+        base = {"garage": json.loads(garage.read_text()), "pass": json.loads(pass_.read_text()),
+                "registration": REGISTRATION, "visit": VISIT}[which]
+        broken = _with(base, key, value)
+        label = f"{which}.{key}={'ABSENT' if value is ... else value!r}"
+        if which in ("registration", "visit"):
+            path = _write(tmp_path, f"c_{len(cases)}.json", [broken])
+            cases[label] = ["access", "--garage", str(garage), "--pass", str(pass_),
+                            "--registrations", str(good), f"--{which}s", str(path)]
+        else:
+            path = _write(tmp_path, f"c_{len(cases)}.json", broken)
+            g, p = (str(path), str(pass_)) if which == "garage" else (str(garage), str(path))
+            cases[label] = ["access", "--garage", g, "--pass", p, "--registrations", str(good)]
+    # the dataclasses' own validators, and the shapes of the ledger documents
+    for label, document in (
+        ("pass: a contradiction (valid_to < valid_from)",
+         Path("tests/documents/pass_contradiction.json").resolve()),
+        ("pass: holder email malformed",
+         _write(tmp_path, "he.json", pass_document(holder={"email": "x"}))),
+        ("pass: unknown field", _write(tmp_path, "uf.json", pass_document(colour="red"))),
+        ("pass: a store-only field in the document",
+         _write(tmp_path, "so.json", pass_document(unreadable="x"))),
+        ("pass: document is a list", _write(tmp_path, "pl.json", [])),
+    ):
+        cases[label] = ["access", "--garage", str(garage), "--pass", str(document),
+                        "--registrations", str(good)]
+    (tmp_path / "tz2").mkdir()
+    badtz, _ = _documents(tmp_path / "tz2", timezone="Mars/Olympus")
+    base = ["access", "--garage", str(garage), "--pass", str(pass_)]
+    cases["garage: timezone unknown"] = ["access", "--garage", str(badtz), "--pass", str(pass_),
+                                        "--registrations", str(good)]
+    cases["registrations: JSON but not a list"] = [
+        *base, "--registrations", str(_write(tmp_path, "rd.json", {}))]
+    cases["registrations: an entry is a number"] = [
+        *base, "--registrations", str(_write(tmp_path, "rn.json", [7]))]
+    cases["visits: an entry is a list"] = [
+        *base, "--registrations", str(good), "--visits", str(_write(tmp_path, "vl.json", [[]]))]
+    # no record at all, or no instant: refuses both ways
+    cases["missing --garage file"] = ["access", "--garage", str(tmp_path / "nope.json"),
+                                     "--pass", str(pass_)]
+    (tmp_path / "nj.json").write_text("{not json")  # raw text, not a JSON string
+    cases["--garage not JSON"] = ["access", "--garage", str(tmp_path / "nj.json"),
+                                 "--pass", str(pass_)]
+    cases["missing --registrations file"] = [*base, "--registrations", str(tmp_path / "nope2.json")]
+    # (the instant cases are run with their own --at below)
+    buckets: dict[str, list[str]] = {"entry refuses, exit answers": [],
+                                     "entry refuses, exit refuses": []}
+    defects = []
+    for label, argv in cases.items():
+        if label in NO_RECORD_OR_NO_INSTANT:
+            expected = "entry refuses, exit refuses"
+        else:
+            expected = "entry refuses, exit answers"
+        entry, exit_ = _either_way(argv, capsys)
+        e = ("refuses" if entry[0] == EXIT_REFUSED_REQUEST
+             else f"answers ({entry[1].get('outcome')})")
+        x = "refuses" if exit_[0] == EXIT_REFUSED_REQUEST else (
+            "answers" if exit_[1].get("outcome") in ("covered", "not_covered") else f"?? {exit_}")
+        read = f"entry {e}, exit {x}"
+        if read != expected:
+            defects.append(f"{label}: {read} (expected {expected})")
+        else:
+            buckets[expected].append(label)
+    for at in ("2026-06-01T12:00:00", "June 1st"):
+        label = "--at naive" if "T" in at else "--at malformed"
+        for direction in ("entry", "exit"):
+            status, printed = run(["access", "--garage", str(garage), "--pass", str(pass_),
+                                   "--vehicle", "CAR-1", "--lane", "L1", "--direction", direction,
+                                   "--at", at], capsys)
+            if status != EXIT_REFUSED_REQUEST:
+                defects.append(f"{label} at {direction}: {status} {printed}")
+        buckets["entry refuses, exit refuses"].append(label)
+    print("\nBUCKETS: " + "; ".join(f"{k}: {len(v)}" for k, v in buckets.items())
+          + f"; defects: {len(defects)}")
+    assert defects == [], "\n".join(defects)
+    assert len(buckets["entry refuses, exit answers"]) >= 50
+    assert sorted(buckets["entry refuses, exit refuses"]) == sorted(NO_RECORD_OR_NO_INSTANT)
+
+
+@pytest.mark.guarantee("G4")
+def test_the_exit_answer_on_unreadable_records_has_every_exit_answers_shape():
+    from garage_pass.access import exit_on_unreadable_records
+    from garage_pass.findings import Unreadable
+
+    marker = Unreadable(f.REFUSAL_FIELD_BLANK, "registration[0].vehicle_identity", "is required.")
+    answer = exit_on_unreadable_records([marker], vehicle_identity=" CAR-1 ", lane="L1")
+    assert answer.outcome.value == "not_covered" and answer.reason == f.RECORD_UNREADABLE
+    assert answer.exit_note == f.EXIT_IS_NEVER_REFUSED and answer.means == f.MEANS_EXIT_OUT_OF_TERMS
+    assert answer.vehicle_identity == "CAR-1" and answer.direction.value == "exit"
+    assert "registration[0].vehicle_identity" in answer.detail and answer.missing is None
+    for bad in (dict(vehicle_identity=None, lane="L1"), dict(vehicle_identity="C", lane=1)):
+        with pytest.raises(TypeError):
+            exit_on_unreadable_records([marker], **bad)
+    with pytest.raises(TypeError):
+        exit_on_unreadable_records([], vehicle_identity="C", lane="L1")
