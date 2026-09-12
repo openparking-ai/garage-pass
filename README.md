@@ -116,7 +116,17 @@ all. A pass stored with terms the module refuses to read — a raw write, or a
 validator tightened after the pass was stored — is answered not-covered at the
 exit, naming the pass and the field, which at a transient garage means the stay
 is chargeable: said so, so nobody reads it as a free exit, and named so the
-operator can find the row.
+operator can find the row. Inconsistent data is answered too: a registration
+naming a pass that was not handed in is not-covered at the exit, naming that
+pass, never an exception.
+
+**What that sentence does not cover, named as such:** two caller-contract
+errors — an instant with no timezone, a direction that is not a `Direction` —
+raise on the first call, before there is a movement to answer about; and a
+machine with no timezone database at all raises by its own name, never as an
+unknown zone, because nothing can be read on it. Neither is a term, a state, a
+revocation or data. A garage carrying a zone the system does not carry cannot
+be constructed at all; a stored one loads unreadable and answers.
 
 ### What not-covered means depends on the garage
 
@@ -157,11 +167,11 @@ pip install -e '.[store]'   # with the Postgres store
 pip install -e '.[dev]'     # to run the suite and the controls
 ```
 
-The store needs a database with the migration applied as its owner, and the
-application role given a login:
+The store needs a database with the migrations applied in order as its owner,
+and the application role given a login:
 
 ```
-psql "$DSN" -v ON_ERROR_STOP=1 -f migrations/0001_garages_passes_registrations_and_rls.sql
+for m in migrations/*.sql; do psql "$DSN" -v ON_ERROR_STOP=1 -f "$m"; done   # 0001, then 0002
 GARAGE_PASS_APP_PASSWORD=... python scripts/ensure-app-role.py "$DSN"
 ```
 
@@ -175,8 +185,22 @@ refused-to-answer at an entry, naming `garage.timezone`), but takes no write
 until it is repaired; the repair is the one write it takes:
 
 ```
-$ garage-pass set-garage-timezone --tenant T --garage garage-downtown --timezone America/Denver
+$ garage-pass set-garage-timezone --tenant T --garage garage-downtown --timezone America/Denver \
+      --by operator --at 2026-06-01T12:00:00-06:00 --reason "stored from a laptop as america/denver"
 ```
+
+The repair is recorded — who, when, why, the old value and the new — into a
+garage history the application can only append to, exactly as a pass state
+change is; a repair with no who or no why is refused and changes nothing. The
+zone name is checked case-exactly against the tz database's own names, so
+`america/denver` is refused on every filesystem, not only a case-sensitive one.
+
+**A timezone database is required.** The engine reads every term in the
+garage's local day and cannot read one without a tz database; it does not ship
+one. On a machine with none — no system zoneinfo and no Python `tzdata`
+package — every command says so by name on stderr and exits 2, rather than
+refusing each good zone as unknown. Install the system tz database (`tzdata`
+on Debian, Ubuntu, Alpine and the RPM family) or `pip install tzdata`.
 
 The suite reads `GARAGE_PASS_TEST_DSN` for a database it may drop and rebuild.
 Without one, the store-backed tests skip and the run **fails**, on purpose: a

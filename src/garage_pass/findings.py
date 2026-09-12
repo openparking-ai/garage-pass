@@ -104,6 +104,7 @@ REFUSAL_STATE_TRANSITION_NOT_ALLOWED = "REFUSAL_STATE_TRANSITION_NOT_ALLOWED"
 REFUSAL_REVOKED_IS_TERMINAL = "REFUSAL_REVOKED_IS_TERMINAL"
 REFUSAL_EXPIRED_IS_DERIVED = "REFUSAL_EXPIRED_IS_DERIVED"
 REFUSAL_STATE_CHANGE_NEEDS_WHO_AND_WHY = "REFUSAL_STATE_CHANGE_NEEDS_WHO_AND_WHY"
+REFUSAL_REPAIR_NEEDS_WHO_AND_WHY = "REFUSAL_REPAIR_NEEDS_WHO_AND_WHY"
 REFUSAL_VEHICLE_ON_ANOTHER_PASS = "REFUSAL_VEHICLE_ON_ANOTHER_PASS"
 REFUSAL_PASS_NOT_REGISTRABLE = "REFUSAL_PASS_NOT_REGISTRABLE"
 REFUSAL_REGISTRATION_OUTLIVES_THE_PASS = "REFUSAL_REGISTRATION_OUTLIVES_THE_PASS"
@@ -201,6 +202,13 @@ REFUSALS: dict[str, str] = {
     REFUSAL_STATE_CHANGE_NEEDS_WHO_AND_WHY: (
         "A state change records who made it and why, and one of those is blank."
     ),
+    REFUSAL_REPAIR_NEEDS_WHO_AND_WHY: (
+        "A garage repair -- set-garage-timezone, which changes how every pass at the "
+        "garage is read -- records who made it, when and why into an append-only "
+        "history, and one of who or why is blank. The repair is refused and nothing "
+        "changes: a change to every clock in the building with no record of who made "
+        "it is the one write this module would not be able to explain afterwards."
+    ),
     REFUSAL_VEHICLE_ON_ANOTHER_PASS: (
         "This vehicle identity is already registered to another pass at this "
         "garage for days that overlap. One car, one pass: the refusal names the "
@@ -264,8 +272,10 @@ REFUSALS: dict[str, str] = {
     ),
     REFUSAL_CONSTRAINT: (
         "The database refused the write by a constraint the module did not catch "
-        "first. Named by its constraint so it is a refusal and not a traceback; two "
-        "writers racing end here."
+        "first, or rolled it back to break a deadlock at that constraint's lock. "
+        "Named by its constraint so it is a refusal and not a traceback; two writers "
+        "racing end here. Under a deadlock the detail carries the database's own "
+        "account of the cycle and asserts no cause the module did not observe."
     ),
 }
 
@@ -289,6 +299,7 @@ PASS_UNREADABLE = "PASS_UNREADABLE"
 GARAGE_UNREADABLE = "GARAGE_UNREADABLE"
 BLANK_IDENTITY = "BLANK_IDENTITY"
 BLANK_LANE = "BLANK_LANE"
+PASS_NOT_HANDED_IN = "PASS_NOT_HANDED_IN"
 
 NOT_COVERED_REASONS: dict[str, str] = {
     NO_PASS: (
@@ -346,6 +357,18 @@ NOT_COVERED_REASONS: dict[str, str] = {
         "exit is answered, never refused. At an entry the same input is refused an "
         "answer."
     ),
+    PASS_NOT_HANDED_IN: (
+        "A registration of this vehicle, in force on this day, names a pass that was "
+        "not handed in with the call -- the registrations and the passes disagree, "
+        "which is INCONSISTENT data, not a term, a state or a revocation. At an EXIT "
+        "it is answered, never raised: not-covered, naming the pass the registration "
+        "names, so an integrator assembling registrations from their own store can "
+        "see which one. Where another registration in force names a pass that was "
+        "handed in, that pass is evaluated and covers the vehicle if it covers it, "
+        "with the inconsistency named in the detail. (At an entry the call refuses to "
+        "answer, naming the field.) The store cannot produce this: it loads the "
+        "passes its registrations name."
+    ),
 }
 
 
@@ -397,6 +420,7 @@ MISSING_LANE = "lane"
 MISSING_ONE_PASS = "registration.pass_id"
 MISSING_TIMEZONE = "garage.timezone"
 UNREADABLE_TERMS = "pass.terms"
+MISSING_PASS_HANDED_IN = "passes"
 
 REFUSED_TO_ANSWER: dict[str, str] = {
     MISSING_TRANSIENT_MODE: (
@@ -431,5 +455,14 @@ REFUSED_TO_ANSWER: dict[str, str] = {
         "The pass this vehicle is registered to is stored with terms or a holder "
         "this module refuses to read, and an ENTRY on it is not guessed. The detail "
         "names the pass and the field. (An exit is answered not-covered, naming both.)"
+    ),
+    MISSING_PASS_HANDED_IN: (
+        "A registration of this vehicle, in force on this day, names a pass that is "
+        "not among the passes handed in, at an ENTRY. The registrations and the "
+        "passes disagree and the module will not guess which is right: hand in the "
+        "pass the registration names, or the registrations that match the passes. "
+        "(At an exit the vehicle is answered not-covered naming that pass -- or "
+        "covered by another pass in force that was handed in, the inconsistency "
+        "named. An exit is never refused and never raises on data.)"
     ),
 }

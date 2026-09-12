@@ -393,6 +393,107 @@ def test_the_other_shape_of_the_race_a_deadlock_is_named_as_the_constraint_not_a
     )
     assert loser.code == f.REFUSAL_CONSTRAINT and ONE_PASS_PER_GARAGE in loser.detail
     assert "deadlock" in loser.detail and "Roll back and read again" in loser.detail
+    assert "waits for" in loser.detail, "PostgreSQL's DETAIL, the account of the cycle, is carried"
+
+
+@pytest.mark.guarantee("G1")
+def test_a_deadlock_from_a_lock_the_module_never_takes_names_no_cause_and_carries_the_detail(
+    app, owner, tenant_id
+):
+    """THE DEADLOCK SHAPE THAT IS NOT A RACE. The module issues no FOR UPDATE,
+    FOR SHARE or LOCK (measured); another transaction takes a raw
+    ``SELECT ... FOR UPDATE`` on the target pass's row, then waits on a row
+    THIS transaction holds; this transaction's INSERT then waits on that raw
+    lock through the pass foreign key (KEY SHARE against FOR UPDATE). No second
+    registration of the identity exists anywhere. Measured before this: the
+    caller was told "two registrations of 'CAR-1' raced" -- a cause that did
+    not happen -- and PostgreSQL's DETAIL was dropped. Now the refusal says
+    only that the database rolled this write back, carries the DETAIL, and is
+    still a named refusal rather than a traceback.
+
+    THE VICTIM IS MADE DETERMINISTIC: PostgreSQL's deadlock check runs once in
+    each waiter, ``deadlock_timeout`` after it starts waiting, and the waiter
+    whose check FINDS the cycle is the one rolled back. The raw transaction
+    waits first and its check runs before the cycle exists; the module's
+    INSERT waits last, its check finds the cycle, and it is the victim."""
+    import time
+
+    from garage_pass.store.postgres import connect
+    from garage_pass.store.records import change_state
+    from store_harness import DSN
+
+    seed(app, tenant_id, GARAGE, (A, Z))
+    with owner.cursor() as cursor:
+        cursor.execute("SHOW deadlock_timeout")
+        (timeout,) = cursor.fetchone()
+    assert timeout == "1s", f"the timing below assumes the default deadlock_timeout, not {timeout}"
+    ids = dict(query(app, tenant_id, "SELECT external_id, id FROM passes"))
+    raw = connect(DSN)  # the owner: a raw transaction past the module, as the walk's was
+    try:
+        with tenant(app, tenant_id) as cursor:
+            # ours holds a row lock on Z (an ordinary write of this module)
+            change_state(cursor, tenant_id, GARAGE.id, Z.id, State.SUSPENDED, by="owner",
+                         at=NOON_MONDAY, reason="hold")
+        with raw.cursor() as cursor:
+            # theirs: the lock this module never takes, on the pass we will register onto
+            cursor.execute("SELECT id FROM passes WHERE id = %s FOR UPDATE", (ids["pass-a"],))
+            assert cursor.fetchone() is not None
+        # theirs now waits on ours (Z's row), in a thread so this test keeps the clock
+        import threading
+
+        theirs: dict = {}
+
+        def wait_on_ours():
+            try:
+                with raw.cursor() as cursor:
+                    cursor.execute("SELECT id FROM passes WHERE id = %s FOR UPDATE",
+                                   (ids["pass-z"],))
+                theirs["result"] = "acquired"
+            except BaseException as exc:  # noqa: BLE001 -- recorded, judged below
+                theirs["result"] = exc
+
+        thread = threading.Thread(target=wait_on_ours)
+        thread.start()
+
+        def raw_is_waiting() -> bool:
+            with owner.cursor() as cursor:
+                cursor.execute(
+                    "SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock' "
+                    "AND query ILIKE 'SELECT id FROM passes%%FOR UPDATE'"
+                )
+                return cursor.fetchone()[0] == 1
+
+        deadline = time.monotonic() + 10
+        while not raw_is_waiting() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert raw_is_waiting(), "the premise: the raw transaction is waiting on ours"
+        time.sleep(1.5)  # past its deadlock_timeout: its one check has run and found no cycle
+        assert raw_is_waiting(), "it is still waiting; the cycle does not exist yet"
+        try:  # ours: the INSERT waits on the raw lock, and is the victim
+            with tenant(app, tenant_id) as cursor:
+                register_vehicle(cursor, tenant_id, GARAGE.id, A.id, "CAR-1", JAN_1, None)
+            ours: object = "accepted"
+        except BaseException as exc:  # noqa: BLE001 -- recorded, judged below
+            ours = exc
+        app.rollback()
+        thread.join(timeout=15)
+        assert theirs.get("result") == "acquired", f"the raw side was the victim: {theirs}"
+        raw.rollback()
+    finally:
+        raw.close()
+    assert isinstance(ours, f.Refused), (
+        f"the rolled-back writer got a traceback, not a refusal: {ours!r}"
+    )
+    detail = ours.detail
+    assert ours.code == f.REFUSAL_CONSTRAINT and ONE_PASS_PER_GARAGE in detail
+    assert "deadlock" in detail and "Roll back and read again" in detail
+    assert "raced" not in detail, f"a cause the module did not observe was asserted: {detail}"
+    assert "waits for" in detail and "blocked by process" in detail, (
+        f"PostgreSQL's DETAIL is not carried: {detail}"
+    )
+    assert query(app, tenant_id, "SELECT count(*) FROM vehicle_registrations") == [(0,)], (
+        "the premise: no registration of CAR-1 existed anywhere, so 'raced' would have been false"
+    )
 
 
 # ---------------------------------------------------------------------------

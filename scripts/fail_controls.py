@@ -82,7 +82,9 @@ G11 = "tests/test_g11_nothing_real_in_the_tree.py"
 G12 = "tests/test_g12_state_changes_are_append_only.py"
 G13 = "tests/test_g13_the_label_is_only_a_label.py"
 G17 = "tests/test_g17_a_stored_row_the_module_cannot_read_still_answers.py"
+G18 = "tests/test_g18_the_command_line_refuses_never_tracebacks.py"
 MIGRATION = "migrations/0001_garages_passes_registrations_and_rls.sql"
+MIGRATION_0002 = "migrations/0002_garage_changes_are_recorded.sql"
 
 #: control id -> (test target, source file, anchor, replacement, what breaks)
 CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
@@ -849,8 +851,8 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
     ),
     "G17/repair-validates": (
         G17, "store/records.py",
-        '    zone(require_text(timezone, "garage.timezone"))  # refuses an unknown zone by name',
-        '    require_text(timezone, "garage.timezone")  # PLANTED: any text is a timezone',
+        "    zone(new_value)  # refuses an unknown zone by name",
+        "    pass  # PLANTED: any text is a timezone",
         "the repair stores a zone the system does not carry -- the defect it exists to repair",
     ),
     "G18/traceback": (
@@ -868,6 +870,105 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
         "        raise RuntimeError(  # PLANTED: an exception class nobody classified\n"
         "            f\"{what} must carry a timezone.",
         "a new exception class is raised in the package and the sweep does not notice it",
+    ),
+    # --- the outside pass's fixes ------------------------------------------------
+    "G4/dangling-registration": (
+        G4, "access.py",
+        source(
+            "    if dangling and not effective:",
+            "        r = dangling[0]",
+        ),
+        source(
+            "    if dangling and not effective:",
+            "        r = dangling[0]",
+            "        from garage_pass.findings import REFUSAL_PASS_NOT_FOUND, Refused  # PLANTED",
+            "        raise Refused(REFUSAL_PASS_NOT_FOUND, 'registration.pass_id',",
+            "                      f'PLANTED: the raise is back for {r.pass_id!r}')",
+        ),
+        "THE RAISE PLANTED BACK: a registration naming a pass not handed in raises at an "
+        "exit again -- the outside review's counterexample, an exception at an exit lane",
+    ),
+    "G17/case-fold": (
+        G17, "localday.py",
+        "    if name not in names:\n        raise UnknownTimezone(",
+        "    name = next((n for n in names if n.lower() == name.lower()), name)  # PLANTED\n"
+        "    if name not in names:\n        raise UnknownTimezone(",
+        "the lookup folds its case and canonicalises: 'america/denver' is accepted as "
+        "America/Denver on EVERY filesystem, so this control reads the same on a "
+        "case-insensitive Mac and on case-sensitive CI -- which is the whole defect",
+    ),
+    "G17/empty-set-blames-the-value": (
+        G17, "localday.py",
+        "    if not names:\n        raise TimezoneDatabaseUnavailable()",
+        "    if not names:\n        raise UnknownTimezone('PLANTED: an empty set refuses the "
+        "value as unknown')",
+        "a machine with no tz database refuses every good zone as UNKNOWN, blaming the "
+        "caller's input for the machine's missing data -- the shape worse than the bug",
+    ),
+    "G1/deadlock-cause": (
+        G1, "store/records.py",
+        source(
+            '        detail = (deadlock.diag.message_detail or "").strip()',
+            "        raise Refused(",
+            '            REFUSAL_CONSTRAINT, "vehicle_identity",',
+            '            f"constraint {ONE_PASS_PER_GARAGE}: the database detected a deadlock '
+            'while this "',
+            '            f"registration of {identity!r} waited on another transaction, and '
+            'rolled this "',
+        ),
+        source(
+            '        detail = ""  # PLANTED: the DETAIL dropped, a cause asserted',
+            "        raise Refused(",
+            '            REFUSAL_CONSTRAINT, "vehicle_identity",',
+            '            f"constraint {ONE_PASS_PER_GARAGE}: two registrations of {identity!r} '
+            'raced and "',
+            '            "the database rolled this one back (deadlock detected). "',
+        ),
+        "the deadlock refusal names a cause it did not observe ('two registrations raced') "
+        "and throws PostgreSQL's DETAIL away -- under a deadlock from a raw FOR UPDATE the "
+        "module never takes, that sentence is false",
+    ),
+    "G18/dash-value": (
+        G18, "cli.py",
+        "    args = parser.parse_args(_values_that_start_with_a_dash(parser, argv))",
+        "    args = parser.parse_args(argv)  # PLANTED: a dash-leading value is an option again",
+        "`--timezone -06:00` is argparse's usage error and exit 2 again -- the re-gate's "
+        "third shape beside the refusal and the traceback",
+    ),
+    "G18/tz-database-sentence": (
+        G18, "cli.py",
+        "    except TimezoneDatabaseUnavailable as missing:\n",
+        "    except TimezoneDatabaseUnavailable as missing:\n        raise  # PLANTED\n",
+        "a machine with no tz database is a traceback at the command line, not a sentence",
+    ),
+    "G12/garage-history-row": (
+        G12, "store/records.py",
+        '    cursor.execute(\n        "INSERT INTO garage_changes (tenant_id, garage_id, field, ',
+        '    _ = (  # PLANTED: the repair is not recorded\n'
+        '        "INSERT INTO garage_changes (tenant_id, garage_id, field, ',
+        "the repair changes the garage and writes no history row: who, when and why are "
+        "lost again",
+    ),
+    "G12/garage-grant": (
+        G12, MIGRATION_0002,
+        "GRANT SELECT, INSERT ON garage_changes TO garage_pass_app;",
+        "GRANT SELECT, INSERT, UPDATE ON garage_changes TO garage_pass_app;  -- PLANTED",
+        "the application role can rewrite the garage history: the widened grant is read "
+        "from the catalogue and the derived set of append-only histories no longer matches",
+    ),
+    "G12/garage-who-why": (
+        G12, "store/records.py",
+        source(
+            "    if not isinstance(reason, str) or not reason.strip():",
+            '        raise Refused(REFUSAL_REPAIR_NEEDS_WHO_AND_WHY, "reason", '
+            'f"why is {reason!r}.")',
+        ),
+        source(
+            "    if not isinstance(reason, str) or not reason.strip():",
+            '        reason = "(unstated)"  # PLANTED: a blank why is defaulted, not refused',
+        ),
+        "a repair with no reason is accepted and recorded with a guessed one -- the silent "
+        "default this module exists to refuse",
     ),
 }
 

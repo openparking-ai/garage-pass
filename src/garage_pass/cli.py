@@ -11,7 +11,8 @@ instant or day). The answer is printed as JSON, and there is no money in it.
 
 Against the store (``GARAGE_PASS_DSN``, ``--tenant``): ``create-garage``,
 ``set-garage-timezone`` (the repair for a garage stored with a timezone the
-system does not carry -- the one write that takes an unreadable garage),
+system does not carry -- the one write that takes an unreadable garage, and it
+records who, when and why like a state change does),
 ``create-pass``, ``register-vehicle``, ``end-registration``, ``set-state``,
 ``record-entry``, ``record-exit`` and ``access-in-store``. A store command with
 no ``GARAGE_PASS_DSN``, or one the database refuses to connect, prints a
@@ -27,7 +28,11 @@ before this: ``create-garage`` with a mistyped zone printed sixty lines of
 ``zoneinfo`` stack. ``tests/test_g18_...`` enumerates every ``raise`` in the
 package by AST and classifies each as rendered here or a programming error a
 command cannot reach, so a new exception class fails that test until it is
-classified.
+classified. A value that starts with a dash (``--timezone -06:00``) reaches the
+module and is refused by name rather than read by argparse as an option
+(``_values_that_start_with_a_dash``). A machine with no timezone database at
+all is a sentence on stderr and exit 2, like a DSN that does not connect: the
+machine's configuration, not the request.
 """
 
 from __future__ import annotations
@@ -55,6 +60,7 @@ from garage_pass.findings import (
     REFUSAL_FIELD_BLANK,
     Refused,
 )
+from garage_pass.localday import TimezoneDatabaseUnavailable
 from garage_pass.states import parse_state
 from garage_pass.terms import Direction
 
@@ -104,6 +110,9 @@ def _parser() -> argparse.ArgumentParser:
     s.add_argument("--tenant", required=True, type=UUID, help="the tenant's uuid")
     s.add_argument("--garage", required=True, help="the garage's external id")
     s.add_argument("--timezone", required=True, help="an IANA name such as America/Denver")
+    s.add_argument("--by", required=True, help="who repaired it, for the garage's history")
+    s.add_argument("--at", required=True, help="when, as an ISO instant with an offset")
+    s.add_argument("--reason", required=True, help="why, for the garage's history")
 
     def store(name: str, help_: str) -> argparse.ArgumentParser:
         s = sub.add_parser(name, help=help_)
@@ -203,14 +212,67 @@ def _list(path: str, option: str) -> list:
     return document
 
 
+def _values_that_start_with_a_dash(parser: argparse.ArgumentParser, argv: list[str]) -> list[str]:
+    """``--timezone -06:00`` reaches the MODULE, not argparse's usage error.
+
+    argparse reads a token that starts with ``-`` as an option unless it looks
+    like a negative number, so ``--timezone -06:00`` was "expected one
+    argument", a usage message and exit 2 -- a third shape beside the JSON
+    refusal and the traceback G18 forbids, found by an operator walking the
+    product. The value belongs to the module, which refuses it by name
+    (``-06:00`` is not an IANA name). So: where an option that takes one value
+    is followed by a token that starts with ``-`` and is not itself an option
+    of that command, the two are joined as ``--option=value``, which argparse
+    always accepts. Every option string is read from the parser, not typed.
+    """
+    commands = {
+        name: sub for action in parser._actions
+        if isinstance(action, argparse._SubParsersAction)
+        for name, sub in action.choices.items()
+    }
+    sub = commands.get(argv[0]) if argv else None
+    if sub is None:
+        return argv
+    options = {opt for action in sub._actions for opt in action.option_strings}
+    takes_one = {
+        opt for action in sub._actions if action.nargs in (None, 1)
+        and not isinstance(action, argparse._StoreConstAction)
+        for opt in action.option_strings
+    }
+    joined: list[str] = []
+    skip = False
+    for i, token in enumerate(argv):
+        if skip:
+            skip = False
+            continue
+        following = argv[i + 1] if i + 1 < len(argv) else None
+        if (
+            token in takes_one and following is not None
+            and following.startswith("-") and following not in options
+        ):
+            joined.append(f"{token}={following}")
+            skip = True
+        else:
+            joined.append(token)
+    return joined
+
+
 def main(argv: list[str] | None = None) -> int:
-    args = _parser().parse_args(argv)
+    parser = _parser()
+    argv = list(sys.argv[1:] if argv is None else argv)
+    args = parser.parse_args(_values_that_start_with_a_dash(parser, argv))
     try:
         return _run(args)
     except Refused as refused:
         print(json.dumps({"refused": refused.code, "field": refused.field,
                           "detail": refused.detail}, indent=2))
         return EXIT_REFUSED_REQUEST
+    except TimezoneDatabaseUnavailable as missing:
+        # The MACHINE's configuration, not a refusal of the request: one
+        # sentence, exit 2, the shape of the unset DSN below. Not the JSON
+        # refusal, which would name a field the operator can change.
+        print(str(missing), file=sys.stderr)
+        return 2
 
 
 def _run(args: argparse.Namespace) -> int:
@@ -269,7 +331,10 @@ def _run(args: argparse.Namespace) -> int:
                 records.store_garage(cursor, args.tenant, garage)
                 out: Any = {"stored": garage.id, "transient_available": garage.transient_available}
             elif args.command == "set-garage-timezone":
-                out = records.set_garage_timezone(cursor, args.tenant, args.garage, args.timezone)
+                out = records.set_garage_timezone(
+                    cursor, args.tenant, args.garage, args.timezone,
+                    by=args.by, at=_at(args.at), reason=args.reason,
+                )
             elif args.command == "create-pass":
                 pass_ = load_pass(_document(args.pass_, "--pass"))
                 records.create_pass(cursor, args.tenant, args.garage, pass_, by=args.by,

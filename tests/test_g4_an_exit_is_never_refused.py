@@ -239,3 +239,128 @@ def test_the_control_on_the_assertion_itself():
 
     with pytest.raises(AssertionError):
         assert_exit_is_not_refused(replace(entry, direction=Direction.EXIT))
+
+
+# ---------------------------------------------------------------------------
+# Inconsistent DATA is answered; the outside reviews' cases, closed by tests.
+# ---------------------------------------------------------------------------
+
+
+def _dangling(identity="CAR-1", pass_id="missing"):
+    from datetime import date as _date
+
+    from garage_pass.passes import Registration
+
+    return Registration(pass_id=pass_id, vehicle_identity=identity,
+                        effective_day=_date(2026, 1, 1))
+
+
+@pytest.mark.guarantee("G4")
+def test_a_registration_naming_a_pass_not_handed_in_is_answered_at_exit_naming_the_pass():
+    """THE OUTSIDE REVIEW'S COUNTEREXAMPLE, exactly: a registration whose
+    ``pass_id`` is in none of the passes handed in, ``Direction.EXIT``, an
+    aware instant. Measured before this it raised
+    ``Refused(REFUSAL_PASS_NOT_FOUND)`` -- an exception at an exit lane. Now
+    a stated not-covered answer naming the inconsistency and the pass; the
+    well-formed exit in the same run is the positive control."""
+    garage = transient_garage()
+    pass_ = a_pass(garage_id=garage.id)
+    call = dict(garage=garage, passes=[pass_], visits=[], vehicle_identity="CAR-1", lane="L1",
+                at=NOON_MONDAY)
+    control = access(direction=Direction.EXIT, registrations=[registered(pass_, "CAR-1")], **call)
+    assert control.outcome is Outcome.COVERED, "the positive control: a well-formed exit"
+    try:
+        answer = access(direction=Direction.EXIT, registrations=[_dangling()], **call)
+    except Exception as exc:  # noqa: BLE001 -- the exception IS the defect
+        pytest.fail(f"an exit raised on inconsistent data instead of answering: {exc!r}")
+    assert answer.outcome is Outcome.NOT_COVERED and answer.reason == f.PASS_NOT_HANDED_IN
+    assert_exit_is_not_refused(answer)
+    assert "INCONSISTENT" in answer.detail and "'missing'" in answer.detail, answer.detail
+    assert "'pass-1'" in answer.detail, "the passes that WERE handed in are named too"
+    # at an ENTRY the call refuses to answer, naming the field -- never raises
+    entry = access(direction=Direction.ENTRY, registrations=[_dangling()], **call)
+    assert entry.outcome is Outcome.REFUSED_TO_ANSWER and entry.missing == f.MISSING_PASS_HANDED_IN
+    assert "'missing'" in entry.detail
+
+
+@pytest.mark.guarantee("G4")
+def test_a_dangling_registration_beside_a_covering_one_gets_the_holder_out_and_is_named():
+    """The two-passes shape with one of them not handed in: the pass that was
+    handed in is evaluated and covers; the one that was not is named."""
+    garage = transient_garage()
+    pass_ = a_pass(garage_id=garage.id)
+    call = dict(garage=garage, passes=[pass_], visits=[], vehicle_identity="CAR-1", lane="L1",
+                at=NOON_MONDAY, registrations=[registered(pass_, "CAR-1"), _dangling()])
+    answer = access(direction=Direction.EXIT, **call)
+    assert answer.outcome is Outcome.COVERED and answer.pass_id == "pass-1", answer
+    assert "INCONSISTENT" in answer.detail and "'missing' was not handed in" in answer.detail
+    assert_exit_is_not_refused(answer)
+    entry = access(direction=Direction.ENTRY, **call)
+    assert entry.outcome is Outcome.REFUSED_TO_ANSWER and entry.missing == f.MISSING_PASS_HANDED_IN
+
+
+@pytest.mark.guarantee("G4")
+def test_a_dangling_registration_not_in_force_today_bears_on_no_answer():
+    """Ended last year: like any registration not in force, it is not
+    consulted. The vehicle on no pass today is NO_PASS, not inconsistent."""
+    from datetime import date as _date
+
+    from garage_pass.passes import Registration
+
+    garage = transient_garage()
+    pass_ = a_pass(garage_id=garage.id)
+    ended = Registration(pass_id="missing", vehicle_identity="CAR-1",
+                         effective_day=_date(2025, 1, 1), end_day=_date(2025, 12, 31))
+    answer = access(garage=garage, passes=[pass_], registrations=[ended], visits=[],
+                    vehicle_identity="CAR-1", lane="L1", direction=Direction.EXIT, at=NOON_MONDAY)
+    assert answer.outcome is Outcome.NOT_COVERED and answer.reason == f.NO_PASS
+    assert_exit_is_not_refused(answer)
+
+
+@pytest.mark.guarantee("G4")
+def test_a_garage_with_a_timezone_the_system_does_not_carry_cannot_be_constructed():
+    """THE OTHER OUTSIDE REVIEW'S COUNTEREXAMPLE, and why it cannot exist:
+    ``Garage(timezone='America/Definitely_Not_A_Zone', unreadable=None)`` is
+    refused at construction by name, so ``zone()`` inside ``access`` can never
+    meet an unknown zone on a garage built by a caller; ``dataclasses.replace``
+    goes through the same ``__post_init__``. The stored shape of the same row
+    (``garage_from_stored``) is UNREADABLE and answers at the exit -- G17 --
+    and the control is the same construction with a zone the system carries."""
+    from dataclasses import replace
+
+    from garage_pass.garage import Garage, garage_from_stored
+    from garage_pass.localday import UnknownTimezone
+
+    bad = "America/Definitely_Not_A_Zone"
+    with pytest.raises(UnknownTimezone) as refused:
+        Garage(id="g", timezone=bad, transient_available=True)
+    assert refused.value.code == f.REFUSAL_TIMEZONE_UNKNOWN and bad in refused.value.detail
+    good = Garage(id="g", timezone="America/Denver", transient_available=True)  # the control
+    with pytest.raises(UnknownTimezone):
+        replace(good, timezone=bad)
+    stored = garage_from_stored("g", bad, True)
+    assert stored.unreadable is not None
+    pass_ = a_pass(garage_id="g")
+    answer = access(garage=stored, passes=[pass_], registrations=[registered(pass_, "CAR-1")],
+                    visits=[], vehicle_identity="CAR-1", lane="L1", direction=Direction.EXIT,
+                    at=NOON_MONDAY)
+    assert answer.outcome is Outcome.NOT_COVERED and answer.reason == f.GARAGE_UNREADABLE
+    assert_exit_is_not_refused(answer)
+
+
+@pytest.mark.guarantee("G4")
+def test_the_two_caller_contract_errors_stay_raises_and_are_named_as_such():
+    """NOT data: a naive instant and a direction that is not a ``Direction``
+    raise on the first call, before there is a movement to answer about. They
+    are named in the guarantee as what its sentence does not cover, and this
+    test pins that they were not quietly turned into answers -- an answer
+    about a movement whose instant has no timezone would be a guess."""
+    garage = transient_garage()
+    pass_ = a_pass(garage_id=garage.id)
+    call = dict(garage=garage, passes=[pass_], registrations=[registered(pass_, "CAR-1")],
+                visits=[], vehicle_identity="CAR-1", lane="L1")
+    with pytest.raises(ValueError, match="must carry a timezone"):
+        access(direction=Direction.EXIT, at=NOON_MONDAY.replace(tzinfo=None), **call)
+    with pytest.raises(TypeError, match="must be a Direction"):
+        access(direction="exit", at=NOON_MONDAY, **call)
+    assert access(direction=Direction.EXIT, at=NOON_MONDAY, **call).outcome is Outcome.COVERED

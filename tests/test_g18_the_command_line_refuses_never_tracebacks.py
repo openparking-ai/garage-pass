@@ -43,19 +43,37 @@ PACKAGE = ROOT / "src" / "garage_pass"
 
 RENDERED = "rendered as a JSON refusal, exit 3"
 PROGRAMMING = "a programming error no command can reach"
+CONFIGURATION = "the machine's configuration: a sentence on stderr, exit 2"
 
 #: Every exception class a `raise` in the package names, and why it is fine.
+#:
+#: THE TWO CALLER-CONTRACT ERRORS, STATED IN SO MANY WORDS so the next reader
+#: does not re-open them: ``ValueError`` (a naive instant) and ``TypeError`` (a
+#: direction that is not a ``Direction``) are reachable ONLY from the pure API,
+#: never from a command -- the command line's own parsing (``cli._at``,
+#: ``documents._instant``, argparse ``choices``) refuses each before the module
+#: sees it. They are dead by decision, not unfinished work; G4 names them as
+#: what its sentence does not cover. The one raise that WAS reachable and IS
+#: data -- a registration naming a pass not handed in, ``REFUSAL_PASS_NOT_FOUND``
+#: from the access call -- became an answer, and this sweep's count dropped by
+#: one with it.
 CLASSIFIED: dict[str, tuple[str, str]] = {
     "Refused": (RENDERED, "caught by cli.main"),
     "UnknownTimezone": (RENDERED, "a Refused: REFUSAL_TIMEZONE_UNKNOWN, field garage.timezone"),
+    "TimezoneDatabaseUnavailable": (CONFIGURATION, "no tz database on this machine at all: "
+                                                   "caught by cli.main, one sentence on stderr, "
+                                                   "exit 2 -- the shape of a DSN that does not "
+                                                   "connect; never rendered as an unknown zone"),
     "TypeError": (PROGRAMMING, "a direction that is not a Direction, a Pass built half-shaped: "
                                "argparse choices and documents.py build the typed values, so "
-                               "the command line cannot produce either"),
+                               "the command line cannot produce either -- reachable only from "
+                               "the pure API, never from a command"),
     "KeyError": (PROGRAMMING, "a refusal code invented at a raise site and never registered: "
                               "the contract test and the orphan scan catch it before it ships"),
     "ValueError": (PROGRAMMING, "require_aware on a naive datetime: every instant the command "
                                 "line hands the module goes through cli._at or documents._instant, "
-                                "which refuse a naive one first"),
+                                "which refuse a naive one first -- reachable only from the pure "
+                                "API, never from a command"),
     "AssertionError": (PROGRAMMING, "assert_role_cannot_bypass_rls: called by the isolation "
                                     "tests, by no command"),
     "SystemExit": (PROGRAMMING, "argparse's own exit on an unknown command, and __main__"),
@@ -95,6 +113,25 @@ def test_every_raise_in_the_package_is_classified():
     )
     stale = sorted(set(CLASSIFIED) - set(found))
     assert stale == [], f"classified but raised nowhere any more: {stale}"
+
+
+@pytest.mark.guarantee("G18")
+def test_the_sweep_reports_its_count_and_the_two_dead_raises_are_named_in_words():
+    """The instrument names its denominator: how many ``raise`` statements,
+    of how many classes, and that the two caller-contract classes carry the
+    sentence that closes them. A reader of the ``-rA`` output sees the count."""
+    found = every_raise()
+    total = sum(len(where) for where in found.values())
+    print(f"\nSWEEP: {total} raise statements naming {len(found)} classes: "
+          + ", ".join(f"{name} {len(where)}" for name, where in sorted(found.items())))
+    assert total > 50 and "Refused" in found
+    for dead in ("ValueError", "TypeError"):
+        assert "reachable only from the pure API, never from a command" in CLASSIFIED[dead][1]
+    in_access = [w for w in found.get("Refused", []) if "garage_pass/access.py:" in w]
+    assert in_access == [], (
+        f"the access call raises a Refused again ({in_access}); a registration naming a pass "
+        "not handed in is an ANSWER now (G4), and the pure call raises on no data"
+    )
 
 
 @pytest.mark.guarantee("G18")
@@ -217,6 +254,66 @@ def test_a_registrations_document_that_is_not_a_list_is_a_json_refusal(tmp_path,
 
 
 @pytest.mark.guarantee("G18")
+def test_a_machine_with_no_tz_database_is_a_sentence_on_stderr_exit_2_not_a_refusal_of_the_value(
+    tmp_path, capsys, monkeypatch
+):
+    """The MACHINE's configuration, not the request: the shape of an unset
+    DSN. Never the JSON refusal, which would name ``garage.timezone`` and send
+    an operator hunting for a typo in a good name; never a traceback."""
+    from garage_pass import localday
+
+    garage, pass_ = _documents(tmp_path)
+    monkeypatch.setattr(localday, "_tz_names", lambda: frozenset())
+    try:
+        status = main(["access", "--garage", str(garage), "--pass", str(pass_), *MOVE])
+    except Exception as exc:  # noqa: BLE001
+        pytest.fail(f"raised instead of a sentence: {exc!r}")
+    captured = capsys.readouterr()
+    assert status == 2 and captured.out == "", captured
+    assert "no timezone database" in captured.err and "tzdata" in captured.err
+    assert "REFUSAL_TIMEZONE_UNKNOWN" not in captured.err and "America/Denver" not in captured.err
+
+
+@pytest.mark.guarantee("G18")
+@pytest.mark.parametrize("option,value", [("--timezone", "-06:00"), ("--timezone", "-Mars"),
+                                          ("--at", "-1")])
+def test_a_value_that_starts_with_a_dash_reaches_the_module_and_is_refused_by_name(
+    tmp_path, capsys, monkeypatch, option, value
+):
+    """THE RE-GATE'S OBSERVATION: ``--timezone -06:00`` was argparse's usage
+    error, exit 2 -- a third shape beside the JSON refusal and the traceback.
+    The value reaches the module now and comes back as the refusal naming the
+    option or the field and the value, exit 3. Not against the store: the
+    join is at the boundary, and ``access`` shows it without a database."""
+    garage, pass_ = _documents(tmp_path)
+    if option == "--at":
+        argv = ["access", "--garage", str(garage), "--pass", str(pass_), "--vehicle", "CAR-1",
+                "--lane", "L1", "--direction", "entry", "--at", value]
+        status, printed = run(argv, capsys)
+        assert status == EXIT_REFUSED_REQUEST and printed["field"] == "--at"
+        assert repr(value) in printed["detail"]
+        return
+    garage.write_text(json.dumps({"id": "g", "timezone": "America/Denver",
+                                  "transient_available": True}))
+    # set-garage-timezone needs a store; the boundary is exercised on the
+    # argument join itself, then through the store below with a DSN
+    from garage_pass.cli import _parser, _values_that_start_with_a_dash
+
+    argv = ["set-garage-timezone", "--tenant", "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
+            "--garage", "g", option, value, "--by", "op", "--at", "2026-06-01T12:00:00-06:00",
+            "--reason", "r"]
+    joined = _values_that_start_with_a_dash(_parser(), argv)
+    assert f"{option}={value}" in joined and value not in joined
+    with pytest.raises(SystemExit):  # the premise: unjoined, argparse refuses it as an option
+        _parser().parse_args(argv)
+    assert vars(_parser().parse_args(joined))["timezone"] == value
+    # a following token that IS an option of the command is left alone: the
+    # join reads the parser's option strings, it does not swallow the next flag
+    missing_value = [a for a in argv if a != value]
+    assert _values_that_start_with_a_dash(_parser(), missing_value) == missing_value
+
+
+@pytest.mark.guarantee("G18")
 def test_a_store_command_with_a_dsn_that_does_not_connect_is_a_sentence_not_a_traceback(
     tmp_path, capsys, monkeypatch
 ):
@@ -295,12 +392,40 @@ def test_the_store_commands_refuse_a_malformed_day_a_second_garage_and_a_bad_rep
     assert status == EXIT_REFUSED_REQUEST
     assert printed["field"] == "--effective-day" and "'June 1st'" in printed["detail"]
     # the repair with a zone the system does not carry
+    who = ["--by", "operator", "--at", "2026-06-01T12:00:00-06:00", "--reason", "mistyped"]
     status, printed = run(["set-garage-timezone", *tenant, "--garage", "garage-downtown",
-                           "--timezone", "Mars/Tharsis"], capsys)
+                           "--timezone", "Mars/Tharsis", *who], capsys)
     assert status == EXIT_REFUSED_REQUEST and printed["refused"] == f.REFUSAL_TIMEZONE_UNKNOWN
     assert "Mars/Tharsis" in printed["detail"]
     # and with one it does
     status, printed = run(["set-garage-timezone", *tenant, "--garage", "garage-downtown",
-                           "--timezone", "America/Phoenix"], capsys)
+                           "--timezone", "America/Phoenix", *who], capsys)
     assert status == 0 and printed == {"garage": "garage-downtown", "timezone": "America/Phoenix",
-                                       "was": "America/Denver", "was_readable": True}
+                                       "was": "America/Denver", "was_readable": True,
+                                       "changed_by": "operator",
+                                       "changed_at": "2026-06-01T12:00:00-06:00",
+                                       "reason": "mistyped"}
+
+
+@pytest.mark.guarantee("G18")
+@store_test
+def test_set_garage_timezone_with_a_dash_leading_value_is_the_json_refusal_exit_3(
+    app, tenant_id, tmp_path, capsys, monkeypatch
+):
+    """Through the store, as the operator typed it at the re-gate."""
+    from store_harness import query
+
+    _dsn_for_the_app(monkeypatch)
+    garage, _pass = _documents(tmp_path)
+    tenant = ["--tenant", str(tenant_id)]
+    status, printed = run(["create-garage", *tenant, "--garage", str(garage)], capsys)
+    assert status == 0
+    who = ["--by", "operator", "--at", "2026-06-01T12:00:00-06:00", "--reason", "typo"]
+    status, printed = run(["set-garage-timezone", *tenant, "--garage", "garage-downtown",
+                           "--timezone", "-06:00", *who], capsys)
+    assert status == EXIT_REFUSED_REQUEST, printed
+    assert printed["refused"] == f.REFUSAL_TIMEZONE_UNKNOWN
+    assert printed["field"] == "garage.timezone"
+    assert "'-06:00'" in printed["detail"]
+    assert query(app, tenant_id, "SELECT timezone FROM garages") == [("America/Denver",)]
+    assert query(app, tenant_id, "SELECT count(*) FROM garage_changes") == [(0,)]

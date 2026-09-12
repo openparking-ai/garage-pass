@@ -33,10 +33,24 @@ on the terms that can be evaluated with the stay marked UNMEASURED in
 ``Answer.unmeasured``; a stored pass or garage this module cannot read is
 not-covered naming the pass and the field; two passes that both hold the
 vehicle -- a state this module refuses to create -- are each evaluated and the
-vehicle is covered if any of them covers it, the inconsistency named. A garage
-whose transient mode is unstated is refused an answer at ENTRY only; the exit
-half of the call does not read that field at all, because nothing about an
-exit may depend on configuration.
+vehicle is covered if any of them covers it, the inconsistency named; a
+registration naming a pass that was not handed in -- inconsistent data, which
+an integrator assembling registrations from their own store can produce -- is
+answered not-covered naming that pass, never raised. A garage whose transient
+mode is unstated is refused an answer at ENTRY only; the exit half of the call
+does not read that field at all, because nothing about an exit may depend on
+configuration.
+
+**WHAT "NEVER AN EXCEPTION" DOES NOT COVER, SAID PLAINLY.** Two caller-contract
+errors raise on the first call, before there is an instant to answer about: a
+naive ``at`` (``ValueError`` from ``require_aware``) and a ``direction`` that is
+not a ``Direction`` (``TypeError``). They are programming errors, not data, and
+they stay raises by decision. One environment error is raised by its own name:
+a machine with no timezone database at all (``TimezoneDatabaseUnavailable``),
+on which nothing can be read. A garage carrying a zone this system does not
+carry cannot be constructed (``Garage.__post_init__`` refuses it), so an exit
+at such a garage is not a path that exists; a STORED one loads unreadable and
+answers, above.
 
 **THE ORDER OF THE CHECKS IS PART OF THE CONTRACT.** An unreadable garage
 answers first (without a clock nothing else can be read). Then the blank
@@ -68,6 +82,7 @@ from garage_pass.findings import (
     MEANS_TRANSIENT_STAY,
     MISSING_LANE,
     MISSING_ONE_PASS,
+    MISSING_PASS_HANDED_IN,
     MISSING_TIMEZONE,
     MISSING_TRANSIENT_MODE,
     MISSING_VEHICLE_IDENTITY,
@@ -77,14 +92,13 @@ from garage_pass.findings import (
     OUT_OF_VISITS,
     OUTSIDE_WINDOW,
     OVER_MAX_STAY,
+    PASS_NOT_HANDED_IN,
     PASS_UNREADABLE,
-    REFUSAL_PASS_NOT_FOUND,
     REFUSED_TO_ANSWER,
     REVOKED,
     SUSPENDED,
     UNREADABLE_TERMS,
     WRONG_LANE,
-    Refused,
 )
 from garage_pass.garage import Garage
 from garage_pass.localday import (
@@ -255,19 +269,44 @@ def access(
     # --- which pass, if any -------------------------------------------------
     by_id = {p.id: p for p in passes if p.garage_id == garage.id}
     here = []
+    # A registration naming a pass that was NOT handed in is INCONSISTENT DATA
+    # -- the registrations and the passes disagree -- and it is answered, not
+    # raised. Measured before this: it raised ``Refused(REFUSAL_PASS_NOT_FOUND)``
+    # at an exit, which an outside review read against the published sentence
+    # "never an exception" and was right to. The store cannot produce it (it
+    # loads the passes its registrations name); an integrator assembling
+    # registrations from their own store can. Only a dangling registration IN
+    # FORCE today bears on this instant; one that has ended, or has not started,
+    # bears on no answer and is not consulted, like any other such registration.
+    dangling: list[Registration] = []
     for registration in registrations:
         if registration.vehicle_identity.strip() != identity:
             continue
         if registration.pass_id not in by_id:
             if any(p.id == registration.pass_id for p in passes):
                 continue  # a pass at another garage; not this garage's business
-            raise Refused(
-                REFUSAL_PASS_NOT_FOUND,
-                "registration.pass_id",
-                f"registration names pass {registration.pass_id!r}, which was not handed in.",
-            )
+            if registration.covers(today):
+                dangling.append(registration)
+            continue
         here.append(registration)
     effective = [r for r in here if r.covers(today)]
+    handed_in = sorted(repr(pid) for pid in by_id)
+    if dangling and not is_exit:
+        named = ", ".join(sorted(repr(r.pass_id) for r in dangling))
+        return refused(
+            MISSING_PASS_HANDED_IN,
+            f"registration of {identity!r} names pass {named}, in force on {today}, and no "
+            f"pass with that id was handed in (handed in: {', '.join(handed_in) or 'none'}).",
+        )
+    if dangling and not effective:
+        r = dangling[0]
+        return not_covered(
+            PASS_NOT_HANDED_IN,
+            f"INCONSISTENT: registration of {identity!r} names pass {r.pass_id!r}, in force "
+            f"on {today}, and no pass with that id was handed in (handed in: "
+            f"{', '.join(handed_in) or 'none'}); the registrations and the passes disagree. "
+            "Answered not-covered, never raised.",
+        )
     if not effective:
         # A stated answer for an unknown identity -- never an accidental
         # refusal and never a silent pass. Where a registration exists but is
@@ -410,7 +449,7 @@ def access(
 
         return covered(pass_, "; ".join(covering), unmeasured)
 
-    if len(effective) == 1:
+    if len(effective) == 1 and not dangling:
         return evaluate(by_id[effective[0].pass_id])
 
     # More than one pass holds the vehicle today -- a state this module refuses
@@ -419,14 +458,23 @@ def access(
     # not pick one. At an EXIT every one is evaluated: the vehicle is covered
     # if any of them covers it, and the inconsistency is named either way,
     # because the holder who does have a covering pass gets out on it and the
-    # operator has to be able to see the corruption.
-    named = ", ".join(sorted(repr(r.pass_id) for r in effective))
+    # operator has to be able to see the corruption. A dangling registration
+    # beside an effective one is the same shape at an EXIT (the entry was
+    # refused above): the passes that were handed in are evaluated, the one
+    # that was not is named.
+    named = ", ".join(sorted(repr(r.pass_id) for r in effective + dangling))
     if not is_exit:
         return refused(MISSING_ONE_PASS, f"passes {named}.")
     answers = [evaluate(by_id[r.pass_id]) for r in effective]
     inconsistency = (
-        f" INCONSISTENT: {identity!r} is registered on {len(effective)} passes at once "
-        f"({named}), which one car, one pass forbids; every one was evaluated."
+        f" INCONSISTENT: {identity!r} is registered on {len(effective) + len(dangling)} "
+        f"passes at once ({named}), which one car, one pass forbids; every one that was "
+        "handed in was evaluated"
+        + (
+            f"; {', '.join(sorted(repr(r.pass_id) for r in dangling))} was not handed in "
+            "and could not be."
+            if dangling else "."
+        )
     )
     for answer in answers:
         if answer.outcome is Outcome.COVERED:
