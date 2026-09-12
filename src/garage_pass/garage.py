@@ -60,5 +60,5 @@ def garage_from_stored(
     except UnknownTimezone as exc:
         return Garage(
             id=id, timezone=timezone, transient_available=transient_available,
-            unreadable=Unreadable("UnknownTimezone", "garage.timezone", str(exc)),
+            unreadable=exc.as_unreadable(),
         )

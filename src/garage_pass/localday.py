@@ -38,9 +38,22 @@ from __future__ import annotations
 from datetime import UTC, date, datetime, time, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from garage_pass.findings import REFUSAL_TIMEZONE_UNKNOWN, Refused
 
-class UnknownTimezone(ValueError):
-    """A garage named a timezone the running system does not carry."""
+
+class UnknownTimezone(Refused, ValueError):
+    """A garage named a timezone the running system does not carry.
+
+    A ``Refused`` -- registered as ``REFUSAL_TIMEZONE_UNKNOWN``, field
+    ``garage.timezone`` -- so the command line renders it as the JSON refusal
+    with the documented exit status. Measured before this: it was a bare
+    ``ValueError``, the command line's handler did not see it, and an operator
+    creating a garage with a mistyped zone read sixty lines of ``zoneinfo``
+    stack. Still a ``ValueError`` too, for a caller that catches that.
+    """
+
+    def __init__(self, detail: str) -> None:
+        Refused.__init__(self, REFUSAL_TIMEZONE_UNKNOWN, "garage.timezone", detail)
 
 
 def zone(name: str) -> ZoneInfo:

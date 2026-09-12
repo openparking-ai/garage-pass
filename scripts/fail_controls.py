@@ -790,6 +790,85 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
         "    pass  # PLANTED: unrun guarantees are printed and the run stays green",
         "a registered guarantee that did not run is reported and the run passes anyway",
     ),
+    # ---- the merge gate's five findings ------------------------------------
+    "G1/holder-skip": (
+        G1, "store/records.py",
+        "    for _rid, other, label, state, other_valid_to, other_from, other_end in holders:\n",
+        "    for _rid, other, label, state, other_valid_to, other_from, other_end in holders:\n"
+        "        if state == State.REVOKED.value:\n"
+        "            continue  # PLANTED: holders on revoked passes are skipped\n",
+        "the overlap check skips holders on revoked passes again, so a registration a raw "
+        "write left open on a revoked pass is invisible: the live pass meets the EXCLUDE "
+        "and the caller is told to roll back and read again, where there is no race",
+    ),
+    "G1/target-state": (
+        G1, "store/records.py",
+        "    if pass_.state not in REGISTRABLE_STATES:",
+        "    if False:  # PLANTED: the target pass's state is never read",
+        "a vehicle is registered onto a revoked or a suspended pass again -- the gate's "
+        "finding, reachable through the command line",
+    ),
+    "G1/deadlock": (
+        G1, "store/records.py",
+        "    except psycopg.errors.DeadlockDetected as deadlock:",
+        "    except ImportError as deadlock:  # PLANTED: the deadlock is a traceback again",
+        "the other shape of a genuine race -- the database rolling one writer back with "
+        "DeadlockDetected -- reaches the caller as a traceback instead of the constraint's name",
+    ),
+    "G9/rendering": (
+        G9, "access.py",
+        '                        f"entered {rendered(open_visit.entered_at)}, '
+        'exiting {rendered(at)} "',
+        '                        f"entered {open_visit.entered_at.isoformat()}, '
+        'exiting {at.isoformat()} "  # PLANTED: each instant in its own offset',
+
+        "the OVER_MAX_STAY detail shows the recorded entry in whatever offset the store handed "
+        "it back in -- the database session's zone -- beside the exit in the caller's",
+    ),
+    "G10/install-script": (
+        G10, "scripts/ensure-app-role.py",
+        source(
+            '                sql.SQL("ALTER ROLE garage_pass_app LOGIN PASSWORD {}").format(',
+            "                    sql.Literal(password)",
+            "                )",
+        ),
+        source(
+            '                "ALTER ROLE garage_pass_app LOGIN PASSWORD %s", (password,)'
+            "  # PLANTED: a bind parameter in a utility statement",
+        ),
+        "the published install step dies on `syntax error at or near \"$1\"` again -- and "
+        "only a test that RUNS the script can see it",
+    ),
+    "G17/garage-write-gate": (
+        G17, "store/records.py",
+        "    if garage.unreadable is not None:\n        u = garage.unreadable",
+        "    if False:  # PLANTED: writes against an unreadable garage go through\n"
+        "        u = garage.unreadable",
+        "a pass and a registration are created at a garage stored with a timezone the "
+        "system does not carry, while the same write against an unreadable pass is refused",
+    ),
+    "G17/repair-validates": (
+        G17, "store/records.py",
+        '    zone(require_text(timezone, "garage.timezone"))  # refuses an unknown zone by name',
+        '    require_text(timezone, "garage.timezone")  # PLANTED: any text is a timezone',
+        "the repair stores a zone the system does not carry -- the defect it exists to repair",
+    ),
+    "G18/traceback": (
+        "tests/test_g18_the_command_line_refuses_never_tracebacks.py", "cli.py",
+        "    except Refused as refused:\n        print(json.dumps({\"refused\": refused.code,",
+        "    except Refused as refused:\n"
+        "        if refused.field == \"garage.timezone\":\n"
+        "            raise  # PLANTED: the traceback is back\n"
+        "        print(json.dumps({\"refused\": refused.code,",
+        "an unknown timezone at the command line is a traceback again -- the gate's finding",
+    ),
+    "G18/sweep": (
+        "tests/test_g18_the_command_line_refuses_never_tracebacks.py", "localday.py",
+        "        raise ValueError(\n            f\"{what} must carry a timezone.",
+        "        raise RuntimeError(  # PLANTED: an exception class nobody classified\n"
+        "            f\"{what} must carry a timezone.",
+        "a new exception class is raised in the package and the sweep does not notice it",
+    ),
 }
 
 

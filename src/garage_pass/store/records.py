@@ -14,6 +14,21 @@ registrations on the revocation day, so the identity is free from that day
 (``they got divorced``). A registration on a pass whose ``valid_to`` has passed
 is released -- ended on the day after ``valid_to`` -- by the next registration
 attempt that meets it, because expiry is derived and nobody writes it.
+
+**THE TARGET PASS'S STATE IS READ, AND A PASS THAT IS NOT REGISTRABLE IS
+REFUSED BY NAME, NAMING THE STATE.** Registrable: ``draft``,
+``awaiting_enrolment`` and ``active`` (enrolment registers onto the first
+two). Refused: ``suspended`` -- a hold, and a car added to a hold is a claim
+the owner did not make; ``revoked`` -- they got divorced; ``expired`` -- over,
+derived from ``valid_to`` against the registration's ``effective_day``.
+Measured before this: a car was registered onto a REVOKED pass through the
+command line, and the overlap check then SKIPPED holders on revoked passes on
+the assumption that revocation had ended them, so the same car registered
+onto a live pass met the EXCLUDE and was told to "roll back and read again" --
+race advice where there was no race. Now every open registration is a holder
+whatever its pass's state, so the by-name refusal fires with the survivor
+named and the EXCLUDE is the backstop it was designed as: reached only by a
+raw write, or by two registrations genuinely racing.
 """
 
 from __future__ import annotations
@@ -26,11 +41,13 @@ from garage_pass.findings import (
     REFUSAL_CONSTRAINT,
     REFUSAL_EXIT_BEFORE_ENTRY,
     REFUSAL_FIELD_BLANK,
+    REFUSAL_GARAGE_ALREADY_EXISTS,
     REFUSAL_GARAGE_MISMATCH,
     REFUSAL_GARAGE_NOT_FOUND,
     REFUSAL_NO_OPEN_VISIT,
     REFUSAL_PASS_ALREADY_EXISTS,
     REFUSAL_PASS_NOT_FOUND,
+    REFUSAL_PASS_NOT_REGISTRABLE,
     REFUSAL_REGISTRATION_ALREADY_ENDED,
     REFUSAL_REGISTRATION_ENDS_BEFORE_IT_STARTS,
     REFUSAL_REGISTRATION_NOT_FOUND,
@@ -41,8 +58,8 @@ from garage_pass.findings import (
 )
 from garage_pass.garage import Garage, garage_from_stored, require_text
 from garage_pass.localday import day_of, require_aware, zone
-from garage_pass.passes import Holder, Pass, Registration, State, Visit
-from garage_pass.states import transition
+from garage_pass.passes import EXPIRED, Holder, Pass, Registration, State, Visit
+from garage_pass.states import effective_state, transition
 from garage_pass.terms import AllowancePeriod, Direction, Terms, VisitAllowance, Window
 
 ONE_PASS_PER_GARAGE = "vehicle_registrations_one_pass_per_garage"
@@ -50,6 +67,11 @@ ONE_OPEN_VISIT = "visits_one_open_per_vehicle_per_pass"
 ENDED_BY_REVOCATION = "pass revoked"
 ENDED_BY_EXPIRY = "pass valid_to passed"
 ENDED_BY_OWNER = "ended"
+
+#: The typed states a vehicle may be registered onto. Enrolment (the next
+#: round) registers onto the first two; ``suspended`` and ``revoked`` are not
+#: here on purpose, and ``expired`` is derived, so it is checked beside these.
+REGISTRABLE_STATES = frozenset({State.DRAFT, State.AWAITING_ENROLMENT, State.ACTIVE})
 
 
 def as_uuid(value: Any) -> UUID:
@@ -62,11 +84,30 @@ def as_uuid(value: Any) -> UUID:
 
 
 def store_garage(cursor: Any, tenant_id: Any, garage: Garage) -> UUID:
+    """Store a garage. Its timezone was refused where the ``Garage`` value was
+    built if the system does not carry it. A second garage with the same id is
+    refused by name; the UNIQUE is the backstop for two writers racing."""
+    tenant_uuid = as_uuid(tenant_id)
     cursor.execute(
-        "INSERT INTO garages (tenant_id, external_id, timezone, transient_available) "
-        "VALUES (%s, %s, %s, %s) RETURNING id",
-        (as_uuid(tenant_id), garage.id, garage.timezone, garage.transient_available),
+        "SELECT 1 FROM garages WHERE tenant_id = %s AND external_id = %s",
+        (tenant_uuid, garage.id),
     )
+    if cursor.fetchone():
+        raise Refused(REFUSAL_GARAGE_ALREADY_EXISTS, "garage.id", f"garage {garage.id!r}.")
+    import psycopg
+
+    try:
+        cursor.execute(
+            "INSERT INTO garages (tenant_id, external_id, timezone, transient_available) "
+            "VALUES (%s, %s, %s, %s) RETURNING id",
+            (tenant_uuid, garage.id, garage.timezone, garage.transient_available),
+        )
+    except psycopg.errors.UniqueViolation as violation:
+        raise Refused(
+            REFUSAL_CONSTRAINT, "garage.id",
+            f"constraint {violation.diag.constraint_name}: another garage {garage.id!r} "
+            "landed first. Roll back and read again.",
+        ) from violation
     return as_uuid(cursor.fetchone()[0])
 
 
@@ -82,6 +123,48 @@ def load_garage(cursor: Any, tenant_id: Any, external_id: str) -> tuple[UUID, Ga
     # A stored timezone the running system does not carry is an UNREADABLE
     # garage, not an exception: the access call answers, naming the field.
     return as_uuid(row[0]), garage_from_stored(external_id, row[1], row[2])
+
+
+def load_readable_garage(cursor: Any, tenant_id: Any, external_id: str) -> tuple[UUID, Garage]:
+    """The garage for a WRITE: an unreadable one is refused by name, with the
+    refusal that made it unreadable and the command that repairs it.
+
+    The same shape as a write against an unreadable pass: nothing can be
+    written against a clock nobody can read. Measured before this, a pass and
+    a registration were created at a garage stored with ``Mars/Olympus`` while
+    the access call about them degraded to not-covered. Reads still load the
+    garage as it is (``load_garage``), so the access answer names it; and
+    ``set_garage_timezone`` is the one write that takes an unreadable garage,
+    because without it an unreadable garage could never be fixed.
+    """
+    garage_uuid, garage = load_garage(cursor, tenant_id, external_id)
+    if garage.unreadable is not None:
+        u = garage.unreadable
+        raise Refused(
+            u.code, u.field,
+            f"garage {external_id!r} is stored unreadable: {u.detail} Repair it with "
+            "set-garage-timezone before writing against it.",
+        )
+    return garage_uuid, garage
+
+
+def set_garage_timezone(
+    cursor: Any, tenant_id: Any, garage_external_id: str, timezone: str
+) -> dict:
+    """THE REPAIR. Correct a stored garage's timezone -- the one write that
+    does not require the garage to be readable first, because it is how an
+    unreadable garage becomes readable. The new value is refused by name if
+    the system does not carry it, so the repair cannot store the defect it
+    repairs."""
+    tenant_uuid = as_uuid(tenant_id)
+    zone(require_text(timezone, "garage.timezone"))  # refuses an unknown zone by name
+    garage_uuid, garage = load_garage(cursor, tenant_uuid, garage_external_id)
+    cursor.execute(
+        "UPDATE garages SET timezone = %s WHERE tenant_id = %s AND id = %s",
+        (timezone.strip(), tenant_uuid, garage_uuid),
+    )
+    return {"garage": garage_external_id, "timezone": timezone.strip(), "was": garage.timezone,
+            "was_readable": garage.unreadable is None}
 
 
 # ---------------------------------------------------------------------------
@@ -102,7 +185,7 @@ def create_pass(
             REFUSAL_FIELD_BLANK, "pass.terms",
             f"pass {pass_.id!r} carries no readable terms; only the load path builds such a value.",
         )
-    garage_uuid, _garage = load_garage(cursor, tenant_uuid, garage_external_id)
+    garage_uuid, _garage = load_readable_garage(cursor, tenant_uuid, garage_external_id)
     if pass_.garage_id != garage_external_id:
         raise Refused(
             REFUSAL_GARAGE_MISMATCH,
@@ -249,7 +332,7 @@ def change_state(
     """Move a pass, record who/when/why, and -- on revocation -- end its
     registrations on the revocation day in the garage's local calendar."""
     tenant_uuid = as_uuid(tenant_id)
-    garage_uuid, garage = load_garage(cursor, tenant_uuid, garage_external_id)
+    garage_uuid, garage = load_readable_garage(cursor, tenant_uuid, garage_external_id)
     pass_uuid, pass_ = load_pass(cursor, tenant_uuid, garage_uuid, pass_external_id)
     moved, change = transition(pass_, to, by=by, at=at, reason=reason)
     cursor.execute(
@@ -312,8 +395,17 @@ def register_vehicle(
     name if another pass at the garage holds it on any of those days."""
     tenant_uuid = as_uuid(tenant_id)
     identity = require_text(vehicle_identity, "vehicle_identity")
-    garage_uuid, _garage = load_garage(cursor, tenant_uuid, garage_external_id)
+    garage_uuid, _garage = load_readable_garage(cursor, tenant_uuid, garage_external_id)
     pass_uuid, pass_ = load_pass(cursor, tenant_uuid, garage_uuid, pass_external_id)
+    # The TARGET pass first, by name. Revoked outranks unreadable here as it
+    # does in the access answer: a revoked pass is refused as revoked, and
+    # there is nothing about it left to repair.
+    if pass_.state not in REGISTRABLE_STATES:
+        raise Refused(
+            REFUSAL_PASS_NOT_REGISTRABLE, "pass.state",
+            f"pass {pass_external_id!r} is {pass_.state.value}; a vehicle may be registered "
+            f"onto a pass that is {', '.join(sorted(s.value for s in REGISTRABLE_STATES))}.",
+        )
     if pass_.unreadable is not None or pass_.terms is None:
         # Nothing can be registered against terms the module cannot read; the
         # refusal that made the pass unreadable is the refusal here, by name.
@@ -323,6 +415,14 @@ def register_vehicle(
             f"pass {pass_external_id!r} is stored unreadable: {u.detail if u else 'no terms'}",
         )
     last_day = pass_.terms.valid_to
+    if effective_state(pass_, effective_day) == EXPIRED:
+        # Derived, like everywhere else: the pass's valid_to is before the day
+        # this registration would take effect, so it would cover no day.
+        raise Refused(
+            REFUSAL_PASS_NOT_REGISTRABLE, "pass.state",
+            f"pass {pass_external_id!r} is {EXPIRED}: its valid_to {last_day} is before "
+            f"effective_day {effective_day}.",
+        )
     if end_day is not None:
         if end_day <= effective_day:
             raise Refused(
@@ -335,13 +435,15 @@ def register_vehicle(
                 f"end_day {end_day} is past pass {pass_external_id!r} valid_to {last_day}.",
             )
 
-    # 1. Refuse by name before anything is written. A registration on a pass
-    #    whose valid_to has passed before this one takes effect holds nothing --
-    #    expiry is derived -- and is released in step 2, not named here.
+    # 1. Refuse by name before anything is written. An OPEN registration is a
+    #    holder whatever its pass's state -- revocation ends registrations, but
+    #    a row a raw write (or an older version of this module) left open on a
+    #    revoked pass is still the row the EXCLUDE would meet, and it is named
+    #    here rather than met there. A registration on a pass whose valid_to
+    #    has passed before this one takes effect holds nothing -- expiry is
+    #    derived -- and is released in step 2, not named here.
     holders = _holders(cursor, tenant_uuid, garage_uuid, identity, effective_day, end_day)
     for _rid, other, label, state, other_valid_to, other_from, other_end in holders:
-        if state == State.REVOKED.value:
-            continue  # ended at revocation; cannot overlap, but stated for the reader
         if other_valid_to is not None and other_valid_to < effective_day and other_end is None:
             continue  # expired before this registration starts: released below
         ends = (
@@ -383,6 +485,17 @@ def register_vehicle(
             f"constraint {violation.diag.constraint_name}: another registration of "
             f"{identity!r} landed first. Roll back and read again.",
         ) from violation
+    except psycopg.errors.DeadlockDetected as deadlock:
+        # The other shape a genuine race takes at an EXCLUDE: each writer's
+        # INSERT waits on the other's in-progress row and the database rolls
+        # one of them back. Measured on the L3's 120-round probe: 0 in 120 on
+        # two clusters, 1-3 in 120 on a third -- a timing property, and it
+        # reached the caller as a traceback. The advice is the same.
+        raise Refused(
+            REFUSAL_CONSTRAINT, "vehicle_identity",
+            f"constraint {ONE_PASS_PER_GARAGE}: two registrations of {identity!r} raced and "
+            "the database rolled this one back (deadlock detected). Roll back and read again.",
+        ) from deadlock
     return {
         "pass": pass_external_id, "vehicle_identity": identity,
         "effective_day": effective_day, "end_day": end_day,
@@ -397,7 +510,7 @@ def end_registration(
     """End a registration on a day. The identity is free FROM that day."""
     tenant_uuid = as_uuid(tenant_id)
     identity = require_text(vehicle_identity, "vehicle_identity")
-    garage_uuid, _garage = load_garage(cursor, tenant_uuid, garage_external_id)
+    garage_uuid, _garage = load_readable_garage(cursor, tenant_uuid, garage_external_id)
     pass_uuid, _pass = load_pass(cursor, tenant_uuid, garage_uuid, pass_external_id)
     cursor.execute(
         "SELECT id, effective_day, end_day FROM vehicle_registrations WHERE tenant_id = %s "
@@ -471,7 +584,7 @@ def record_entry(
     tenant_uuid = as_uuid(tenant_id)
     identity = require_text(vehicle_identity, "vehicle_identity")
     require_aware(at, "at")
-    garage_uuid, _garage = load_garage(cursor, tenant_uuid, garage_external_id)
+    garage_uuid, _garage = load_readable_garage(cursor, tenant_uuid, garage_external_id)
     pass_uuid, _pass = load_pass(cursor, tenant_uuid, garage_uuid, pass_external_id)
     open_ = _open_visit(cursor, tenant_uuid, pass_uuid, identity)
     if open_ is not None:
@@ -504,7 +617,7 @@ def record_exit(
     tenant_uuid = as_uuid(tenant_id)
     identity = require_text(vehicle_identity, "vehicle_identity")
     require_aware(at, "at")
-    garage_uuid, _garage = load_garage(cursor, tenant_uuid, garage_external_id)
+    garage_uuid, _garage = load_readable_garage(cursor, tenant_uuid, garage_external_id)
     pass_uuid, _pass = load_pass(cursor, tenant_uuid, garage_uuid, pass_external_id)
     open_ = _open_visit(cursor, tenant_uuid, pass_uuid, identity)
     if open_ is None:

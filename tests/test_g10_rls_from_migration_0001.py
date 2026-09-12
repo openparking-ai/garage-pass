@@ -25,10 +25,21 @@ first cut proved isolation on ``garages`` only; a stripped predicate on
 ``tenants``, ``pass_windows`` or ``pass_lanes`` left the suite green
 (measured), and four more tables reddened only by accident.
 
+**THE PUBLISHED INSTALL STEP IS RUN, NOT DESCRIBED.** ``scripts/ensure-app-role.py``
+is the README's second step -- it gives the application role its login -- and
+it shipped with a bind parameter in an ``ALTER ROLE``, which PostgreSQL's
+utility statements cannot take: it died on ``syntax error at or near "$1"``
+on first use, because nothing in ``tests/`` or ``.github/`` had ever run it.
+That absence was the defect; the test at the end of this file runs the script
+against the test cluster, logs in with the password it set, shows a wrong
+password refused (the control: the cluster CHECKS passwords, so "it works" is
+measured and not assumed), and asserts the password reaches no output.
+
 Controls: FORCE removed from one table in the migration; a composite key
 removed from one table in the migration; the policy split into isolated reads
 and open writes; the tenant predicate stripped from each of the eight tables'
-policies in turn -- eight controls, each required to redden this file.
+policies in turn -- eight controls, each required to redden this file; the
+install script's statement planted back to the bind-parameter form.
 """
 
 from __future__ import annotations
@@ -205,3 +216,82 @@ def test_every_table_isolates_one_tenant_from_another_read_and_write(app, owner)
     assert unmeasured == [], f"tenant alpha has no rows in {unmeasured}: UNMEASURED, not clean"
     assert leaks == [], leaks
     assert writes == [], writes
+
+
+# ---------------------------------------------------------------------------
+# The install step: scripts/ensure-app-role.py, RUN.
+# ---------------------------------------------------------------------------
+
+
+def _ensure_app_role(dsn: str, password: str | None, env_extra: dict | None = None):
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    script = Path(__file__).resolve().parent.parent / "scripts" / "ensure-app-role.py"
+    env = {k: v for k, v in os.environ.items() if k != "GARAGE_PASS_APP_PASSWORD"}
+    if password is not None:
+        env["GARAGE_PASS_APP_PASSWORD"] = password
+    env.update(env_extra or {})
+    return subprocess.run(
+        [sys.executable, str(script), dsn], capture_output=True, text=True, env=env,
+    )
+
+
+@pytest.mark.guarantee("G10")
+def test_the_published_install_step_runs_and_the_password_it_sets_logs_in(owner):
+    """Runs the script the README publishes, as the owner, against the test
+    cluster; then logs in as the application role with that password."""
+    from uuid import uuid4
+
+    from psycopg import conninfo
+
+    from garage_pass.store.postgres import APP_ROLE, connect
+    from store_harness import APP_PASSWORD, DSN
+
+    password = f"install-{uuid4().hex}"
+    run = _ensure_app_role(DSN, password)
+    assert run.returncode == 0, (run.stdout, run.stderr)
+    assert "can log in, and still cannot bypass row-level security" in run.stdout
+    assert password not in run.stdout and password not in run.stderr, (
+        "the password reached the script's output"
+    )
+    params = conninfo.conninfo_to_dict(DSN)
+    app_dsn = conninfo.make_conninfo(**{**params, "user": APP_ROLE, "password": password})
+    try:
+        with connect(app_dsn) as fresh:
+            with fresh.cursor() as cursor:
+                cursor.execute("SELECT current_user, rolsuper, rolbypassrls, rolcanlogin "
+                               "FROM pg_roles WHERE rolname = current_user")
+                assert cursor.fetchone() == (APP_ROLE, False, False, True)
+        # THE CONTROL: the cluster checks passwords, so the login above proves the
+        # password and not merely the LOGIN attribute. A cluster on trust auth
+        # would accept anything, and this test would then measure nothing.
+        wrong = conninfo.make_conninfo(**{**params, "user": APP_ROLE,
+                                          "password": f"wrong-{password}"})
+        with pytest.raises(psycopg.OperationalError):
+            connect(wrong).close()
+    finally:
+        # Put the harness's password back -- through the same script, which is
+        # a second run of the install step and must succeed too.
+        restore = _ensure_app_role(DSN, APP_PASSWORD)
+        assert restore.returncode == 0, (restore.stdout, restore.stderr)
+
+
+@pytest.mark.guarantee("G10")
+def test_the_install_step_refuses_to_run_without_a_password_and_never_prints_one(owner):
+    """No password in the environment: exit 2 and a sentence, not a traceback.
+    A failing run (a database that does not exist) prints no password either."""
+    from psycopg import conninfo
+
+    from store_harness import DSN
+
+    run = _ensure_app_role(DSN, None)
+    assert run.returncode == 2 and "GARAGE_PASS_APP_PASSWORD is not set" in run.stdout
+    params = conninfo.conninfo_to_dict(DSN)
+    nowhere = conninfo.make_conninfo(**{**params, "dbname": "garage_pass_no_such_database"})
+    password = "must-not-be-printed-4f9c"
+    run = _ensure_app_role(nowhere, password)
+    assert run.returncode != 0
+    assert password not in run.stdout and password not in run.stderr, (run.stdout, run.stderr)

@@ -15,11 +15,18 @@ the answer SAYS SO BY NAME (``Answer.unmeasured``) while answering on the terms
 that can be evaluated -- never silently treated as satisfied, and never a
 refusal, because an exit is never refused an answer (G4).
 
+**THE INSTANTS A STAY IS MEASURED BETWEEN ARE RENDERED IN THE GARAGE'S ZONE**,
+whatever offset each arrived with. Measured before this: the store handed the
+recorded entry back in the database SESSION's zone (the Mac's clock, +03:00)
+and the detail showed it beside an exit in the caller's -06:00 -- the instants
+and the duration were right, the rendering was not, and a reader comparing
+the two clocks would have got the stay wrong by nine hours.
+
 Controls: the per-window count planted to count the pass's whole life; the
 denominator sentence planted to a fixed string; the open-visit lookup planted
 to ignore the vehicle identity; the UNMEASURED naming planted away (the stay
 then silently treated as satisfied -- wrong-silently, the failure this exists
-to catch).
+to catch); the rendering planted back to each instant's own offset.
 """
 
 from __future__ import annotations
@@ -130,6 +137,31 @@ def test_a_stay_is_measured_from_the_open_entry_of_this_vehicle_on_this_pass():
 
 
 @pytest.mark.guarantee("G9")
+def test_the_stays_instants_are_rendered_in_the_garages_zone_whatever_offset_they_arrived_in():
+    """The recorded entry arrives as +03:00 (the same instant as 11:00 -06:00)
+    and the exit as UTC; the detail shows both as the garage's wall clock."""
+    from datetime import UTC, datetime, timedelta, timezone
+
+    pass_ = a_pass(terms=simple_terms(max_stay=timedelta(hours=2)))
+    plus_three = timezone(timedelta(hours=3))
+    entered = at(MONDAY, 11).astimezone(plus_three)  # 20:00+03:00
+    assert entered.isoformat().endswith("+03:00")
+    exit_utc = at(MONDAY, 13, 30).astimezone(UTC)  # 19:30Z
+    ledger = [Visit(pass_id=pass_.id, vehicle_identity="CAR-1", entry_lane="L1",
+                    entered_at=entered)]
+    late = ask(pass_, ledger, Direction.EXIT, when=exit_utc)
+    assert late.reason == f.OVER_MAX_STAY and "2:30:00 elapsed" in late.detail
+    assert "entered 2026-06-01T11:00:00-06:00, exiting 2026-06-01T13:30:00-06:00" in late.detail
+    assert "(America/Denver)" in late.detail
+    assert "+03:00" not in late.detail and "+00:00" not in late.detail, late.detail
+    # the unmeasured naming renders the same way
+    later = ask(pass_, ledger, Direction.EXIT,
+                when=datetime(2026, 6, 1, 16, 0, tzinfo=UTC))  # 10:00 -06:00
+    assert later.unmeasured is not None and "later than this exit" in later.unmeasured
+    assert "2026-06-01T11:00:00-06:00" in later.unmeasured and "+03:00" not in later.unmeasured
+
+
+@pytest.mark.guarantee("G9")
 def test_a_maximum_stay_with_no_recorded_entry_is_unmeasured_and_says_so_by_name():
     """Answered on the terms that CAN be evaluated; the stay named UNMEASURED,
     with why. Not a refusal, not a silent pass."""
@@ -237,6 +269,7 @@ def test_the_store_measures_a_stay_from_the_recorded_entry(app, tenant_id):
     answer = access_from_store(app, tenant_id, GARAGE.id, "CAR-1", "L1", Direction.EXIT,
                                NOON_MONDAY)
     assert answer.reason == f.OVER_MAX_STAY and "3:00:00 elapsed" in answer.detail
+    assert "entered 2026-06-01T09:00:00-06:00, exiting 2026-06-01T12:00:00-06:00" in answer.detail
     nothing = access_from_store(app, tenant_id, GARAGE.id, "CAR-2", "L1", Direction.EXIT,
                                 NOON_MONDAY)
     assert nothing.outcome is Outcome.COVERED and nothing.missing is None
@@ -275,3 +308,36 @@ def test_one_open_visit_per_vehicle_per_pass_by_refusal_and_by_index(app, tenant
     assert refused.value.code == f.REFUSAL_EXIT_BEFORE_ENTRY
     _exit(app, tenant_id, pass_, "CAR-1", 8)
     assert query(app, tenant_id, "SELECT count(*) FROM visits WHERE exited_at IS NULL") == [(0,)]
+
+
+@pytest.mark.guarantee("G9")
+@store_test
+def test_the_store_renders_the_recorded_entry_in_the_garages_zone_not_the_sessions(
+    app, tenant_id
+):
+    """The database session's zone is set to one the garage is not in (+03:00,
+    the clock the gate found this on) and the detail still shows the recorded
+    entry as the garage's wall clock. Fails under the session zone with the
+    rendering planted back."""
+    pass_ = _store_pass(app, tenant_id, simple_terms(max_stay=timedelta(hours=2)))
+    _entry(app, tenant_id, pass_, "CAR-1", 9)
+    with app.cursor() as cursor:
+        cursor.execute("SET TIME ZONE 'Europe/Istanbul'")
+    app.commit()  # session-level, past the per-test rollback
+    try:
+        with app.cursor() as cursor:
+            cursor.execute("SELECT entered_at FROM visits LIMIT 0")  # the session zone applies
+            cursor.execute("SHOW TIME ZONE")
+            assert cursor.fetchone() == ("Europe/Istanbul",), "the premise: a foreign session zone"
+        app.rollback()
+        answer = access_from_store(app, tenant_id, GARAGE.id, "CAR-1", "L1", Direction.EXIT,
+                                   NOON_MONDAY)
+        assert answer.reason == f.OVER_MAX_STAY and "3:00:00 elapsed" in answer.detail
+        assert "entered 2026-06-01T09:00:00-06:00, exiting 2026-06-01T12:00:00-06:00" in (
+            answer.detail
+        ), answer.detail
+        assert "+03:00" not in answer.detail
+    finally:
+        with app.cursor() as cursor:
+            cursor.execute("SET TIME ZONE DEFAULT")
+        app.commit()

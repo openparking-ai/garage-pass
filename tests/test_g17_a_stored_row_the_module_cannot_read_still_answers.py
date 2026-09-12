@@ -19,8 +19,21 @@ The garage takes the same shape: a stored timezone the system does not carry
 is refused where it is WRITTEN, and an existing bad row answers first --
 entry refused naming ``garage.timezone``, exit not-covered naming it.
 
+**AND A WRITE AGAINST AN UNREADABLE GARAGE IS REFUSED BY NAME, LIKE A WRITE
+AGAINST AN UNREADABLE PASS -- WITH THE ONE CARVE-OUT THAT MAKES THAT SAFE.**
+Measured before this: ``create_pass`` and ``register_vehicle`` succeeded at a
+garage stored with ``Mars/Olympus`` while every write against an unreadable
+pass was refused. Now every write that takes a garage refuses an unreadable
+one, naming the refusal and the repair -- and ``set_garage_timezone`` IS the
+repair: the one write an unreadable garage takes, because refusing every write
+without it would make an unreadable garage permanently unfixable, a trap worse
+than the inconsistency. The set of writes is DERIVED from the store's own
+signatures, so a write added later is covered or the test fails.
+
 Controls: the load path's catch planted away (a stored contradiction raises
-again); the garage's catch planted away.
+again); the garage's catch planted away; the write gate on an unreadable
+garage planted open; the repair's validation of the new zone planted away
+(the repair could then store the defect it repairs).
 """
 
 from __future__ import annotations
@@ -353,3 +366,126 @@ def test_the_stranding_test_would_have_seen_an_exception(app, tenant_id, monkeyp
     with pytest.raises(f.Refused):
         simple_terms(max_stay=timedelta(hours=8))
     assert at(date(2026, 6, 1), 12) == NOON_MONDAY  # the fixture instant, unchanged
+
+
+# ---------------------------------------------------------------------------
+# writes against an unreadable garage, and the repair
+# ---------------------------------------------------------------------------
+
+from garage_pass.store import records  # noqa: E402
+
+REPAIR = "set_garage_timezone"
+
+
+def writes_against_a_garage() -> list[str]:
+    """Every public function in the store whose third parameter is the
+    garage's external id -- the writes a garage takes -- read from the
+    signatures, not typed. ``load_garage``/``registrations_of`` take a uuid or
+    are named differently, and are reads."""
+    import inspect
+
+    found = []
+    for name, function in vars(records).items():
+        if name.startswith("_") or not inspect.isfunction(function):
+            continue
+        parameters = list(inspect.signature(function).parameters)
+        if len(parameters) >= 3 and parameters[2] == "garage_external_id":
+            found.append(name)
+    return sorted(found)
+
+
+def _raw_bad_garage(owner, tenant_id, external_id="g-badtz"):
+    with owner.cursor() as cursor:
+        cursor.execute(
+            "INSERT INTO garages (tenant_id, external_id, timezone, transient_available) "
+            "VALUES (%s, %s, 'Mars/Olympus', true)",
+            (tenant_id, external_id),
+        )
+
+
+@pytest.mark.guarantee("G17")
+@store_test
+def test_every_write_against_an_unreadable_garage_is_refused_by_name_and_the_repair_works(
+    app, owner, tenant_id
+):
+    from garage_pass.store.records import change_state, end_registration, record_exit
+
+    _raw_bad_garage(owner, tenant_id)
+    pass_ = a_pass(garage_id="g-badtz")
+    calls = {
+        "create_pass": lambda c: records.create_pass(c, tenant_id, "g-badtz", pass_, by="owner",
+                                                     at=NOON_MONDAY),
+        "register_vehicle": lambda c: register_vehicle(c, tenant_id, "g-badtz", pass_.id,
+                                                       "CAR-1", date(2026, 1, 1)),
+        "end_registration": lambda c: end_registration(c, tenant_id, "g-badtz", pass_.id,
+                                                       "CAR-1", date(2026, 6, 1)),
+        "change_state": lambda c: change_state(c, tenant_id, "g-badtz", pass_.id,
+                                               State.SUSPENDED, by="owner", at=NOON_MONDAY,
+                                               reason="hold"),
+        "record_entry": lambda c: records.record_entry(c, tenant_id, "g-badtz", pass_.id,
+                                                       "CAR-1", "L1", TWO_HOURS_BEFORE),
+        "record_exit": lambda c: record_exit(c, tenant_id, "g-badtz", pass_.id, "CAR-1", "L1",
+                                             NOON_MONDAY),
+    }
+    assert sorted([*calls, REPAIR]) == writes_against_a_garage(), (
+        "a write against a garage exists that this test does not exercise"
+    )
+    for name, call in calls.items():
+        with pytest.raises(f.Refused) as refused:
+            with tenant(app, tenant_id) as cursor:
+                call(cursor)
+        app.rollback()
+        assert refused.value.code == f.REFUSAL_TIMEZONE_UNKNOWN, (name, refused.value)
+        assert refused.value.field == "garage.timezone", name
+        assert "'g-badtz' is stored unreadable" in refused.value.detail, name
+        assert "Mars/Olympus" in refused.value.detail and "set-garage-timezone" in (
+            refused.value.detail
+        ), name
+    assert query(app, tenant_id, "SELECT count(*) FROM passes") == [(0,)], "a write landed"
+    # the exit still answers about it, as before
+    exit_ = answered(access_from_store, app, tenant_id, "g-badtz", "CAR-1", "L1", Direction.EXIT,
+                              NOON_MONDAY)
+    assert exit_.reason == f.GARAGE_UNREADABLE
+    # THE REPAIR: the one write an unreadable garage takes
+    with tenant(app, tenant_id) as cursor:
+        out = records.set_garage_timezone(cursor, tenant_id, "g-badtz", "America/Denver")
+    app.commit()
+    assert out == {"garage": "g-badtz", "timezone": "America/Denver", "was": "Mars/Olympus",
+                   "was_readable": False}
+    with tenant(app, tenant_id) as cursor:
+        records.create_pass(cursor, tenant_id, "g-badtz", pass_, by="owner", at=NOON_MONDAY)
+        register_vehicle(cursor, tenant_id, "g-badtz", pass_.id, "CAR-1", date(2026, 1, 1))
+    app.commit()
+    entry = answered(access_from_store, app, tenant_id, "g-badtz", "CAR-1", "L1", Direction.ENTRY,
+                              NOON_MONDAY)
+    assert entry.outcome is Outcome.COVERED, entry
+
+
+@pytest.mark.guarantee("G17")
+@store_test
+def test_the_repair_refuses_a_zone_the_system_does_not_carry_and_changes_nothing(
+    app, owner, tenant_id
+):
+    """The repair cannot store the defect it repairs: an unknown zone is
+    refused by name, naming the value, and the row is untouched. A readable
+    garage may be repaired too (a wrong-but-known zone is still wrong)."""
+    _raw_bad_garage(owner, tenant_id)
+    with pytest.raises(f.Refused) as refused:
+        with tenant(app, tenant_id) as cursor:
+            records.set_garage_timezone(cursor, tenant_id, "g-badtz", "Mars/Tharsis")
+    app.rollback()
+    assert refused.value.code == f.REFUSAL_TIMEZONE_UNKNOWN
+    assert refused.value.field == "garage.timezone" and "Mars/Tharsis" in refused.value.detail
+    assert query(app, tenant_id, "SELECT timezone FROM garages") == [("Mars/Olympus",)]
+    with pytest.raises(f.Refused) as refused:
+        with tenant(app, tenant_id) as cursor:
+            records.set_garage_timezone(cursor, tenant_id, "g-nowhere", "America/Denver")
+    app.rollback()
+    assert refused.value.code == f.REFUSAL_GARAGE_NOT_FOUND
+    seed(app, tenant_id, GARAGE, ())
+    with tenant(app, tenant_id) as cursor:
+        out = records.set_garage_timezone(cursor, tenant_id, GARAGE.id, "America/Phoenix")
+    app.commit()
+    assert out["was"] == "America/Denver" and out["was_readable"] is True
+    assert query(app, tenant_id, "SELECT timezone FROM garages WHERE external_id = %s",
+                 (GARAGE.id,)) == [("America/Phoenix",)]

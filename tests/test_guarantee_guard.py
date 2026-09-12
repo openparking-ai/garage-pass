@@ -341,11 +341,20 @@ def test_the_controls_runner_refuses_a_control_whose_only_reds_are_exceptions(tm
     that dropped two SQL placeholders, a plant that dereferenced None on the
     next line, and a near-miss where one of six reds was a driver error. The
     runner now reads every red's REASON and refuses a control with no
-    assertion red. Exercised against the runner itself: the L3's crashing
-    version of G9/missing-entry is planted through it and must be reported
-    EXCEPTION-ONLY; the shipped, quiet plant must be reported RED with
-    assertion reds. The near-miss shape -- assertions plus one other -- is
-    allowed and reported as such."""
+    assertion red. Exercised against the runner itself: a crashing cut of the
+    access call -- the local day planted to None, so every G9 test dies on a
+    TypeError before any assertion -- is planted through it and must be
+    reported EXCEPTION-ONLY; the shipped, quiet plant must be reported RED
+    with assertion reds. The near-miss shape -- assertions plus one other --
+    is allowed and reported as such.
+
+    (The L3's own crashing cut -- `if False:` on the None check, the next
+    line dereferencing None -- was the example here until the gate-fix round:
+    G9's tests now assert `unmeasured is not None` on an entry later than the
+    exit, and under that cut the stay is measured negative and that assertion
+    reddens beside the AttributeErrors. The test set got better and the old
+    cut stopped being exception-only, which is the point of the rule; the
+    example moved to a cut that still is.)"""
     import io
     import sys
     from contextlib import redirect_stdout
@@ -355,17 +364,18 @@ def test_the_controls_runner_refuses_a_control_whose_only_reds_are_exceptions(tm
 
     crashing = (
         fail_controls.G9, "access.py",
-        "            if open_visit is None or at < open_visit.entered_at:",
-        "            if False:  # PLANTED (the L3's crashing cut): the next line dereferences None",
-        "the first cut of G9/missing-entry",
+        "    tz = zone(garage.timezone)\n    today = day_of(at, tz)\n",
+        "    tz = zone(garage.timezone)\n"
+        "    today = None  # PLANTED (a crashing cut): every comparison with the day dies\n",
+        "a crashing cut: no test reaches an assertion",
     )
     fail_controls.CONTROLS["G9/crashing-cut"] = crashing
     try:
         buffer = io.StringIO()
         with redirect_stdout(buffer):
             fired = fail_controls.run_control("G9/crashing-cut")
-        assert fired is False, "a control whose reds are all AttributeError counted as fired"
-        assert "EXCEPTION-ONLY" in buffer.getvalue() and "AttributeError" in buffer.getvalue()
+        assert fired is False, "a control whose reds are all TypeError counted as fired"
+        assert "EXCEPTION-ONLY" in buffer.getvalue() and "TypeError" in buffer.getvalue()
     finally:
         del fail_controls.CONTROLS["G9/crashing-cut"]
     buffer = io.StringIO()

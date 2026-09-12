@@ -91,6 +91,7 @@ from garage_pass.localday import (
     day_of,
     elapsed,
     iso_weekday_of,
+    local,
     minute_of_day,
     require_aware,
     zone,
@@ -226,6 +227,16 @@ def access(
         return refused(MISSING_TIMEZONE, what)
     tz = zone(garage.timezone)
     today = day_of(at, tz)
+
+    def rendered(instant: datetime) -> str:
+        """An instant as the garage's wall clock reads it -- every instant a
+        detail shows is rendered in the garage's zone, whatever offset it
+        arrived with. Measured before this: an OVER_MAX_STAY detail showed the
+        recorded entry in the DATABASE SESSION's zone beside the exit in the
+        caller's offset; the instants and the duration were right, the
+        rendering was not."""
+        return local(instant, tz).isoformat()
+
     if not identity:
         if is_exit:
             return not_covered(BLANK_IDENTITY, f"vehicle_identity is {vehicle_identity!r}.")
@@ -377,9 +388,9 @@ def access(
                 # that can be evaluated and the lane is told what was not.
                 unmeasured = (
                     f"max_stay {terms.max_stay} of pass {pass_.id!r} could not be measured for "
-                    f"vehicle {identity!r} at {at.isoformat()}: "
+                    f"vehicle {identity!r} at {rendered(at)}: "
                     + (
-                        f"the open recorded entry is at {open_visit.entered_at.isoformat()}, "
+                        f"the open recorded entry is at {rendered(open_visit.entered_at)}, "
                         "later than this exit."
                         if open_visit else
                         "no open recorded entry of this vehicle on this pass."
@@ -391,8 +402,8 @@ def access(
                 if stayed > terms.max_stay:
                     return not_covered(
                         OVER_MAX_STAY,
-                        f"entered {open_visit.entered_at.isoformat()}, exiting "
-                        f"{at.isoformat()}: {stayed} elapsed, more than {terms.max_stay}.",
+                        f"entered {rendered(open_visit.entered_at)}, exiting {rendered(at)} "
+                        f"({garage.timezone}): {stayed} elapsed, more than {terms.max_stay}.",
                         pass_,
                     )
                 covering.append(f"stayed {stayed} of at most {terms.max_stay}")

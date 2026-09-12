@@ -11,6 +11,13 @@ a script that could make every isolation test pass for the wrong reason.
 
 Run as the database owner. The password is read from the environment and never
 from an argument, because arguments are visible in `ps` to every user on the box.
+It is put into the statement by ``psycopg.sql`` composition -- quoted as a
+literal, never interpolated as a string -- because ``ALTER ROLE`` is a utility
+statement and PostgreSQL binds no parameters into those: the first cut passed
+the password as a bind parameter and the README's second install step died on
+``syntax error at or near "$1"``, and nothing in the tree had ever run the
+script. A test now runs it against the test cluster (``tests/test_g10_...``),
+and it prints nothing that contains the password.
 """
 
 from __future__ import annotations
@@ -33,14 +40,18 @@ def main(argv: list[str]) -> int:
         return 2
 
     import psycopg
+    from psycopg import sql
 
     with psycopg.connect(argv[0]) as connection:
         connection.autocommit = True
         with connection.cursor() as cursor:
             # ALTER, never CREATE: the role's attributes are the migration's, and
-            # this script may not be a route to changing them.
+            # this script may not be a route to changing them. A quoted LITERAL,
+            # not a bind parameter: utility statements take none.
             cursor.execute(
-                "ALTER ROLE garage_pass_app LOGIN PASSWORD %s", (password,)
+                sql.SQL("ALTER ROLE garage_pass_app LOGIN PASSWORD {}").format(
+                    sql.Literal(password)
+                )
             )
             cursor.execute(
                 "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = "

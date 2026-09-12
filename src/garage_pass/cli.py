@@ -6,12 +6,28 @@
         --vehicle ID --lane L --direction entry|exit --at 2026-04-01T09:00:00-06:00
 
 Exit status: 0 covered, 1 not covered, 2 refused to answer, 3 the request was
-refused (a contradiction, a bad document). The answer is printed as JSON, and
-there is no money in it.
+refused (a contradiction, a bad document, an unknown timezone, a malformed
+instant or day). The answer is printed as JSON, and there is no money in it.
 
-Against the store (``GARAGE_PASS_DSN``, ``--tenant``): ``create-garage``, ``create-pass``,
-``register-vehicle``, ``end-registration``, ``set-state``, ``record-entry``,
-``record-exit`` and ``access-in-store``.
+Against the store (``GARAGE_PASS_DSN``, ``--tenant``): ``create-garage``,
+``set-garage-timezone`` (the repair for a garage stored with a timezone the
+system does not carry -- the one write that takes an unreadable garage),
+``create-pass``, ``register-vehicle``, ``end-registration``, ``set-state``,
+``record-entry``, ``record-exit`` and ``access-in-store``. A store command with
+no ``GARAGE_PASS_DSN``, or one the database refuses to connect, prints a
+sentence to stderr and exits 2.
+
+**A REFUSAL IS RENDERED, NEVER A TRACEBACK.** Every ``Refused`` the module
+raises -- and ``UnknownTimezone`` is one -- reaches this boundary and is printed
+as ``{"refused": code, "field": ..., "detail": ...}`` with exit 3. What the
+libraries this boundary calls can raise is mapped here too: a document that
+cannot be read as JSON, an instant or a day that does not parse, a naive
+instant, a registrations or visits document that is not a list. Measured
+before this: ``create-garage`` with a mistyped zone printed sixty lines of
+``zoneinfo`` stack. ``tests/test_g18_...`` enumerates every ``raise`` in the
+package by AST and classifies each as rendered here or a programming error a
+command cannot reach, so a new exception class fails that test until it is
+classified.
 """
 
 from __future__ import annotations
@@ -34,7 +50,11 @@ from garage_pass.documents import (
     load_visit,
     read_json,
 )
-from garage_pass.findings import Refused
+from garage_pass.findings import (
+    REFUSAL_DOCUMENT_UNREADABLE,
+    REFUSAL_FIELD_BLANK,
+    Refused,
+)
 from garage_pass.states import parse_state
 from garage_pass.terms import Direction
 
@@ -77,6 +97,13 @@ def _parser() -> argparse.ArgumentParser:
     s = sub.add_parser("create-garage", help="store a garage document")
     s.add_argument("--tenant", required=True, type=UUID, help="the tenant's uuid")
     s.add_argument("--garage", required=True, help="the garage document")
+    s = sub.add_parser(
+        "set-garage-timezone",
+        help="repair a stored garage's timezone; the one write an unreadable garage takes",
+    )
+    s.add_argument("--tenant", required=True, type=UUID, help="the tenant's uuid")
+    s.add_argument("--garage", required=True, help="the garage's external id")
+    s.add_argument("--timezone", required=True, help="an IANA name such as America/Denver")
 
     def store(name: str, help_: str) -> argparse.ArgumentParser:
         s = sub.add_parser(name, help=help_)
@@ -125,10 +152,55 @@ def _movement(s: argparse.ArgumentParser) -> None:
     s.add_argument("--at", required=True, help="ISO instant with an offset")
 
 
-def _at(text: str) -> datetime:
+# ---- the boundary: what the libraries raise, rendered as refusals ----------
+
+
+def _at(text: str, option: str = "--at") -> datetime:
+    """An ISO instant WITH an offset, or a refusal naming the option and the
+    value. A naive instant would be read as the running machine's local time,
+    which is a property of the server and not of the garage."""
     from garage_pass.localday import require_aware
 
-    return require_aware(datetime.fromisoformat(text), "--at")
+    try:
+        return require_aware(datetime.fromisoformat(text), option)
+    except (TypeError, ValueError) as exc:
+        raise Refused(
+            REFUSAL_FIELD_BLANK, option,
+            f"{option} must be an ISO instant with an offset, such as "
+            f"2026-06-01T09:00:00-06:00, not {text!r}: {exc}",
+        ) from None
+
+
+def _day(text: str, option: str) -> date:
+    try:
+        return date.fromisoformat(text)
+    except (TypeError, ValueError):
+        raise Refused(
+            REFUSAL_FIELD_BLANK, option, f"{option} must be YYYY-MM-DD, not {text!r}."
+        ) from None
+
+
+def _document(path: str, option: str) -> Any:
+    """``read_json``, with a missing, unreadable or non-JSON file refused by
+    name rather than raised as ``FileNotFoundError`` or ``JSONDecodeError``."""
+    try:
+        return read_json(path)
+    except (OSError, ValueError) as exc:
+        raise Refused(
+            REFUSAL_DOCUMENT_UNREADABLE, option,
+            f"{option} {path!r} could not be read: {exc}",
+        ) from None
+
+
+def _list(path: str, option: str) -> list:
+    """A document that must be a JSON list -- registrations, visits."""
+    document = _document(path, option)
+    if not isinstance(document, list):
+        raise Refused(
+            REFUSAL_FIELD_BLANK, option,
+            f"{option} {path!r} must be a JSON list, not {type(document).__name__}.",
+        )
+    return document
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -144,17 +216,18 @@ def main(argv: list[str] | None = None) -> int:
 def _run(args: argparse.Namespace) -> int:
     if args.command == "check-terms":
         for path in args.passes:
-            pass_ = load_pass(read_json(path))
+            pass_ = load_pass(_document(path, "--pass"))
             _print({"pass": pass_.id, "terms": pass_.terms.describe(), "contradictions": "none"})
         return 0
 
     if args.command == "access":
         answer = access(
-            garage=load_garage(read_json(args.garage)),
-            passes=[load_pass(read_json(p)) for p in args.passes],
-            registrations=[load_registration(r) for r in read_json(args.registrations)]
+            garage=load_garage(_document(args.garage, "--garage")),
+            passes=[load_pass(_document(p, "--pass")) for p in args.passes],
+            registrations=[load_registration(r)
+                           for r in _list(args.registrations, "--registrations")]
             if args.registrations else [],
-            visits=[load_visit(v) for v in read_json(args.visits)] if args.visits else [],
+            visits=[load_visit(v) for v in _list(args.visits, "--visits")] if args.visits else [],
             vehicle_identity=args.vehicle,
             lane=args.lane,
             direction=Direction(args.direction),
@@ -172,7 +245,15 @@ def _run(args: argparse.Namespace) -> int:
     if not dsn:
         print("GARAGE_PASS_DSN is not set.", file=sys.stderr)
         return 2
-    connection = connect(dsn)
+    import psycopg
+
+    try:
+        connection = connect(dsn)
+    except psycopg.OperationalError as exc:
+        # Configuration, not a refusal of the request: one sentence, exit 2,
+        # like the unset DSN above. The DSN itself is not echoed.
+        print(f"GARAGE_PASS_DSN did not connect: {exc}".strip(), file=sys.stderr)
+        return 2
     connection.autocommit = False
     try:
         if args.command == "access-in-store":
@@ -184,24 +265,26 @@ def _run(args: argparse.Namespace) -> int:
             return EXIT_BY_OUTCOME[answer.outcome]
         with tenant(connection, args.tenant) as cursor:
             if args.command == "create-garage":
-                garage = load_garage(read_json(args.garage))
+                garage = load_garage(_document(args.garage, "--garage"))
                 records.store_garage(cursor, args.tenant, garage)
                 out: Any = {"stored": garage.id, "transient_available": garage.transient_available}
+            elif args.command == "set-garage-timezone":
+                out = records.set_garage_timezone(cursor, args.tenant, args.garage, args.timezone)
             elif args.command == "create-pass":
-                pass_ = load_pass(read_json(args.pass_))
+                pass_ = load_pass(_document(args.pass_, "--pass"))
                 records.create_pass(cursor, args.tenant, args.garage, pass_, by=args.by,
                                     at=_at(args.at))
                 out = {"stored": pass_.id, "state": pass_.state.value}
             elif args.command == "register-vehicle":
                 out = records.register_vehicle(
                     cursor, args.tenant, args.garage, args.pass_id, args.vehicle,
-                    date.fromisoformat(args.effective_day),
-                    date.fromisoformat(args.end_day) if args.end_day else None,
+                    _day(args.effective_day, "--effective-day"),
+                    _day(args.end_day, "--end-day") if args.end_day else None,
                 )
             elif args.command == "end-registration":
                 out = records.end_registration(
                     cursor, args.tenant, args.garage, args.pass_id, args.vehicle,
-                    date.fromisoformat(args.end_day),
+                    _day(args.end_day, "--end-day"),
                 )
             elif args.command == "set-state":
                 out = records.change_state(

@@ -17,7 +17,7 @@ marked as such rather than left looking measured.
 <!-- GENERATED:guarantees -->
 | id | what is guaranteed |
 |---|---|
-| **G1** | ONE CAR, ONE PASS PER GARAGE. A vehicle identity is registered to one pass at a garage for any given day; a second registration overlapping it is refused BY NAME, naming the pass that holds the identity and the day that registration ends, BEFORE the database constraint has to -- and a refusal writes nothing. The database's EXCLUDE is the backstop for a raw insert and for two registrations racing. Ending a registration on day D frees the identity FROM D: a registration elsewhere effective D is accepted, and the old pass covers the vehicle up to and not including D. |
+| **G1** | ONE CAR, ONE PASS PER GARAGE. A vehicle identity is registered to one pass at a garage for any given day; a second registration overlapping it is refused BY NAME, naming the pass that holds the identity, its state and the day that registration ends, BEFORE the database constraint has to -- every open registration is a holder whatever its pass's state -- and a refusal writes nothing. The TARGET pass's state is read: a registration onto a suspended, revoked or expired pass is refused by name, naming the state; draft, awaiting enrolment and active take registrations. The database's EXCLUDE is the backstop for a raw insert and for two registrations genuinely racing -- in either shape the race takes, the constraint firing or the database rolling one writer back, the loser is refused by the constraint's name and never a traceback -- and is reached through the module by nothing else. Ending a registration on day D frees the identity FROM D: a registration elsewhere effective D is accepted, and the old pass covers the vehicle up to and not including D. |
 | **G2** | Contradictory terms are refused AT CREATION, naming the field: a valid_to before valid_from, a window that no day in the valid range can satisfy, an empty window, a maximum stay of zero, a visit allowance of zero, a per-window allowance with no windows, no direction, an empty lane set -- and ONLY contradictions: a maximum stay longer than a window is slack, not a contradiction (windows bind instants, not stays), and such a pass is created and its maximum binds at the exit. A Terms value that fails the check cannot be constructed, so the access call never meets a contradiction. The schema's CHECKs back the single-table rules for a raw write; the three that span two tables are named in the migration and backed by the load path (G17). |
 | **G3** | No fee, no amount, no balance and no barrier command ever crosses the access call: the answer's fields carry none, the schema has no money-shaped or reservation-shaped column, and a document with a field this module does not know is refused rather than ignored. This module never opens or closes a gate and never counts who is inside. |
 | **G4** | AN EXIT IS NEVER REFUSED, AND EVERY EXIT IS ANSWERED. No term, no state and no revocation refuses an exit to a vehicle that is inside: every exit produces a stated COVERED or NOT-COVERED answer -- refused-to-answer is not an outcome an exit can have, and the absence of an answer, a refusal and an exception are each a failure of this guarantee. Whatever cannot be evaluated at an exit is NAMED, never guessed: a blank identity or lane, an unmeasurable maximum stay, an unreadable pass or garage, two passes holding one car. Every exit answer carries the sentence that says so, a not-covered exit means OUT-OF-TERMS and never a refusal, in every state including revoked, and the exit half of the call does not read the garage's transient mode. |
@@ -25,7 +25,7 @@ marked as such rather than left looking measured.
 | **G6** | A garage that has not stated whether transient parking is available makes the access call REFUSE TO ANSWER at entry, naming the field. There is no default and no inference; the store keeps the field nullable so that unstated is a state and not a false. |
 | **G7** | Terms evaluate in the GARAGE'S LOCAL DAY: a window's minutes are the garage's wall clock and its days are the garage's weekdays, measured at the window edges on the spring-forward and fall-back days where a UTC reading disagrees; and a stay's length is elapsed time between instants, computed in UTC, so a stay across the fall-back hour is an hour longer than its wall clocks say. |
 | **G8** | An unknown vehicle identity gets a STATED answer -- not covered, NO_PASS, with the nearest ended or future registration named when there is one -- never an accidental refusal and never a silent pass. A BLANK identity is refused an answer AT AN ENTRY, naming the field, because there is nothing to look up; at an exit the same input is answered not-covered, naming the field. |
-| **G9** | A visit allowance and a maximum stay are computed from the module's OWN recorded visits and from nothing else, and the answer names its denominator: how many entries were counted, on which pass, over its life or in which window on which day; and which entry a stay was measured from. A maximum stay with no open recorded entry to measure from is UNMEASURED and the answer says so by name while answering on the terms that can be evaluated -- never silently treated as satisfied, and never a refusal. |
+| **G9** | A visit allowance and a maximum stay are computed from the module's OWN recorded visits and from nothing else, and the answer names its denominator: how many entries were counted, on which pass, over its life or in which window on which day; and which entry a stay was measured from, both instants rendered as the garage's wall clock whatever offset each arrived with. A maximum stay with no open recorded entry to measure from is UNMEASURED and the answer says so by name while answering on the terms that can be evaluated -- never silently treated as satisfied, and never a refusal. |
 | **G10** | Row-level security on every table from migration 0001: a tenant column, ENABLE, FORCE and a policy on each, read from the catalogue and never from a list; isolation proven ON EVERY TENANT-BEARING TABLE, from the catalogue, by a role that COULD bypass being shown it cannot read or write another tenant's rows -- and a stripped predicate on any one of the eight tables reddens it; and every garage and pass reference is half of a composite tenant key, so a row cannot name another tenant's garage or pass even by a raw insert. |
 | **G11** | Nothing real in the tree: no email address that is not obviously invented, no card-shaped value, and no name from the maintainer's other software, in any file git tracks -- swept in Python over `git ls-files` with a positive control that fires before the result is read, and by CI guards that self-test the same way. |
 | **G12** | Every state change records WHO, WHEN and WHY, none blank, into an append-only history: the application role holds SELECT and INSERT on it and nothing else, read from the catalogue and proven by a refused UPDATE -- and holds no DELETE on any table whose deletion cascades into it, the set read from the catalogue and walked transitively, so the history cannot be erased by deleting what it belongs to. The allowed transitions are the published ones, `expired` is derived from valid_to and refused if typed, and revoked outranks expiry. |
@@ -33,9 +33,10 @@ marked as such rather than left looking measured.
 | **G14** | The fixtures are capable of exercising what they claim: the shifting zone really shifts on the named transition days, the fixed zone really does not, and the terms matrix holds cases on both sides of every axis the access answer branches on. |
 | **G15** | docs/CONTRACT.md is DERIVED: the guarantees, the refusals, the not-covered reasons, the barrier meanings, the answer fields, the states and transitions, the document keys and the worked example are generated from the registries and by running the module -- and the derivation is proven by plants that contradict the prose and require it to change, never by comparing two copies of the same claim. |
 | **G16** | No test module sits outside the guarantee registry: every test module carries a registered guarantee mark or is named in an empty allowance, a module that plants a defect may not be excused, and a registered guarantee whose test did not run and pass fails the whole run unless its id is named in a written-down allowance that CI leaves empty. |
-| **G17** | A stored pass or garage this module cannot read degrades to a STATED answer, never an exception: at an entry refused-to-answer naming the field, at an exit not-covered naming the pass and the field (which at a transient garage means chargeable, and is said so). Terms are re-validated on every load, so a raw row no CHECK can reach, or a validator tightened after the row was stored, strands the pass -- and a stranded pass still answers. A timezone the system does not carry is refused where the garage is written, and an existing bad row answers first, naming the field. |
+| **G17** | A stored pass or garage this module cannot read degrades to a STATED answer, never an exception: at an entry refused-to-answer naming the field, at an exit not-covered naming the pass and the field (which at a transient garage means chargeable, and is said so). Terms are re-validated on every load, so a raw row no CHECK can reach, or a validator tightened after the row was stored, strands the pass -- and a stranded pass still answers. A timezone the system does not carry is refused where the garage is written, and an existing bad row answers first, naming the field. A WRITE against an unreadable pass or an unreadable garage is refused by name, naming the refusal that made it unreadable -- except the one write that repairs it: a garage's timezone can be corrected, so an unreadable garage is never permanently unfixable. |
+| **G18** | THE COMMAND LINE RENDERS A REFUSAL, NEVER A TRACEBACK. Every Refused the module raises -- an unknown timezone is one -- is printed as the JSON refusal naming the field and the value, with exit status 3; a document that cannot be read, an instant or a day that does not parse, and a naive instant are refused the same way, and a database that does not connect is a sentence on stderr with exit 2. Every raise in the package is enumerated by AST and classified as rendered at that boundary or as a programming error no command can reach; an exception class in neither fails the suite until it is classified. |
 
-That is 17 guarantees. Every one of them has a fail control that has been proven to fire, and the count above is derived from the registry rather than typed here.
+That is 18 guarantees. Every one of them has a fail control that has been proven to fire, and the count above is derived from the registry rather than typed here.
 <!-- END:guarantees -->
 
 ## The answer
@@ -159,9 +160,11 @@ but an UNREADABLE pass, answered as G17 states.
 |---|---|
 | `REFUSAL_ALLOWANCE_PER_WINDOW_WITHOUT_WINDOWS` | The visit allowance is counted per window and the pass has no windows, so there is nothing to count it against. |
 | `REFUSAL_CONSTRAINT` | The database refused the write by a constraint the module did not catch first. Named by its constraint so it is a refusal and not a traceback; two writers racing end here. |
+| `REFUSAL_DOCUMENT_UNREADABLE` | A document named on the command line could not be read: the file is missing, unreadable, or not JSON. The detail names the path and what went wrong. |
 | `REFUSAL_EXIT_BEFORE_ENTRY` | The exit instant is earlier than the entry it would close. |
 | `REFUSAL_EXPIRED_IS_DERIVED` | Expired is derived from the pass's valid_to and is never typed by anyone. To end a pass early, revoke it; to end it on a day, that day is valid_to. |
 | `REFUSAL_FIELD_BLANK` | A required field is blank. The field is named beside this code. |
+| `REFUSAL_GARAGE_ALREADY_EXISTS` | A garage with that id already exists in this tenant. |
 | `REFUSAL_GARAGE_MISMATCH` | A pass belongs to one garage and was asked about another. One garage per pass is the stated shape. |
 | `REFUSAL_GARAGE_NOT_FOUND` | No garage with that id in this tenant. |
 | `REFUSAL_HOLDER_EMAIL_MALFORMED` | The holder's email address does not look like one -- it needs one @ with something on both sides. The email is the holder's identity in this module, so a malformed one identifies nobody. |
@@ -172,6 +175,7 @@ but an UNREADABLE pass, answered as G17 states.
 | `REFUSAL_NO_OPEN_VISIT` | No recorded entry of this vehicle on this pass is still open, so there is no visit for this exit to close. |
 | `REFUSAL_PASS_ALREADY_EXISTS` | A pass with that id already exists at that garage. |
 | `REFUSAL_PASS_NOT_FOUND` | No pass with that id at that garage in this tenant. |
+| `REFUSAL_PASS_NOT_REGISTRABLE` | A vehicle may be registered onto a pass that is draft, awaiting enrolment or active. This pass is not: the detail names its state. A suspended pass is a hold, and a car added to a hold is a claim the owner did not make; a revoked pass is revoked; an expired pass -- derived from its valid_to against the registration's effective day -- is over. |
 | `REFUSAL_REGISTRATION_ALREADY_ENDED` | That registration already has an end day. A registration is ended once; to move the day, that is a new registration. |
 | `REFUSAL_REGISTRATION_ENDS_BEFORE_IT_STARTS` | The registration ends on or before the day it takes effect, so it covers no day. |
 | `REFUSAL_REGISTRATION_NOT_FOUND` | No registration of that vehicle on that pass. |
@@ -180,6 +184,7 @@ but an UNREADABLE pass, answered as G17 states.
 | `REFUSAL_STATE_CHANGE_NEEDS_WHO_AND_WHY` | A state change records who made it and why, and one of those is blank. |
 | `REFUSAL_STATE_TRANSITION_NOT_ALLOWED` | The pass cannot move from its current state to the one asked for. The allowed moves are published in the contract. |
 | `REFUSAL_STATE_UNKNOWN` | The state named is not one this module has. |
+| `REFUSAL_TIMEZONE_UNKNOWN` | The timezone named is not an IANA name this system carries. It is refused rather than defaulted to UTC: a pass evaluated on UTC clocks crosses its own window edges by hours, and nothing in the answer would say so. The detail names the value; a garage already stored with one is repaired with set-garage-timezone. |
 | `REFUSAL_UNKNOWN_FIELD` | A document carries a field this module does not know. It is refused rather than ignored: a field silently dropped is a term the owner believes is in force and is not. |
 | `REFUSAL_VALID_TO_BEFORE_VALID_FROM` | The pass ends before it starts: valid_to is earlier than valid_from. There is no day on which such a pass could cover anything, so it is not created. |
 | `REFUSAL_VEHICLE_ON_ANOTHER_PASS` | This vehicle identity is already registered to another pass at this garage for days that overlap. One car, one pass: the refusal names the pass that holds it and the day that registration ends. End that registration first, or register from the day it ends. |
@@ -191,7 +196,7 @@ but an UNREADABLE pass, answered as G17 states.
 | `REFUSAL_WINDOW_MINUTE_OUT_OF_RANGE` | A window's start or end is outside 0 to 1440 minutes from local midnight. 1440 means the end of the day. |
 | `REFUSAL_WINDOW_NEVER_OCCURS` | None of the days a recurring window names falls inside the pass's valid range, so the window can never be satisfied. Widen the range or change the days. |
 
-33 refusals. Each is raised with the FIELD it is about, and none of them is raised by the access call about a term: a contradiction is refused when the pass is created.
+37 refusals. Each is raised with the FIELD it is about, and none of them is raised by the access call about a term: a contradiction is refused when the pass is created.
 <!-- END:refusals -->
 
 ### States
@@ -221,6 +226,14 @@ half-open range of local days `[effective_day, end_day)`. The identity is free
 **from** `end_day`. One identity is on one pass per garage for any day; a pass
 may carry many identities. Ending on day D and registering elsewhere effective D
 is accepted, and the old pass covers the vehicle up to and not including D.
+
+A vehicle is registered onto a pass that is `draft`, `awaiting_enrolment` or
+`active`. A registration onto a `suspended`, `revoked` or `expired` pass is
+refused by name (`REFUSAL_PASS_NOT_REGISTRABLE`), naming the state — expired
+derived from `valid_to` against the registration's effective day. Every open
+registration is a holder in the one-car-one-pass check whatever its pass's
+state, so the database's `EXCLUDE` is reached through the module only by two
+registrations genuinely racing.
 
 ## Documents
 
@@ -269,9 +282,28 @@ psql "$DSN" -v ON_ERROR_STOP=1 -f migrations/0001_garages_passes_registrations_a
 GARAGE_PASS_APP_PASSWORD=... python scripts/ensure-app-role.py "$DSN"
 ```
 
-The application connects as `garage_pass_app` and sets the tenant per transaction
-(`SELECT set_config('garage_pass.tenant_id', ..., true)`). A connection that has
-not set it sees nothing.
+Both steps are run by the suite against the test cluster, not only published
+here. The application connects as `garage_pass_app` and sets the tenant per
+transaction (`SELECT set_config('garage_pass.tenant_id', ..., true)`). A
+connection that has not set it sees nothing.
+
+A garage or a pass stored with a value the module refuses to read (G17) takes
+no write — every write against it is refused with the refusal that made it
+unreadable — except the repair: `set-garage-timezone` corrects a stored
+garage's timezone, and is the one write an unreadable garage takes, because
+without it such a garage could never be fixed. The new zone is refused by name
+if the system does not carry it.
+
+## The command line
+
+*Design documentation.* Exit status 0 covered, 1 not covered, 2 refused to
+answer (or, for a store command, no database to connect to — a sentence on
+stderr), 3 the request was refused. A refusal is always rendered as the JSON
+`{"refused": code, "field": ..., "detail": ...}` and never as a traceback (G18):
+an unknown timezone, a document that cannot be read, an instant or a day that
+does not parse, a naive instant. Every `raise` in the package is enumerated by
+AST in the suite and classified as rendered at that boundary or as a
+programming error no command can reach.
 
 ---
 

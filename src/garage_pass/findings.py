@@ -43,8 +43,8 @@ class Unreadable:
     STATED answer and never an exception. Reached by a raw write, or by a
     validator tightened after the row was stored.
 
-    ``code`` is a registered refusal (or ``UnknownTimezone``'s own name), ``field``
-    the one that fails, ``detail`` the sentence an operator reads.
+    ``code`` is a registered refusal (``UnknownTimezone`` is one), ``field`` the
+    one that fails, ``detail`` the sentence an operator reads.
     """
 
     code: str
@@ -105,6 +105,7 @@ REFUSAL_REVOKED_IS_TERMINAL = "REFUSAL_REVOKED_IS_TERMINAL"
 REFUSAL_EXPIRED_IS_DERIVED = "REFUSAL_EXPIRED_IS_DERIVED"
 REFUSAL_STATE_CHANGE_NEEDS_WHO_AND_WHY = "REFUSAL_STATE_CHANGE_NEEDS_WHO_AND_WHY"
 REFUSAL_VEHICLE_ON_ANOTHER_PASS = "REFUSAL_VEHICLE_ON_ANOTHER_PASS"
+REFUSAL_PASS_NOT_REGISTRABLE = "REFUSAL_PASS_NOT_REGISTRABLE"
 REFUSAL_REGISTRATION_OUTLIVES_THE_PASS = "REFUSAL_REGISTRATION_OUTLIVES_THE_PASS"
 REFUSAL_REGISTRATION_ENDS_BEFORE_IT_STARTS = "REFUSAL_REGISTRATION_ENDS_BEFORE_IT_STARTS"
 REFUSAL_REGISTRATION_NOT_FOUND = "REFUSAL_REGISTRATION_NOT_FOUND"
@@ -112,6 +113,9 @@ REFUSAL_REGISTRATION_ALREADY_ENDED = "REFUSAL_REGISTRATION_ALREADY_ENDED"
 REFUSAL_PASS_NOT_FOUND = "REFUSAL_PASS_NOT_FOUND"
 REFUSAL_GARAGE_NOT_FOUND = "REFUSAL_GARAGE_NOT_FOUND"
 REFUSAL_PASS_ALREADY_EXISTS = "REFUSAL_PASS_ALREADY_EXISTS"
+REFUSAL_GARAGE_ALREADY_EXISTS = "REFUSAL_GARAGE_ALREADY_EXISTS"
+REFUSAL_TIMEZONE_UNKNOWN = "REFUSAL_TIMEZONE_UNKNOWN"
+REFUSAL_DOCUMENT_UNREADABLE = "REFUSAL_DOCUMENT_UNREADABLE"
 REFUSAL_GARAGE_MISMATCH = "REFUSAL_GARAGE_MISMATCH"
 REFUSAL_NO_OPEN_VISIT = "REFUSAL_NO_OPEN_VISIT"
 REFUSAL_VISIT_ALREADY_OPEN = "REFUSAL_VISIT_ALREADY_OPEN"
@@ -203,6 +207,13 @@ REFUSALS: dict[str, str] = {
         "pass that holds it and the day that registration ends. End that "
         "registration first, or register from the day it ends."
     ),
+    REFUSAL_PASS_NOT_REGISTRABLE: (
+        "A vehicle may be registered onto a pass that is draft, awaiting enrolment "
+        "or active. This pass is not: the detail names its state. A suspended pass "
+        "is a hold, and a car added to a hold is a claim the owner did not make; a "
+        "revoked pass is revoked; an expired pass -- derived from its valid_to "
+        "against the registration's effective day -- is over."
+    ),
     REFUSAL_REGISTRATION_OUTLIVES_THE_PASS: (
         "The registration's end day is past the pass's valid_to. A vehicle cannot "
         "be on a pass on a day the pass does not cover; leave end_day unstated and "
@@ -222,6 +233,19 @@ REFUSALS: dict[str, str] = {
     REFUSAL_PASS_NOT_FOUND: ("No pass with that id at that garage in this tenant."),
     REFUSAL_GARAGE_NOT_FOUND: ("No garage with that id in this tenant."),
     REFUSAL_PASS_ALREADY_EXISTS: ("A pass with that id already exists at that garage."),
+    REFUSAL_GARAGE_ALREADY_EXISTS: ("A garage with that id already exists in this tenant."),
+    REFUSAL_TIMEZONE_UNKNOWN: (
+        "The timezone named is not an IANA name this system carries. It is refused "
+        "rather than defaulted to UTC: a pass evaluated on UTC clocks crosses its own "
+        "window edges by hours, and nothing in the answer would say so. The detail "
+        "names the value; a garage already stored with one is repaired with "
+        "set-garage-timezone."
+    ),
+    REFUSAL_DOCUMENT_UNREADABLE: (
+        "A document named on the command line could not be read: the file is "
+        "missing, unreadable, or not JSON. The detail names the path and what went "
+        "wrong."
+    ),
     REFUSAL_GARAGE_MISMATCH: (
         "A pass belongs to one garage and was asked about another. One garage per "
         "pass is the stated shape."

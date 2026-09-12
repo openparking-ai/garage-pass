@@ -10,11 +10,26 @@ STATES IT:** a registration ended on day D covers the vehicle up to and NOT
 including D, and the identity is free FROM D -- a registration elsewhere
 effective D is accepted. Half-open, like every day range in this project.
 
+**THE TARGET PASS'S STATE IS READ.** A registration onto a suspended, revoked
+or expired pass is refused BY NAME, naming the state; draft, awaiting
+enrolment and active take registrations (enrolment depends on the first two).
+Measured before this: the command line registered a car onto a REVOKED pass,
+the overlap check skipped holders on revoked passes, and the same car
+registered onto a live pass met the EXCLUDE with race advice where there was
+no race. No test in this file had registered onto a revoked pass; that
+absence is why four review layers missed it, and the tests below are that
+path. The constraint's race wording is now reachable only in a genuine race
+(the raced test at the end) or by a raw write past the module.
+
 Controls: the module's refusal planted away (the second pass takes the
 vehicle -- and then the EXCLUDE fires as a raw constraint, which is the
 traceback-not-refusal defect); the overlap query planted to look only at
-open-ended registrations; the EXCLUDE removed from the migration (the raw
-insert is accepted).
+open-ended registrations; the holder-skip on revoked passes planted back (a
+registration a raw write left open on a revoked pass is invisible, and the
+live pass meets the constraint instead of the name); the target-state check
+planted away (a car is registered onto a revoked pass again); the deadlock
+catch planted away (the race's other shape is a traceback again); the EXCLUDE
+removed from the migration (the raw insert is accepted).
 """
 
 from __future__ import annotations
@@ -222,6 +237,14 @@ def test_the_constraint_is_reported_as_a_refusal_when_a_race_beats_the_check(app
 
 @pytest.mark.guarantee("G1")
 def test_a_race_that_beats_the_check_is_named_by_constraint_not_a_traceback(app, tenant_id):
+    """THE ONE PATH TO THE CONSTRAINT'S RACE WORDING THROUGH THE MODULE. With
+    the target pass's state read and every open registration a holder, the
+    "another registration landed first, roll back and read again" refusal is
+    reachable only when two writers genuinely race -- made deterministic here
+    with a pinned snapshot -- or by a raw write past the module (the test
+    after the state tests below). Before this round it was also reached with
+    no race at all, through a registration the module had accepted onto a
+    revoked pass."""
     from store_harness import DSN, app_connection
 
     seed(app, tenant_id, GARAGE, (A, Z))
@@ -301,4 +324,176 @@ def test_a_revoked_pass_does_not_hold_its_vehicle(app, tenant_id):
                      at=NOON_MONDAY, reason="left the company")
     app.commit()
     register(app, tenant_id, Z, effective=date(2026, 6, 1))
+    assert [r[0] for r in registrations(app, tenant_id)] == ["pass-a", "pass-z"]
+
+
+@pytest.mark.guarantee("G1")
+def test_the_other_shape_of_the_race_a_deadlock_is_named_as_the_constraint_not_a_traceback(
+    app, owner, tenant_id
+):
+    """Two writers each hold an uncommitted registration and each then
+    registers the OTHER's identity: each INSERT waits on the other's
+    in-progress row at the EXCLUDE and the database rolls one back with
+    DeadlockDetected. Measured on the L3's 120-round race probe as 1-3 in 120
+    on one cluster (0 in 120 on two others) -- and it reached the caller as a
+    traceback. The loser is refused by the constraint's name, with the same
+    advice; the winner's registration lands."""
+    import threading
+    import time
+
+    from store_harness import DSN, app_connection
+
+    seed(app, tenant_id, GARAGE, (A, Z))
+    other = app_connection(DSN)
+    outcome: dict = {}
+
+    def theirs():
+        try:
+            with tenant(other, tenant_id) as cursor:
+                register_vehicle(cursor, tenant_id, GARAGE.id, Z.id, "CAR-1", JAN_1, None)
+            outcome["other"] = "accepted"
+        except BaseException as exc:  # noqa: BLE001 -- recorded, judged below
+            outcome["other"] = exc
+            other.rollback()
+
+    def blocked_inserts() -> int:
+        with owner.cursor() as cursor:
+            cursor.execute(
+                "SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock' "
+                "AND query ILIKE 'INSERT INTO vehicle_registrations%%'"
+            )
+            return cursor.fetchone()[0]
+
+    thread = threading.Thread(target=theirs)
+    try:
+        with tenant(other, tenant_id) as cursor:  # other holds CAR-9, uncommitted
+            register_vehicle(cursor, tenant_id, GARAGE.id, Z.id, "CAR-9", JAN_1, None)
+        with tenant(app, tenant_id) as cursor:  # app holds CAR-1, uncommitted
+            register_vehicle(cursor, tenant_id, GARAGE.id, A.id, "CAR-1", JAN_1, None)
+            thread.start()  # other now waits on app's CAR-1
+            deadline = time.monotonic() + 10
+            while blocked_inserts() == 0 and time.monotonic() < deadline:
+                time.sleep(0.02)
+            assert blocked_inserts() == 1, "the premise: the other writer is waiting on ours"
+            try:  # and ours now waits on theirs: the deadlock
+                register_vehicle(cursor, tenant_id, GARAGE.id, A.id, "CAR-9", JAN_1, None)
+                outcome["app"] = "accepted"
+            except BaseException as exc:  # noqa: BLE001
+                outcome["app"] = exc
+        app.rollback()
+        thread.join(timeout=15)
+        assert not thread.is_alive(), "the other writer never came back"
+    finally:
+        other.close()
+    losers = [side for side, result in outcome.items() if result != "accepted"]
+    assert len(losers) == 1, f"exactly one side is rolled back: {outcome}"
+    loser = outcome[losers[0]]
+    assert isinstance(loser, f.Refused), (
+        f"the rolled-back writer got a traceback, not a refusal: {loser!r}"
+    )
+    assert loser.code == f.REFUSAL_CONSTRAINT and ONE_PASS_PER_GARAGE in loser.detail
+    assert "deadlock" in loser.detail and "Roll back and read again" in loser.detail
+
+
+# ---------------------------------------------------------------------------
+# The target pass's state. No test above registered onto a revoked pass, and
+# that absence is how a registration onto one shipped and reached the gate.
+# ---------------------------------------------------------------------------
+
+
+def _revoke(app, tenant_id, pass_):
+    from garage_pass.store.records import change_state
+
+    with tenant(app, tenant_id) as cursor:
+        change_state(cursor, tenant_id, GARAGE.id, pass_.id, State.REVOKED, by="owner",
+                     at=NOON_MONDAY, reason="they got divorced")
+    app.commit()
+
+
+def _suspend(app, tenant_id, pass_):
+    from garage_pass.store.records import change_state
+
+    with tenant(app, tenant_id) as cursor:
+        change_state(cursor, tenant_id, GARAGE.id, pass_.id, State.SUSPENDED, by="owner",
+                     at=NOON_MONDAY, reason="a hold")
+    app.commit()
+
+
+@pytest.mark.guarantee("G1")
+@pytest.mark.parametrize("state", ["revoked", "suspended", "expired"])
+def test_a_registration_onto_a_pass_that_is_not_registrable_is_refused_naming_the_state(
+    app, tenant_id, state
+):
+    """Refused BY NAME, naming the state -- and nothing is written. Expired is
+    derived, as everywhere: valid_to before the registration's effective day."""
+    if state == "expired":
+        target = a_pass(id="pass-x", terms=simple_terms(valid_from=JAN_1,
+                                                          valid_to=date(2026, 3, 31)))
+        seed(app, tenant_id, GARAGE, (target,))
+        effective = date(2026, 4, 1)
+    else:
+        target = A
+        seed(app, tenant_id, GARAGE, (A,))
+        (_revoke if state == "revoked" else _suspend)(app, tenant_id, A)
+        effective = date(2026, 6, 2)
+    with pytest.raises(f.Refused) as refused:
+        register(app, tenant_id, target, "CAR-9", effective=effective)
+    app.rollback()
+    assert refused.value.code == f.REFUSAL_PASS_NOT_REGISTRABLE
+    assert refused.value.field == "pass.state"
+    assert f"'{target.id}' is {state}" in refused.value.detail, refused.value.detail
+    assert [r for r in registrations(app, tenant_id) if r[1] == "CAR-9"] == [], (
+        "the refused registration was written anyway"
+    )
+
+
+@pytest.mark.guarantee("G1")
+@pytest.mark.parametrize("state", [State.DRAFT, State.AWAITING_ENROLMENT, State.ACTIVE],
+                         ids=lambda s: s.value)
+def test_a_draft_awaiting_or_active_pass_takes_a_registration(app, tenant_id, state):
+    """The control on the refusal above, and what enrolment depends on: a
+    registration onto a draft or an awaiting-enrolment pass keeps working."""
+    target = a_pass(id="pass-s", state=state)
+    seed(app, tenant_id, GARAGE, (target,))
+    out = register(app, tenant_id, target, "CAR-9")
+    assert out["pass"] == "pass-s" and out["vehicle_identity"] == "CAR-9"
+    assert [r for r in registrations(app, tenant_id) if r[1] == "CAR-9"] == [
+        ("pass-s", "CAR-9", JAN_1, None, None)
+    ]
+
+
+@pytest.mark.guarantee("G1")
+def test_a_registration_a_raw_write_left_open_on_a_revoked_pass_is_named_not_met_at_the_constraint(
+    app, owner, tenant_id
+):
+    """SEEDED BY A RAW WRITE, and that is the point. The module now refuses to
+    register onto a revoked pass, so the only way this state exists is a row
+    written past the module -- by a raw write, an older version, or a future
+    bug -- and the by-name refusal must still fire against it, naming the
+    survivor and its state, instead of the EXCLUDE firing with race advice
+    where there is no race. Measured before the fix: REFUSAL_CONSTRAINT,
+    "another registration of 'CAR-1' landed first. Roll back and read again."
+    """
+    garage_uuid = seed(app, tenant_id, GARAGE, (A, Z))
+    _revoke(app, tenant_id, A)
+    (a_uuid,) = query(app, tenant_id, "SELECT id FROM passes WHERE external_id = 'pass-a'")[0]
+    with owner.cursor() as cursor:  # the owner is not bound by the module
+        cursor.execute(
+            "INSERT INTO vehicle_registrations (tenant_id, garage_id, pass_id, "
+            "vehicle_identity, effective_day, end_day) VALUES (%s, %s, %s, 'CAR-1', %s, NULL)",
+            (tenant_id, garage_uuid, a_uuid, date(2026, 6, 2)),
+        )
+    assert registrations(app, tenant_id) == [("pass-a", "CAR-1", date(2026, 6, 2), None, None)]
+    with pytest.raises(f.Refused) as refused:
+        register(app, tenant_id, Z, effective=date(2026, 6, 3))
+    app.rollback()
+    assert refused.value.code == f.REFUSAL_VEHICLE_ON_ANOTHER_PASS, refused.value.detail
+    assert "'pass-a'" in refused.value.detail and "revoked" in refused.value.detail
+    assert "has no end day" in refused.value.detail
+    assert "Roll back and read again" not in refused.value.detail
+    # the operator's undo, then the live pass takes the vehicle
+    with tenant(app, tenant_id) as cursor:
+        end_registration(cursor, tenant_id, GARAGE.id, A.id, "CAR-1", date(2026, 6, 3))
+    app.commit()
+    register(app, tenant_id, Z, effective=date(2026, 6, 3))
     assert [r[0] for r in registrations(app, tenant_id)] == ["pass-a", "pass-z"]

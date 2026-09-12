@@ -14,7 +14,11 @@ $ garage-pass access --garage garage.json --pass pass.json \
 ```
 
 And, against the store: create the pass, register the vehicle, record what the
-lane saw, answer the lane from what is actually recorded.
+lane saw, answer the lane from what is actually recorded. Exit status 0 covered,
+1 not covered, 2 refused to answer, 3 the request was refused — and a refusal is
+always the JSON `{"refused", "field", "detail"}`, never a traceback: a mistyped
+timezone, a document that is not JSON, an instant without an offset, a day that
+does not parse are each refused naming the option and the value.
 
 ```
 $ garage-pass create-pass --tenant T --garage garage-downtown --pass pass.json --by owner --at ...
@@ -65,10 +69,18 @@ deleting the pass.
 ### One car, one pass per garage
 
 A vehicle identity is on one pass at a garage for any given day. A second
-registration is refused by name — naming the pass that holds the identity and
-the day that registration ends — before the database's own constraint has to;
-the constraint is the backstop for a raw insert and for two writers racing.
-Ending a registration on day D frees the identity **from** D.
+registration is refused by name — naming the pass that holds the identity, its
+state and the day that registration ends — before the database's own constraint
+has to; every open registration counts as a holder whatever its pass's state,
+so the constraint is the backstop for a raw insert and for two writers
+genuinely racing, and nothing else reaches it through the module. Ending a
+registration on day D frees the identity **from** D.
+
+**A vehicle is registered onto a draft, awaiting-enrolment or active pass.** A
+registration onto a suspended pass (a hold; a car added to a hold is a claim the
+owner did not make), a revoked pass (revoked is revoked) or an expired one (over,
+derived from `valid_to` against the registration's effective day) is refused by
+name, naming the state.
 
 ## The answer
 
@@ -151,6 +163,19 @@ application role given a login:
 ```
 psql "$DSN" -v ON_ERROR_STOP=1 -f migrations/0001_garages_passes_registrations_and_rls.sql
 GARAGE_PASS_APP_PASSWORD=... python scripts/ensure-app-role.py "$DSN"
+```
+
+Both steps are run by the suite, not only described here: a test applies the
+migration and runs `ensure-app-role.py` against the test cluster, logs in as the
+application role with the password it set, and shows a wrong one refused.
+
+A garage stored with a timezone the running system does not carry — a raw
+write, or tzdata that lost the name — still answers (not-covered at an exit,
+refused-to-answer at an entry, naming `garage.timezone`), but takes no write
+until it is repaired; the repair is the one write it takes:
+
+```
+$ garage-pass set-garage-timezone --tenant T --garage garage-downtown --timezone America/Denver
 ```
 
 The suite reads `GARAGE_PASS_TEST_DSN` for a database it may drop and rebuild.
