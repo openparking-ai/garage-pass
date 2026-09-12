@@ -956,6 +956,23 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
         "the application role can rewrite the garage history: the widened grant is read "
         "from the catalogue and the derived set of append-only histories no longer matches",
     ),
+    "G10/predicate-garage_changes": (
+        G10, MIGRATION_0002,
+        source(
+            "CREATE POLICY garage_changes_tenant_isolation ON garage_changes",
+            "  USING      (tenant_id = current_tenant_id())",
+            "  WITH CHECK (tenant_id = current_tenant_id());",
+        ),
+        source(
+            "CREATE POLICY garage_changes_tenant_isolation ON garage_changes",
+            "  USING      (true)",
+            "  WITH CHECK (true);  -- PLANTED: the tenant predicate stripped",
+        ),
+        "the policy on garage_changes still EXISTS -- the catalogue is satisfied -- but "
+        "isolates nothing: every tenant reads and writes every other's rows there. The "
+        "ninth table gets the same control as the eight; the isolation test's denominator "
+        "is the catalogue, so it sees the table without being told",
+    ),
     "G12/garage-who-why": (
         G12, "store/records.py",
         source(
