@@ -1,0 +1,7 @@
+[
+  {"pass_id": "pass-employee-7", "vehicle_identity": "CAR-1", "entry_lane": "L1",
+   "entered_at": "2026-06-01T07:00:00-06:00", "exited_at": "2026-06-01T08:00:00-06:00",
+   "exit_lane": "L1"},
+  {"pass_id": "pass-employee-7", "vehicle_identity": "CAR-1", "entry_lane": "L1",
+   "entered_at": "2026-06-01T09:00:00-06:00"}
+]

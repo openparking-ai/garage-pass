@@ -1,0 +1,16 @@
+{
+  "id": "pass-employee-7",
+  "garage_id": "garage-downtown",
+  "label": "Employee",
+  "holder": {"email": "holder@example.com", "name": "A Holder", "phone": null},
+  "terms": {
+    "valid_from": "2026-01-01",
+    "valid_to": "2026-12-31",
+    "windows": [{"days": [1, 2, 3, 4, 5], "start_minute": 360, "end_minute": 1200}],
+    "max_stay_minutes": 600,
+    "visit_allowance": {"count": 3, "per": "window"},
+    "directions": ["entry", "exit"],
+    "allowed_lanes": ["L1", "L2"]
+  },
+  "state": "active"
+}

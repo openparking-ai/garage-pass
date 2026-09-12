@@ -1,0 +1,12 @@
+{
+  "id": "pass-contradiction",
+  "garage_id": "garage-downtown",
+  "label": "Vendor",
+  "holder": {"email": "vendor@example.com"},
+  "terms": {
+    "valid_from": "2026-06-01",
+    "valid_to": "2026-05-31",
+    "directions": ["entry"]
+  },
+  "state": "draft"
+}
