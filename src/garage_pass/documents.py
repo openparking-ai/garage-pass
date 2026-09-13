@@ -50,11 +50,9 @@ every one of them is still refused by name.
 from __future__ import annotations
 
 import dataclasses
-import json
 import typing
 from datetime import date, datetime, timedelta
 from enum import Enum
-from pathlib import Path
 from typing import Any, NoReturn
 
 from garage_pass.findings import (
@@ -336,6 +334,3 @@ def load_registration(document: Any) -> Registration:
 def load_visit(document: Any) -> Visit:
     return load(Visit, document, "visit")
 
-
-def read_json(path: str | Path) -> Any:
-    return json.loads(Path(path).read_text())

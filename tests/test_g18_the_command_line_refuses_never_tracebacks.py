@@ -1158,6 +1158,34 @@ def _process(argv: list[str]) -> subprocess.CompletedProcess:
         pytest.fail(f"the command line HUNG: no return within {BOUND_SECONDS}s for {argv[:4]}")
 
 
+def _process_capped(
+    argv: list[str], seconds: float, address_space: int
+) -> subprocess.CompletedProcess:
+    """``_process`` for a shape whose failure mode is UNBOUNDED GROWTH, not a
+    quiet block: a shorter bound, the child's address space capped where the
+    system enforces ``RLIMIT_AS`` (Linux does; a Mac accepts and ignores it),
+    and on the bound the child is killed and not waited for."""
+    import resource
+
+    def cap() -> None:
+        try:
+            resource.setrlimit(resource.RLIMIT_AS, (address_space, address_space))
+        except (ValueError, OSError):
+            pass  # the system does not take the cap; the bound below still holds
+
+    process = subprocess.Popen(
+        [sys.executable, "-m", "garage_pass.cli", *argv],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=ROOT,
+        stdin=subprocess.DEVNULL, preexec_fn=cap,
+    )
+    try:
+        out, err = process.communicate(timeout=seconds)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        pytest.fail(f"the command line HUNG: no return within {seconds}s for {argv[:4]}")
+    return subprocess.CompletedProcess(process.args, process.returncode, out, err)
+
+
 def _argv(garage: Path, pass_: Path, **documents: Path | str) -> list[str]:
     out = ["access", "--garage", str(garage), "--pass", str(pass_)]
     for option, path in documents.items():
@@ -1283,12 +1311,14 @@ def test_a_named_pipe_with_no_writer_is_refused_by_name_under_a_bound(tmp_path, 
 def test_the_regular_file_guard_keeps_a_symlink_and_refuses_a_device_a_socket_and_a_directory(
     tmp_path, capsys
 ):
-    """The controls for the guard above, in one run: ``Path.is_file`` follows
+    """The controls for the guard above, in one run: ``os.open`` follows
     symlinks, so a symlink to a regular file STILL READS (breaking that would be
-    worse than the hang); a device, a unix socket and a directory refuse by
-    name before any read -- the device (``/dev/null``) used to be refused for
-    reading as empty, and is now refused for not being a regular file, the same
-    code; and the well-formed call still answers covered."""
+    worse than the hang); a device and a directory open and are refused by
+    ``S_ISREG`` on the descriptor before any read, naming the shape -- the
+    device (``/dev/null``) used to be refused for reading as empty; a unix
+    socket cannot be opened at all (``ENXIO`` on Linux, ``EOPNOTSUPP`` on a Mac)
+    and is refused with the system's own text -- the SAME code for all three;
+    and the well-formed call still answers covered."""
     import socket
 
     garage, pass_ = _documents(tmp_path)
@@ -1320,7 +1350,11 @@ def test_the_regular_file_guard_keeps_a_symlink_and_refuses_a_device_a_socket_an
             assert status == EXIT_REFUSED_REQUEST, (name, status, printed)
             assert printed["refused"] == f.REFUSAL_DOCUMENT_UNREADABLE
             assert printed["field"] == "--garage"
-            assert "not a regular file" in printed["detail"], (name, printed["detail"])
+            if name == "a socket":  # refused by the open itself, before any fstat
+                assert "could not be read: " in printed["detail"], (name, printed["detail"])
+                assert "not a regular file" not in printed["detail"], (name, printed["detail"])
+            else:
+                assert "not a regular file" in printed["detail"], (name, printed["detail"])
     finally:
         sock.close()
         shutil.rmtree(short, ignore_errors=True)
@@ -1328,8 +1362,8 @@ def test_the_regular_file_guard_keeps_a_symlink_and_refuses_a_device_a_socket_an
                            "--vehicle", "CAR-1", "--lane", "L1", "--direction", "exit",
                            "--at", "2026-06-01T12:00:00-06:00"], capsys)
     assert status == EXIT_REFUSED_REQUEST and "does not exist" in printed["detail"], printed
-    # a path past NAME_MAX: the stat inside is_file() raises ENAMETOOLONG -- measured as 16
-    # tracebacks of 432 when the guard stood outside the try; it is a refusal like the rest
+    # a path past NAME_MAX: os.open raises ENAMETOOLONG -- measured as 16 tracebacks of 432
+    # when the guard stood outside the try; it is a refusal like the rest
     too_long = tmp_path / ("x" * 300 + ".json")
     status, printed = run([*_argv(garage, too_long, registrations=regs),
                            "--vehicle", "CAR-1", "--lane", "L1", "--direction", "exit",
@@ -1338,20 +1372,153 @@ def test_the_regular_file_guard_keeps_a_symlink_and_refuses_a_device_a_socket_an
 
 
 @pytest.mark.guarantee("G18")
+@pytest.mark.parametrize("option", ["garage", "pass", "registrations", "visits"])
+def test_a_device_that_never_stops_producing_bytes_is_refused_by_name_under_a_bound(
+    tmp_path, option
+):
+    """THE FAIL-CONTROL FOR THE REGULAR-FILE CHECK ON THE DESCRIPTOR. With the
+    boundary opening ``O_NONBLOCK`` and reading the descriptor, a pipe with no
+    writer can no longer hang it even with the ``S_ISREG`` check gone -- the
+    read returns EOF, the empty text is not JSON, the document is refused for
+    the wrong reason and every test built on the pipe stays green. What the
+    check now stands between the caller and is a device that PRODUCES bytes
+    without end: ``/dev/zero`` read to EOF never returns. So this is the shape
+    that goes red -- as a HANG under the bound, in the actual process -- when
+    the ``S_ISREG`` check is planted away, on all four document arguments in
+    both directions; with the check in place it is refused by name, the same
+    code and the same sentence as a directory or a pipe.
+
+    THE COST WHEN IT FIRES IS BOUNDED ON PURPOSE. A child reading ``/dev/zero``
+    to EOF grows without limit for as long as it is allowed to run, and a Mac
+    compresses the all-zero pages, so a generous bound is minutes of kernel
+    teardown after the kill (measured: the 10 s bound stalled the runner). So
+    this shape runs under a 2 s bound, the child's address space is capped
+    where the system enforces a cap (Linux; a Mac accepts the limit and does
+    not enforce it), and a child that did not return is killed and NOT waited
+    for -- the failure is asserted, the teardown is the kernel's business."""
+    garage, pass_ = _documents(tmp_path)
+    docs = {"garage": garage, "pass": pass_,
+            "registrations": _write(tmp_path, "r.json", [REGISTRATION]),
+            "visits": _write(tmp_path, "v.json", [])}
+    docs[option] = Path("/dev/zero")
+    for direction in ("entry", "exit"):
+        done = _process_capped(
+            [*_argv(docs["garage"], docs["pass"], registrations=docs["registrations"],
+                    visits=docs["visits"]), "--vehicle", "CAR-1", "--lane", "L1",
+             "--direction", direction, "--at", "2026-06-01T12:00:00-06:00"],
+            seconds=2.0, address_space=512 * 1024 * 1024,
+        )
+        assert done.returncode == EXIT_REFUSED_REQUEST and done.stderr == "", (
+            option, direction, done.returncode, done.stderr[-300:]
+        )
+        printed = json.loads(done.stdout)
+        assert printed["refused"] == f.REFUSAL_DOCUMENT_UNREADABLE
+        assert printed["field"] == f"--{option}" and "not a regular file" in printed["detail"]
+
+
+@pytest.mark.guarantee("G18")
+@pytest.mark.parametrize("option", ["garage", "pass", "registrations", "visits"])
+def test_the_bytes_decoded_come_from_the_descriptor_that_was_checked_never_from_the_name(
+    tmp_path, capsys, monkeypatch, option
+):
+    """THE CHECK AND THE READ ARE THE SAME FILE -- proven deterministically, not
+    by racing. Measured before this: the boundary asked ``Path(path).is_file()``
+    and then called ``open(path)``: two resolutions of one name, and a writer
+    swapping a regular file for a pipe between them put the command line back
+    into the blocking ``open()`` -- 3 hangs in 620,000 racing calls. A race
+    harness reading zero cannot tell fixed from lucky. This can: every
+    NAME-based way of opening a file is made to raise for the duration of the
+    call -- ``builtins.open`` / ``io.open`` handed a path, ``Path.open``,
+    ``Path.read_text``, ``Path.read_bytes`` -- while an open handed a
+    DESCRIPTOR (an ``int``) is let through. The documents must still read and
+    the call must still answer covered on all four document arguments in both
+    directions. Control in the same run: with the patch in place, a direct
+    ``Path.read_text`` on the garage document raises -- the patch is live."""
+    import builtins
+    import io
+
+    real_open = builtins.open
+
+    def only_descriptors(file, *args, **kwargs):
+        if isinstance(file, int):
+            return real_open(file, *args, **kwargs)
+        raise AssertionError(f"a NAME-based open on the document path: open({file!r})")
+
+    def never(self, *args, **kwargs):
+        raise AssertionError(f"a NAME-based read on the document path: {self!r}")
+
+    garage, pass_ = _documents(tmp_path)
+    regs = _write(tmp_path, "r.json", [REGISTRATION])
+    visits = _write(tmp_path, "v.json", [])
+    monkeypatch.setattr(builtins, "open", only_descriptors)
+    monkeypatch.setattr(io, "open", only_descriptors)
+    monkeypatch.setattr(Path, "open", never)
+    monkeypatch.setattr(Path, "read_text", never)
+    monkeypatch.setattr(Path, "read_bytes", never)
+    with pytest.raises(AssertionError, match="NAME-based"):  # the control: the patch is live
+        Path(garage).read_text()
+    # the option under test is the one handed in LAST, so every option's read is exercised
+    docs = {"garage": garage, "pass": pass_, "registrations": regs, "visits": visits}
+    assert option in docs
+    for direction in ("entry", "exit"):
+        status, printed = run([*_argv(docs["garage"], docs["pass"],
+                                      registrations=docs["registrations"], visits=docs["visits"]),
+                               "--vehicle", "CAR-1", "--lane", "L1", "--direction", direction,
+                               "--at", "2026-06-01T12:00:00-06:00"], capsys)
+        assert status == 0 and printed["outcome"] == "covered", (option, direction, status, printed)
+
+
+@pytest.mark.guarantee("G18")
+def test_the_descriptor_is_closed_on_every_path_out_refusals_included(tmp_path, capsys):
+    """A leaked descriptor is a defect of the same family as the hang, and the
+    command line opens up to four documents per call. Every shape the boundary
+    meets -- a regular file that reads, a directory, a device, a missing path,
+    a file that is not JSON, a file that is not text -- is handed in as every
+    document argument, and the number of open descriptors in this process is
+    the same after as before. Control in the same run: one descriptor opened
+    and deliberately not closed moves the count by one, so the count can see a
+    leak of one."""
+    import os
+
+    def open_fds() -> int:
+        return len(os.listdir("/dev/fd"))
+
+    garage, pass_ = _documents(tmp_path)
+    regs = _write(tmp_path, "r.json", [REGISTRATION])
+    not_json = tmp_path / "not.json"
+    not_json.write_text("{not json")
+    not_text = tmp_path / "bytes.json"
+    not_text.write_bytes(b"\xff\xfe\x00\x00")
+    shapes = [garage, tmp_path, Path("/dev/null"), tmp_path / "nowhere.json", not_json, not_text]
+    before = open_fds()
+    for bad in shapes:
+        for option in ("garage", "pass", "registrations", "visits"):
+            docs = {"garage": garage, "pass": pass_, "registrations": regs,
+                    "visits": _write(tmp_path, "v.json", [])}
+            docs[option] = bad
+            run([*_argv(docs["garage"], docs["pass"], registrations=docs["registrations"],
+                        visits=docs["visits"]), "--vehicle", "CAR-1", "--lane", "L1",
+                 "--direction", "exit", "--at", "2026-06-01T12:00:00-06:00"], capsys)
+    assert open_fds() == before, (before, open_fds())
+    leak = os.open(garage, os.O_RDONLY)  # the control: one descriptor left open is visible
+    try:
+        assert open_fds() == before + 1
+    finally:
+        os.close(leak)
+
+
+@pytest.mark.guarantee("G18")
 def test_an_empty_option_value_is_a_path_that_cannot_be_read_not_an_option_not_given(
     tmp_path, capsys
 ):
-    """Measured before this: ``--visits ''`` answered COVERED with the visits
-    document silently unread, and ``--registrations ''`` answered as if no
-    registration had been handed in -- ``if args.visits`` read the empty string
-    as "not given". Visits are the evidence for the visit allowance and the
-    maximum stay; dropping them unread turns an over-allowance into covered, a
-    SILENT WRONG ANSWER, which this project ranks above a traceback. Now the
-    test is ``is None``: an empty string is a path (``.``, a directory) and is
-    refused by name in both directions; omitting the option still means "not
-    given" and still answers. The control that proves the wrong-answer shape is
-    gone: a spent allowance with the visits document present is not-covered,
-    and the SAME case with ``--visits ''`` must NOT read covered."""
+    """Measured before this: ``--visits ''`` and ``--registrations ''`` were read as
+    "not given" -- ``if args.visits`` read the empty string as falsy and the
+    document was never opened. Now the test is ``is None``: an empty string is a
+    path (``.``, a directory) and is refused by name in both directions, on both
+    list options; omitting the option still means "not given" and still answers.
+    THE SHAPE OF THE REFUSAL ONLY -- what dropping the document unread does to
+    the ANSWER is the next test's question, on its own, so that under a plant it
+    is the assertion about the answer that reddens and not this one."""
     garage, pass_ = _documents(tmp_path)
     regs = _write(tmp_path, "r.json", [REGISTRATION])
     for option in ("registrations", "visits"):
@@ -1365,22 +1532,61 @@ def test_an_empty_option_value_is_a_path_that_cannot_be_read_not_an_option_not_g
             )
             assert printed["refused"] == f.REFUSAL_DOCUMENT_UNREADABLE
             assert printed["field"] == f"--{option}"
-    # the silent-wrong-answer control: the allowance (3 per window) spent by three entries today
-    spent = [{"pass_id": "pass-1", "vehicle_identity": "CAR-1", "entry_lane": "L1",
-              "entered_at": f"2026-06-01T0{h}:00:00-06:00",
-              "exited_at": f"2026-06-01T0{h}:30:00-06:00", "exit_lane": "L1"} for h in (7, 8, 9)]
-    visits = _write(tmp_path, "spent.json", spent)
     move = ["--vehicle", "CAR-1", "--lane", "L1", "--direction", "entry",
             "--at", "2026-06-01T12:00:00-06:00"]
-    with_visits = [*_argv(garage, pass_, registrations=regs, visits=visits), *move]
-    status, printed = run(with_visits, capsys)
-    assert status == 1 and printed["reason"] == f.OUT_OF_VISITS, printed
+    status, printed = run([*_argv(garage, pass_, registrations=regs), *move], capsys)
+    assert status == 0 and printed["outcome"] == "covered", ("omitted must still answer", printed)
+
+
+#: The visits document that changes the answer at each door, and the reason it changes it to:
+#: at an ENTRY the allowance (3 per window) spent by three entries today; at an EXIT an open
+#: entry eleven hours before the exit against a maximum stay of ten. Both are read from the
+#: visits; both vanish if the visits document is dropped unread.
+_SPENT_ALLOWANCE = [
+    {"pass_id": "pass-1", "vehicle_identity": "CAR-1", "entry_lane": "L1",
+     "entered_at": f"2026-06-01T0{h}:00:00-06:00", "exited_at": f"2026-06-01T0{h}:30:00-06:00",
+     "exit_lane": "L1"} for h in (7, 8, 9)
+]
+_OPEN_ENTRY_PAST_MAX_STAY = [
+    {"pass_id": "pass-1", "vehicle_identity": "CAR-1", "entry_lane": "L1",
+     "entered_at": "2026-06-01T01:00:00-06:00"},
+]
+
+
+@pytest.mark.guarantee("G18")
+@pytest.mark.parametrize(
+    "direction,visits,reason",
+    [("entry", _SPENT_ALLOWANCE, "OUT_OF_VISITS"),
+     ("exit", _OPEN_ENTRY_PAST_MAX_STAY, "OVER_MAX_STAY")],
+    ids=["entry-spent-allowance", "exit-over-max-stay"],
+)
+def test_an_empty_visits_option_never_answers_covered_on_visits_it_did_not_read(
+    tmp_path, capsys, direction, visits, reason
+):
+    """THE SILENT WRONG ANSWER, ON ITS OWN, AT BOTH DOORS. Visits are the evidence
+    for the visit allowance and the maximum stay; a boundary that drops the visits
+    document unread turns an over-allowance or an over-stay into COVERED -- which
+    this project ranks above a traceback. Measured before this: ``--visits ''``
+    answered covered with the visits silently unread. The control that proves the
+    wrong-answer shape is gone: with the visits document handed in, the answer is
+    not-covered for the reason the visits carry; the SAME case with ``--visits ''``
+    must NOT read covered -- asserted FIRST, so that under a plant of the
+    truthiness test this is the red, naming the covered answer -- and is refused
+    naming the option. Measured before this round: the previous test carried this
+    assertion after its refusal-shape loop, which any such plant reddens first, so
+    the assertion about the answer could never be the one that fired."""
+    garage, pass_ = _documents(tmp_path)
+    regs = _write(tmp_path, "r.json", [REGISTRATION])
+    visits_document = _write(tmp_path, "visits.json", visits)
+    move = ["--vehicle", "CAR-1", "--lane", "L1", "--direction", direction,
+            "--at", "2026-06-01T12:00:00-06:00"]
+    status, printed = run([*_argv(garage, pass_, registrations=regs, visits=visits_document),
+                           *move], capsys)
+    assert status == 1 and printed["reason"] == getattr(f, reason), printed
     status, printed = run([*_argv(garage, pass_, registrations=regs), "--visits", "", *move],
                           capsys)
     assert printed.get("outcome") != "covered", (
-        f"--visits '' dropped the visits document unread and answered COVERED on a spent "
-        f"allowance: {printed}"
+        f"--visits '' at {direction} dropped the visits document unread and answered COVERED "
+        f"where the visits say {reason}: {printed}"
     )
     assert status == EXIT_REFUSED_REQUEST and printed["field"] == "--visits", printed
-    status, printed = run([*_argv(garage, pass_, registrations=regs), *move], capsys)
-    assert status == 0 and printed["outcome"] == "covered", ("omitted must still answer", printed)

@@ -1172,11 +1172,28 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
     ),
     "G18/document-not-a-regular-file": (
         G18, "cli.py",
-        "        if not file.is_file():",
-        "        if False and not file.is_file():  # PLANTED: the guard is gone; open() blocks "
-        "on a pipe",
-        "a named pipe with no writer is opened again and the command line never returns; the "
-        "bounded process test must fail as a HANG, not hang the suite",
+        "            if not stat.S_ISREG(os.fstat(fd).st_mode):",
+        "            if False and not stat.S_ISREG(os.fstat(fd).st_mode):  # PLANTED: the check on "
+        "the descriptor is gone; a device that never stops producing bytes is read to EOF",
+        "/dev/zero is read without end and the command line never returns; the bounded process "
+        "test must fail as a HANG, not hang the suite (a pipe with no writer no longer hangs "
+        "with the check gone -- O_NONBLOCK reads EOF -- so the pipe test is not this control)",
+    ),
+    "G18/document-check-and-read-are-one-file": (
+        G18, "cli.py",
+        '            handle = os.fdopen(fd, "r")',
+        '            os.close(fd); handle = open(path, "r")  # PLANTED: the read resolves the '
+        'NAME again -- the split is back',
+        "the bytes decoded come from a second resolution of the path, not from the descriptor "
+        "that was checked; the deterministic test that forbids every name-based open must go "
+        "red naming the open(path)",
+    ),
+    "G18/document-descriptor-closed-on-refusal": (
+        G18, "cli.py",
+        "        except BaseException:\n            os.close(fd)\n            raise",
+        "        except BaseException:\n            pass  # PLANTED: the descriptor leaks on "
+        "every refusal\n            raise",
+        "a refused document leaves its descriptor open; the fd-count test must read the leak",
     ),
     "G18/empty-option-read-as-not-given-at-exit": (
         G18, "cli.py",
@@ -1199,6 +1216,15 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
         '"is stored with"',
         "the sweep no longer flags a sentence that says a value 'is stored with' -- the "
         "self-test's planted falsehood goes unnamed and the judged set turns stale",
+    ),
+    "G15/judgement-follows-the-text-not-the-file": (
+        "tests/test_contract_is_generated.py", "scripts/sweep_route_sentences.py",
+        "    return (sentence, file)",
+        '    return (sentence, "")  # PLANTED: the file is dropped from the key -- a verdict '
+        "travels with the text again",
+        "a judged-TRUE sentence copied verbatim into another file inherits TRUE there -- the "
+        "self-test's copy step must read judged instead of UNJUDGED, and the test that reads the "
+        "self-test's lines must go red",
     ),
     "G15/rendered-detail-falsehood": (
         "tests/test_contract_is_generated.py", "access.py",

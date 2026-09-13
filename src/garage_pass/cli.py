@@ -64,10 +64,10 @@ import argparse
 import dataclasses
 import json
 import os
+import stat
 import sys
 from datetime import date, datetime
 from enum import Enum
-from pathlib import Path
 from typing import Any
 from uuid import UUID
 
@@ -78,7 +78,6 @@ from garage_pass.documents import (
     load_pass,
     load_registration,
     load_visit,
-    read_json,
 )
 from garage_pass.findings import (
     REFUSAL_DOCUMENT_UNREADABLE,
@@ -273,52 +272,87 @@ def _day(text: str, option: str) -> date:
 
 
 def _document(path: str, option: str) -> Any:
-    """``read_json``, with a file the boundary cannot read refused by name --
-    never raised. THIS IS THE ONE DECODE BOUNDARY: every document argument
-    (``--garage``, ``--pass``, ``--registrations``, ``--visits``, and the store
-    commands' documents) comes through here, so what is caught here is caught
-    for all of them at once.
+    """The document at ``path`` decoded, with a file the boundary cannot read
+    refused by name -- never raised. THIS IS THE ONE DECODE BOUNDARY: every
+    document argument (``--garage``, ``--pass``, ``--registrations``,
+    ``--visits``, and the store commands' documents) comes through here, so
+    what is caught here is caught for all of them at once.
 
-    **WHAT IS CAUGHT IS WHAT THE TWO CALLS CAN RAISE, BY NAME -- NOT A BARE
-    ``Exception``**, which would turn the next programming error into a
-    refusal and make it invisible. ``Path.read_text`` raises ``OSError`` (a
-    file missing, a directory, unreadable) and ``UnicodeDecodeError`` (not
-    UTF-8; a ``ValueError`` subclass). ``json.loads`` raises
-    ``JSONDecodeError`` (not JSON; a ``ValueError`` subclass) and
-    ``RecursionError`` -- a document that IS valid JSON but is nested deeper
-    than the decoder can read (996 levels, 1,992 bytes, on Python 3.11).
-    That is every class the two calls document, so the tuple is complete;
-    ``MemoryError`` is deliberately not here: a document too large for the
-    machine is the machine's resource, the same family as a machine with no
-    timezone database, and is not blamed on the request. Measured before this:
-    the nested document was a traceback in BOTH directions, exit 1 with no
-    answer -- the L5 gate's B1 -- because ``RecursionError`` is a
-    ``RuntimeError``, not a ``ValueError``, and the catch did not name it.
-
-    **AND ONLY A REGULAR FILE IS OPENED.** ``open()`` on a named pipe with no
-    writer blocks until one arrives -- the command line never returned, in
-    both directions, on all four document arguments: an exit that never
-    answers, which is not a traceback and so escaped every sweep that counts
-    them. So the boundary refuses anything that is not a regular file BEFORE
-    the read -- a directory, a device, a pipe, a socket, a path that does not
-    exist -- by name, the same refusal. ``Path.is_file`` follows symlinks, so a
-    symlink to a regular file still reads (tested), and nothing here is a
+    **THE CHECK AND THE READ ARE THE SAME FILE.** The path is resolved ONCE,
+    by ``os.open`` with ``O_NONBLOCK``; everything after that asks the
+    DESCRIPTOR, never the name again: ``fstat`` says whether it is a regular
+    file, and the bytes that are decoded are read from that same descriptor.
+    Measured before this: the guard was ``Path(path).is_file()`` and the read
+    was ``open(path)`` -- two resolutions of the name -- and a writer swapping
+    the file for a named pipe between the two put the command line back into
+    the blocking ``open()`` the guard was written to prevent (3 hangs in
+    620,000 racing calls, both interpreters; 0 in 400,000 without the race).
+    A check on the name and a read on the name is a race whatever the check
+    says; a check on the descriptor is not, because nothing can change what an
+    open descriptor refers to. ``O_NONBLOCK`` is what makes the single open
+    safe on a pipe with no writer -- it returns instead of blocking -- and on
+    a regular file it changes nothing about the read. Nothing here is a
     timeout: a timeout would be a number nobody set, and would make a slow
-    filesystem read the same as a hostile one."""
+    filesystem read the same as a hostile one.
+
+    **WHAT IS REFUSED, BY NAME.** A path that does not exist (``ENOENT``)
+    reads *does not exist*; anything that opens but is not a regular file --
+    a directory, a device (``/dev/null`` reads empty; ``/dev/zero`` never
+    ends), a pipe, a socket -- reads *is not a regular file*, decided by
+    ``S_ISREG`` on the descriptor before a byte is read; every other
+    ``OSError`` the open or the read raises (``EACCES``, ``ELOOP``, ``ENOTDIR``,
+    ``ENAMETOOLONG``, ``ENXIO`` on a socket) carries the system's own text.
+    ``os.open`` follows symlinks, so a symlink to a regular file still reads
+    (tested). The descriptor is closed on every path out, refusals included.
+
+    **WHAT IS CAUGHT IS WHAT THE CALLS CAN RAISE, BY NAME -- NOT A BARE
+    ``Exception``**, which would turn the next programming error into a
+    refusal and make it invisible. ``os.open`` and ``os.fstat`` raise
+    ``OSError``, and ``ValueError`` on a NUL byte in the path; the text read
+    raises ``UnicodeDecodeError`` (a ``ValueError`` subclass) when the bytes
+    are not text in the interpreter's locale encoding -- the SAME decoding
+    ``Path.read_text`` performed before this, deliberately unchanged, so no
+    document that was refused as undecodable is decoded now (``json.loads``
+    handed raw bytes would auto-detect UTF-16 and UTF-32, and would turn a
+    boundary refusal into content); ``json.loads`` raises ``JSONDecodeError``
+    (not JSON; a ``ValueError`` subclass) and ``RecursionError`` -- a document
+    that IS valid JSON but is nested deeper than the decoder can read (996
+    levels, 1,992 bytes, on Python 3.11). That is every class the calls
+    document, so the tuple is complete; ``MemoryError`` is deliberately not
+    here: a document too large for the machine is the machine's resource, the
+    same family as a machine with no timezone database, and is not blamed on
+    the request. Measured before this: the nested document was a traceback in
+    BOTH directions, exit 1 with no answer -- the L5 gate's B1 -- because
+    ``RecursionError`` is a ``RuntimeError``, not a ``ValueError``, and the
+    catch did not name it."""
     try:
-        # INSIDE the try: ``is_file`` and ``exists`` swallow ENOENT/ENOTDIR/ELOOP
-        # but not every OSError -- a path past NAME_MAX raises ENAMETOOLONG from
-        # the stat itself. Measured: 16 tracebacks of 432 with the guard outside.
-        file = Path(path)
-        if not file.is_file():
-            why = "does not exist" if not file.exists() else (
-                "is not a regular file (a directory, a device, a pipe or a socket)"
-            )
+        # INSIDE the try, all of it: os.open raises OSError for every shape
+        # of unreadable path (ENOENT, EACCES, ELOOP, ENOTDIR, ENAMETOOLONG),
+        # and ValueError for a NUL byte; a path past NAME_MAX outside the try
+        # was 16 tracebacks of 432 in the round before this.
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+        except FileNotFoundError:
             raise Refused(
                 REFUSAL_DOCUMENT_UNREADABLE, option,
-                f"{option} {path!r} could not be read: it {why}.",
-            )
-        return read_json(path)
+                f"{option} {path!r} could not be read: it does not exist.",
+            ) from None
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise Refused(
+                    REFUSAL_DOCUMENT_UNREADABLE, option,
+                    f"{option} {path!r} could not be read: it is not a regular file "
+                    f"(a directory, a device, a pipe or a socket).",
+                )
+            # fdopen takes ownership of the descriptor: from here the `with`
+            # closes it, on the read's success and on its failure alike
+            handle = os.fdopen(fd, "r")
+        except BaseException:
+            os.close(fd)
+            raise
+        with handle:
+            text = handle.read()
+        return json.loads(text)
     except (OSError, ValueError, RecursionError) as exc:
         raise Refused(
             REFUSAL_DOCUMENT_UNREADABLE, option,

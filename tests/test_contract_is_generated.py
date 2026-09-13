@@ -189,9 +189,13 @@ def test_every_route_asserting_sentence_is_judged_by_content_and_none_is_false()
     sweep derives its denominator (every string literal in the package by AST,
     the registries and guarantees by import, README and CONTRACT), flags every
     route-asserting sentence, and requires a recorded judgement KEYED BY THE
-    SENTENCE'S CONTENT -- so an edit makes it unjudged, and an unjudged hit, a
-    FALSE one, or a stale judgement fails this test. Zero FALSE is the property,
-    not zero hits."""
+    SENTENCE'S CONTENT AND ITS FILE -- so an edit makes it unjudged, and so does
+    the same sentence standing in a file it was not judged in (measured before
+    this: keyed by content alone, a store-write sentence judged TRUE in
+    ``records.py`` inherited TRUE when copied into the document door in
+    ``access.py``, and the operator read "is stored" from a document again). An
+    unjudged hit, a FALSE one, or a stale judgement fails this test. Zero FALSE
+    is the property, not zero hits."""
     status, result = sweep.run(quiet=True)
     assert result["found"] >= 40, (
         f"the sweep found {result['found']} sentences: the instrument is broken"
@@ -209,11 +213,15 @@ def test_the_route_sweep_goes_red_on_a_falsehood_planted_where_it_was_not_lookin
     """The instrument proven able to fail, on a COPY of the source: a "stored"
     falsehood planted into the GARAGE_UNREADABLE detail -- not the PASS one the
     sweep was built for -- must be named UNJUDGED; a judged-true sentence edited
-    by one word must read UNJUDGED (content-keyed, not location-keyed); the
+    by one word must read UNJUDGED (content-keyed, not line-keyed); a judged-true
+    sentence copied VERBATIM into a file it does not stand in must read UNJUDGED
+    there (file-keyed: the same sentence in a new file is a new question); the
     unmodified tree must read clean. A sweep that only catches the line already
     known has not widened."""
     done = subprocess.run([sys.executable, str(ROOT / "scripts" / "sweep_route_sentences.py"),
                            "--self-test"], capture_output=True, text=True, cwd=ROOT)
     assert done.returncode == 0, done.stdout + done.stderr
     assert "named: 'garage {…} is stored with a value this module refuses to read" in done.stdout
-    assert "reads UNJUDGED: True" in done.stdout and "the unmodified tree: exit 0" in done.stdout
+    assert "edited by one word: exit 1, reads UNJUDGED: True" in done.stdout, done.stdout
+    assert "the same sentence in a NEW file reads UNJUDGED: True" in done.stdout, done.stdout
+    assert "the unmodified tree: exit 0" in done.stdout, done.stdout
