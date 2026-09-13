@@ -38,17 +38,17 @@ sys.path.insert(0, str(ROOT / "tests"))
 from _guarantees import GUARANTEES, guarantee_ids  # noqa: E402
 from garage_pass import documents as docs  # noqa: E402
 from garage_pass.access import Answer, Outcome, access  # noqa: E402
+from garage_pass.enrolment import (  # noqa: E402
+    EXPIRED_CREDENTIAL,
+    PAYLOAD_PREFIX,
+    CredentialState,
+)
 from garage_pass.findings import (  # noqa: E402
     BARRIER_MEANINGS,
     EXIT_IS_NEVER_REFUSED,
     NOT_COVERED_REASONS,
     REFUSALS,
     REFUSED_TO_ANSWER,
-)
-from garage_pass.enrolment import (  # noqa: E402
-    EXPIRED_CREDENTIAL,
-    PAYLOAD_PREFIX,
-    CredentialState,
 )
 from garage_pass.garage import ENROLS_AT  # noqa: E402
 from garage_pass.passes import EXPIRED, State  # noqa: E402
