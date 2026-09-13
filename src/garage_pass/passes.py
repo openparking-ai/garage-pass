@@ -48,7 +48,8 @@ class Holder:
         local, at, domain = email.partition("@")
         if not (at and local and domain):
             raise Refused(
-                REFUSAL_HOLDER_EMAIL_MALFORMED, "holder.email", "needs one @ with text both sides."
+                REFUSAL_HOLDER_EMAIL_MALFORMED, "holder.email",
+                "needs an @ with text before it and text after it.",
             )
         object.__setattr__(self, "email", email)
 

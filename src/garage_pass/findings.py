@@ -38,10 +38,12 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class Unreadable:
-    """A stored value this module refuses to read -- carried on the pass or the
-    garage it came from instead of raised, so an access call about it produces a
-    STATED answer and never an exception. Reached by a raw write, or by a
-    validator tightened after the row was stored.
+    """A value this module refuses to read -- carried on the pass or the garage
+    it came from instead of raised, so an access call about it produces a
+    STATED answer and never an exception. Reached by a stored row (a raw write,
+    or a validator tightened after the row was stored) and, at an EXIT, by a
+    document handed to the command line (``documents.load_or_degrade``) -- the
+    same carrier either way.
 
     ``code`` is a registered refusal (``UnknownTimezone`` is one), ``field`` the
     one that fails, ``detail`` the sentence an operator reads.
@@ -177,8 +179,9 @@ REFUSALS: dict[str, str] = {
         "A required field is blank. The field is named beside this code."
     ),
     REFUSAL_HOLDER_EMAIL_MALFORMED: (
-        "The holder's email address does not look like one -- it needs one @ with "
-        "something on both sides. The email is the holder's identity in this "
+        "The holder's email address does not look like one -- it needs an @ with "
+        "something before it and something after it. The email is the holder's "
+        "identity in this "
         "module, so a malformed one identifies nobody."
     ),
     REFUSAL_UNKNOWN_FIELD: (
@@ -253,8 +256,8 @@ REFUSALS: dict[str, str] = {
     ),
     REFUSAL_DOCUMENT_UNREADABLE: (
         "A document named on the command line could not be read: the file is "
-        "missing, unreadable, or not JSON. The detail names the path and what went "
-        "wrong."
+        "missing, unreadable, not JSON, or JSON nested deeper than the decoder can "
+        "read. The detail names the path and what went wrong."
     ),
     REFUSAL_GARAGE_MISMATCH: (
         "A pass belongs to one garage and was asked about another. One garage per "
@@ -351,18 +354,24 @@ NOT_COVERED_REASONS: dict[str, str] = {
         "wall-clock hours."
     ),
     PASS_UNREADABLE: (
-        "The pass this vehicle is registered to is stored with a value this module "
+        "The pass this vehicle is registered to carries a value this module "
         "refuses to read -- terms or a holder that would be refused at creation. "
-        "Reached only by a raw write or by a validator tightened after the pass was "
-        "stored. The detail names the pass and the field. At an EXIT this is "
+        "Reached by a stored row (a raw write, or a validator tightened after the "
+        "pass was stored) and, at an EXIT, by a pass document handed to the command "
+        "line whose id, garage, label and state read. The detail names the pass and "
+        "the field. At an EXIT this is "
         "out-of-terms and therefore chargeable at a transient garage: stated so "
         "nobody reads it as a free exit, and named so an operator can find the row "
         "and undo the charge."
     ),
     GARAGE_UNREADABLE: (
-        "The garage is stored with a timezone this system does not carry, so no "
-        "window, day or registration range can be evaluated. Answered ahead of every "
-        "term. At an EXIT this is out-of-terms; at an entry the call refuses to answer."
+        "The garage carries a value this module refuses to read -- a stored row "
+        "whose timezone this system does not carry, or, at an EXIT, a garage document "
+        "handed to the command line whose id, timezone and transient mode read but "
+        "which is refused for any reason (an unknown zone, an unknown field). Without "
+        "a clock no window, day or registration range can be evaluated, so it is "
+        "answered ahead of every term. At an EXIT this is out-of-terms; at an entry "
+        "the call refuses to answer."
     ),
     BLANK_IDENTITY: (
         "The vehicle identity is blank at an EXIT, so there is nothing to look up -- "
@@ -408,8 +417,8 @@ NOT_COVERED_REASONS: dict[str, str] = {
         "fields read is not this: it degrades to the unreadable pass or garage a stored "
         "row becomes, and answers PASS_UNREADABLE or GARAGE_UNREADABLE only if the "
         "vehicle is on it. (At an entry the same document is refused by name. The module "
-        "refuses only when it holds no record at all -- a file that is missing or is not "
-        "JSON -- or no instant to read it at.)"
+        "refuses only when it holds no record at all -- a file that is missing or cannot "
+        "be read as JSON -- or no instant to read it at.)"
     ),
 }
 

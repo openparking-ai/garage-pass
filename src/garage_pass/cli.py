@@ -29,7 +29,9 @@ sentence to stderr and exits 2.
 raises -- and ``UnknownTimezone`` is one -- reaches this boundary and is printed
 as ``{"refused": code, "field": ..., "detail": ...}`` with exit 3. What the
 libraries this boundary calls can raise is mapped here too: a document that
-cannot be read as JSON, an instant or a day that does not parse, a naive
+cannot be read as JSON -- missing, not JSON, not UTF-8, or valid JSON nested
+deeper than the decoder reads (``_document``) -- an instant or a day that does
+not parse, a naive
 instant, a registrations or visits document that is not a list, a field of the
 wrong type (every document value is checked against the type its dataclass
 declares, in ``documents.py``, before anything is built from it). Measured
@@ -193,7 +195,8 @@ def _access_from_documents(args: argparse.Namespace) -> Answer:
     """The access answer from documents. THE LINE: the module answers when it
     holds a record whose content it cannot read; it refuses when it holds no
     record at all, or no instant to read it at. So the instant (``--at``) and
-    the files (missing, not JSON) refuse in both directions; a document that IS
+    the files (missing, not JSON, or JSON the decoder cannot decode) refuse in
+    both directions; a document that IS
     JSON but cannot be read as a garage, pass, registration or visit is refused
     at an ENTRY and ANSWERED at an EXIT -- degraded the way a stored row with
     the same content is (``documents.load_or_degrade``), so a pass or garage
@@ -268,11 +271,30 @@ def _day(text: str, option: str) -> date:
 
 
 def _document(path: str, option: str) -> Any:
-    """``read_json``, with a missing, unreadable or non-JSON file refused by
-    name rather than raised as ``FileNotFoundError`` or ``JSONDecodeError``."""
+    """``read_json``, with a file the boundary cannot read refused by name --
+    never raised. THIS IS THE ONE DECODE BOUNDARY: every document argument
+    (``--garage``, ``--pass``, ``--registrations``, ``--visits``, and the store
+    commands' documents) comes through here, so what is caught here is caught
+    for all of them at once.
+
+    **WHAT IS CAUGHT IS WHAT THE TWO CALLS CAN RAISE, BY NAME -- NOT A BARE
+    ``Exception``**, which would turn the next programming error into a
+    refusal and make it invisible. ``Path.read_text`` raises ``OSError`` (a
+    file missing, a directory, unreadable) and ``UnicodeDecodeError`` (not
+    UTF-8; a ``ValueError`` subclass). ``json.loads`` raises
+    ``JSONDecodeError`` (not JSON; a ``ValueError`` subclass) and
+    ``RecursionError`` -- a document that IS valid JSON but is nested deeper
+    than the decoder can read (996 levels, 1,992 bytes, on Python 3.11).
+    That is every class the two calls document, so the tuple is complete;
+    ``MemoryError`` is deliberately not here: a document too large for the
+    machine is the machine's resource, the same family as a machine with no
+    timezone database, and is not blamed on the request. Measured before this:
+    the nested document was a traceback in BOTH directions, exit 1 with no
+    answer -- the L5 gate's one blocker -- because ``RecursionError`` is a
+    ``RuntimeError``, not a ``ValueError``, and the catch did not name it."""
     try:
         return read_json(path)
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, RecursionError) as exc:
         raise Refused(
             REFUSAL_DOCUMENT_UNREADABLE, option,
             f"{option} {path!r} could not be read: {exc}",

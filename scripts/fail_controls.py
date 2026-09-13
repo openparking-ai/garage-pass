@@ -1135,6 +1135,15 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
         "pass, and the parity with the store is gone (an unreadable pass is an unreadable "
         "pass, A1.2)",
     ),
+    # --- the document that crashes the decoder (U1, the L5 gate's blocker) ------------
+    "G18/decoder-recursion": (
+        G18, "cli.py",
+        "    except (OSError, ValueError, RecursionError) as exc:",
+        "    except (OSError, ValueError) as exc:  # PLANTED: the decoder's RecursionError escapes",
+        "a document that is valid JSON nested past what json.loads decodes is a TRACEBACK at "
+        "the command line again -- RecursionError is a RuntimeError, not a ValueError -- in "
+        "both directions, exit 1 with no answer; the red must name the traceback",
+    ),
     "G12/garage-who-why": (
         G12, "store/records.py",
         source(

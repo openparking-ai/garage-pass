@@ -269,6 +269,63 @@ def test_a_registrations_document_that_is_not_a_list_is_a_json_refusal(tmp_path,
 
 
 @pytest.mark.guarantee("G18")
+@pytest.mark.parametrize("option", ["--garage", "--pass", "--registrations", "--visits"])
+def test_a_document_nested_past_the_decoder_is_the_json_refusal_on_every_document_argument(
+    tmp_path, capsys, option
+):
+    """THE L5 GATE'S BLOCKER (B1). A file that is valid JSON nested deeper than
+    ``json.loads`` decodes makes it raise ``RecursionError`` -- a ``RuntimeError``,
+    not a ``ValueError`` -- and ``cli._document`` did not name it: a traceback in
+    BOTH directions, exit 1 with no answer, the one shape G18 forbids. It is the
+    refusing side of the line (no record: the file cannot be read as JSON), so
+    it is ``REFUSAL_DOCUMENT_UNREADABLE`` naming the option, exit 3, at an ENTRY
+    and at an EXIT alike. The fix is at the ONE decode boundary, so it is proven
+    on every document argument, not the two the gate found; and the CONTROL in
+    the same test is the same shape 60 deep, which decodes: at an exit it is a
+    record the module holds and cannot read (RECORD_UNREADABLE), at an entry it
+    is refused naming the document -- so the refusal here is about the decoder,
+    not about the shape."""
+    garage, pass_ = _documents(tmp_path)
+    good = _write(tmp_path, "r.json", [REGISTRATION])
+    deep = tmp_path / "deep.json"
+    deep.write_text(PAST_THE_DECODER)
+    shallow = tmp_path / "shallow.json"
+    shallow.write_text(SHALLOW)
+
+    def argv(path: Path) -> list[str]:
+        base = {"--garage": str(garage), "--pass": str(pass_), "--registrations": str(good)}
+        base[option] = str(path)
+        out = ["access", "--garage", base["--garage"], "--pass", base["--pass"],
+               "--registrations", base["--registrations"]]
+        if option == "--visits":
+            out += ["--visits", str(path)]
+        return out
+
+    for direction in ("entry", "exit"):
+        status, printed = run([*argv(deep), "--vehicle", "CAR-1", "--lane", "L1",
+                               "--direction", direction, "--at", "2026-06-01T12:00:00-06:00"],
+                              capsys)
+        assert status == EXIT_REFUSED_REQUEST, (
+            f"{option} nested past the decoder at {direction}: exit {status}, {printed}"
+        )
+        assert printed["refused"] == f.REFUSAL_DOCUMENT_UNREADABLE and printed["field"] == option
+        assert "recursion" in printed["detail"].lower() and str(deep) in printed["detail"]
+    # the control: the same shape, decodable -- answered at an exit, refused at an entry
+    entry, exit_ = _either_way(argv(shallow), capsys)
+    _assert_entry_refused(*entry, f.REFUSAL_FIELD_BLANK)
+    _assert_exit_answered(*exit_, f.RECORD_UNREADABLE)
+    # and not in-process only: the actual process, so stderr is seen
+    completed = subprocess.run(
+        [sys.executable, "-m", "garage_pass.cli", *argv(deep), "--vehicle", "CAR-1", "--lane", "L1",
+         "--direction", "exit", "--at", "2026-06-01T12:00:00-06:00"],
+        capture_output=True, text=True, cwd=ROOT,
+    )
+    assert completed.returncode == EXIT_REFUSED_REQUEST, completed.stderr[-400:]
+    assert "Traceback" not in completed.stderr and completed.stderr == "", completed.stderr[-400:]
+    assert json.loads(completed.stdout)["refused"] == f.REFUSAL_DOCUMENT_UNREADABLE
+
+
+@pytest.mark.guarantee("G18")
 def test_a_machine_with_no_tz_database_is_a_sentence_on_stderr_exit_2_not_a_refusal_of_the_value(
     tmp_path, capsys, monkeypatch
 ):
@@ -956,7 +1013,14 @@ def test_the_carrier_rule_and_store_parity_at_an_exit(tmp_path, capsys):
 
 #: What the module REFUSES in both directions: no record at all, or no instant.
 NO_RECORD_OR_NO_INSTANT = ["missing --garage file", "--garage not JSON",
+                           "--garage JSON nested past the decoder",
                            "missing --registrations file", "--at naive", "--at malformed"]
+
+#: Deeper than any interpreter this package supports decodes (3.11 stops near 1,000
+#: levels, 3.12 near 10,000): ``json.loads`` raises ``RecursionError`` on it.
+PAST_THE_DECODER = "[" * 50_000 + "]" * 50_000
+#: The same shape, decodable: a JSON list where an object or a list of objects belongs.
+SHALLOW = "[" * 60 + "]" * 60
 
 
 @pytest.mark.guarantee("G4")
@@ -1015,6 +1079,9 @@ def test_every_malformed_case_reads_entry_refuses_and_exit_answers_or_both_refus
     (tmp_path / "nj.json").write_text("{not json")  # raw text, not a JSON string
     cases["--garage not JSON"] = ["access", "--garage", str(tmp_path / "nj.json"),
                                  "--pass", str(pass_)]
+    (tmp_path / "deep.json").write_text(PAST_THE_DECODER)  # valid JSON the decoder cannot decode
+    cases["--garage JSON nested past the decoder"] = [
+        "access", "--garage", str(tmp_path / "deep.json"), "--pass", str(pass_)]
     cases["missing --registrations file"] = [*base, "--registrations", str(tmp_path / "nope2.json")]
     # (the instant cases are run with their own --at below)
     buckets: dict[str, list[str]] = {"entry refuses, exit answers": [],
