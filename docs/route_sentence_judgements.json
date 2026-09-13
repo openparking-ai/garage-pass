@@ -102,12 +102,6 @@
   "why": "cli._document docstring; each shape measured old-vs-new (attack/wording_moved_old_vs_new.out): ENOENT -> 'does not exist'; a directory, /dev/null, /dev/zero, a FIFO -> 'is not a regular file' by S_ISREG; the system's text for EACCES, ELOOP, ENOTDIR (a regular file with a trailing slash included -- the one CODE that moved, covered -> refused), ENAMETOOLONG, a socket (EOPNOTSUPP on the Mac measured, ENXIO on Linux per the open(2) manual) and /dev/tty (ENXIO)"
  },
  {
-  "sentence": "Against the store (``GARAGE_PASS_DSN``, ``--tenant``): ``create-garage``, ``set-garage-timezone`` (the repair for a garage stored with a timezone the system does not carry -- the one write that takes an unreadable garage, and it records who, when and why like a state change does), ``create-pass``, ``register-vehicle``, ``end-registration``, ``set-state``, ``record-entry``, ``record-exit`` and ``access-in-store``.",
-  "file": "src/garage_pass/cli.py",
-  "verdict": "NOT-PUBLISHED",
-  "why": "cli.py module docstring; set-garage-timezone repairs a STORED garage -- true"
- },
- {
   "sentence": "At an EXIT a document that is JSON but cannot be read is not refused but answered not-covered naming the field, exit 1 -- the module answers when it holds a record whose content it cannot read, and refuses when it holds no record at all (a file missing, not a regular file, or not JSON) or no instant (``_access_from_documents``).",
   "file": "src/garage_pass/cli.py",
   "verdict": "NOT-PUBLISHED",
@@ -358,5 +352,77 @@
   "file": "tests/_guarantees.py",
   "verdict": "TRUE",
   "why": "G2: the CHECKs in 0001; the three cross-table rules backed by the load path (G17)"
+ },
+ {
+  "sentence": "Against the store (``GARAGE_PASS_DSN``, ``--tenant``): ``create-garage``, ``set-garage-timezone`` (the repair for a garage stored with a timezone the system does not carry -- the one write that takes an unreadable garage, and it records who, when and why like a state change does), ``set-garage-enrols-at`` (where a garage enrols -- entry or exit -- recorded the same way), ``create-pass``, ``register-vehicle``, ``end-registration``, ``set-state``, ``record-entry``, ``record-exit``, ``access-in-store``, and the enrolment: ``issue-enrolment`` (mint the QR for a pass: the token is printed ONCE, here, and by nothing else), ``redeem-enrolment`` (the lane presents the QR with the vehicle identity it measured: the bind, and the access answer for that same movement -- always, refused or not; exit status follows the answer's outcome, and the enrolment half is in the JSON), ``issue-holder-link`` and ``redeem-holder-link`` (the holder writes their own name and phone onto the pass and gets their QR).",
+  "file": "src/garage_pass/cli.py",
+  "verdict": "NOT-PUBLISHED",
+  "why": "cli module docstring (G2 rewrite of the judged verb list): the timezone repair is still the one write an unreadable garage takes -- set_garage_enrols_at, issue_*, redeem_holder_link go through load_readable_garage and redeem_enrolment carries the refusal (G17's derived write list exercises every one); the token is printed by the issue calls and by nothing else (G23)"
+ },
+ {
+  "sentence": "**THE EMAIL IS THE IDENTITY, THE QR IS THE CREDENTIAL, AND THERE IS NO ACCOUNT AND NO PASSWORD.** An enrolment is a token minted once, returned once by the call that issued it, and known to this module afterwards only by its SHA-256.",
+  "file": "src/garage_pass/enrolment.py",
+  "verdict": "NOT-PUBLISHED",
+  "why": "enrolment module docstring; the row holds token_sha256 and nothing else about the token, measured by G23's catalogue scan with the digest as the positive control"
+ },
+ {
+  "sentence": "The order when both are unstated is deterministic and stated here: ``garage.transient_available`` first (it is the field that decides), and ``garage.enrols_at`` only when transient is stated true.",
+  "file": "src/garage_pass/enrolment.py",
+  "verdict": "NOT-PUBLISHED",
+  "why": "enrolment module docstring; where_enrolment_happens reads transient_available first and enrols_at only under transient true (G21's tests on both unstated shapes)"
+ },
+ {
+  "sentence": "``'entry'`` or ``'exit'``, or a refusal naming the field that would decide -- ``garage.transient_available`` first, ``garage.enrols_at`` only when transient is stated true.",
+  "file": "src/garage_pass/enrolment.py",
+  "verdict": "NOT-PUBLISHED",
+  "why": "where_enrolment_happens docstring; the same order as the code below it"
+ },
+ {
+  "sentence": "Refused where the garage is created and where the field is repaired; the schema's CHECK is the backstop for a raw write.",
+  "file": "src/garage_pass/findings.py",
+  "verdict": "TRUE",
+  "why": "REFUSAL_ENROLS_AT_CONTRADICTS_TRANSIENT: Garage.__post_init__ and set_garage_enrols_at both call refuse_enrols_at_contradiction; garages_no_transient_means_enrols_at_entry is the CHECK, tested by a raw write as the owner"
+ },
+ {
+  "sentence": "**No transient AND enrols at exit is a contradiction**, refused here by name and, for a raw write, by the CHECK on the table.",
+  "file": "src/garage_pass/garage.py",
+  "verdict": "NOT-PUBLISHED",
+  "why": "garage module docstring; the same claim as the registry sentence judged TRUE"
+ },
+ {
+  "sentence": "pass {…} is stored unreadable: {…}",
+  "file": "src/garage_pass/store/enrolments.py",
+  "verdict": "TRUE",
+  "why": "a RENDERED detail on a store WRITE (issue, redeem) against an unreadable STORED pass: the row is stored; the credentials have no document door"
+ },
+ {
+  "sentence": "garage {…} is stored unreadable: {…} Repair it with set-garage-timezone before a QR can be redeemed there.",
+  "file": "src/garage_pass/store/enrolments.py",
+  "verdict": "TRUE",
+  "why": "a RENDERED detail carried by a refused redemption at an unreadable STORED garage: the row is stored; the movement is still answered (G17's redemption case)"
+ },
+ {
+  "sentence": "Where the garage enrols follows from whether it sells transient parking (R1): a garage with no transient enrols at entry, DERIVED, and need not state it; a transient garage states entry or exit, and unstated makes the redemption refuse to answer naming garage.enrols_at (garage.transient_available first, when that is unstated); no transient AND enrols at exit is a contradiction refused by name where the garage is created and where the field is repaired, with the schema's CHECK as the backstop for a raw write.",
+  "file": "tests/_guarantees.py",
+  "verdict": "TRUE",
+  "why": "G20: Garage.__post_init__ and set_garage_enrols_at both refuse the contradiction by name (tests in G20's and G12's files); garages_no_transient_means_enrols_at_entry is the CHECK, exercised by a raw INSERT and a raw UPDATE as the owner in G20's file"
+ },
+ {
+  "sentence": "**The email is the identity, the QR is the credential, and there is no account and no password.** An owner mints a QR for a pass (`issue-enrolment`): a token returned exactly once, by that call, and known to the module afterwards only by its SHA-256 — no read, no listing and no refusal carries the plaintext, and no column stores it.",
+  "file": "README.md",
+  "verdict": "TRUE",
+  "why": "README: G23's two tests -- the catalogue scan of every column (digest as the control) and the rendered scan of every Answer, every printed refusal and every command-line line since the test began (the issue outputs as the control)"
+ },
+ {
+  "sentence": "*Design documentation.* **The email is the identity, the QR is the credential, and there is no account and no password.** An **enrolment** is a one-time credential minted for a pass: a token returned exactly once by the call that issued it and known to the module afterwards only by its SHA-256 — no read, no listing, no refusal detail and no answer carries the plaintext, and the row does not hold it (G23).",
+  "file": "docs/CONTRACT.md",
+  "verdict": "TRUE",
+  "why": "CONTRACT's authored copy of the README claim; the same two G23 tests"
+ },
+ {
+  "sentence": "No transient and enrols at exit is a contradiction, refused by name where the garage is created and where the field is repaired (`set-garage-enrols-at`, recorded like the timezone repair), with the schema's CHECK as the backstop for a raw write (G20).",
+  "file": "docs/CONTRACT.md",
+  "verdict": "TRUE",
+  "why": "CONTRACT's authored copy of the G20 registry claim: Garage.__post_init__, set_garage_enrols_at, and the CHECK exercised by a raw INSERT and UPDATE as the owner"
  }
 ]

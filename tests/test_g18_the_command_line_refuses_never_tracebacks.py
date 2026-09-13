@@ -503,6 +503,91 @@ def test_set_garage_timezone_with_a_dash_leading_value_is_the_json_refusal_exit_
     assert query(app, tenant_id, "SELECT count(*) FROM garage_changes") == [(0,)]
 
 
+@pytest.mark.guarantee("G18")
+@store_test
+def test_the_enrolment_commands_render_every_refusal_and_the_redemption_exits_by_the_answer(
+    app, tenant_id, tmp_path, capsys, monkeypatch
+):
+    """Each new verb, each input that would have been a traceback or an
+    argparse usage error: --days-valid absent (the module's refusal BY NAME,
+    not argparse's), --days-valid not a number, --enrols-at neither end, the
+    R1 contradiction on the repair, a blank --token, a link redeemed twice; and
+    the redemption's exit status follows the ANSWER while the enrolment half is
+    in the JSON."""
+    from store_harness import query
+
+    _dsn_for_the_app(monkeypatch)
+    garage, pass_ = _documents(tmp_path)
+    T = ["--tenant", str(tenant_id), "--garage", "garage-downtown"]
+    assert run(["create-garage", "--tenant", str(tenant_id), "--garage", str(garage)],
+               capsys)[0] == 0
+    assert run(["create-pass", *T, "--pass", str(pass_), "--by", "owner",
+                "--at", "2026-06-01T12:00:00-06:00"], capsys)[0] == 0
+    who = ["--by", "owner", "--at", "2026-06-01T12:00:00-06:00"]
+    issue = ["issue-enrolment", *T, "--pass-id", "pass-1", "--enrolment-id", "qr-1",
+             "--starts-on", "2026-06-01", *who]
+    status, printed = run(issue, capsys)  # --days-valid absent
+    assert status == EXIT_REFUSED_REQUEST
+    assert printed["refused"] == f.REFUSAL_DAYS_VALID_NOT_STATED
+    assert printed["field"] == "days_valid"
+    status, printed = run([*issue, "--days-valid", "three"], capsys)
+    assert status == EXIT_REFUSED_REQUEST and printed["field"] == "--days-valid"
+    status, printed = run([*issue, "--days-valid", "0"], capsys)
+    assert status == EXIT_REFUSED_REQUEST
+    assert printed["refused"] == f.REFUSAL_DAYS_VALID_NOT_POSITIVE
+    status, printed = run([*issue, "--days-valid", "3", "--starts-on", "June 1st"], capsys)
+    assert status == EXIT_REFUSED_REQUEST and printed["field"] == "--starts-on"
+    assert query(app, tenant_id, "SELECT count(*) FROM enrolments") == [(0,)]
+    # the repair: neither end, then the value that lands
+    repair = ["set-garage-enrols-at", *T, *who, "--reason", "stated"]
+    status, printed = run([*repair, "--enrols-at", "middle"], capsys)
+    assert status == EXIT_REFUSED_REQUEST and printed["refused"] == f.REFUSAL_FIELD_BLANK
+    assert printed["field"] == "garage.enrols_at" and "'middle'" in printed["detail"]
+    status, printed = run([*repair, "--enrols-at", "entry"], capsys)
+    assert status == 0 and printed["enrols_at"] == "entry" and printed["was"] is None
+    # a token nobody issued, presented at the right end: the enrolment half is the
+    # refusal rendered through the one seam, the answer half is the lane's, and the
+    # exit status is the ANSWER's -- not covered, 1
+    status, printed = run(["redeem-enrolment", *T, "--token", "nothing", *MOVE], capsys)
+    assert status == 1, printed
+    assert printed["enrolment"] == {"enrolment": None, "redeemed": False,
+                                    "refused": f.REFUSAL_CREDENTIAL_UNKNOWN, "field": "token",
+                                    "detail": printed["enrolment"]["detail"]}
+    assert printed["answer"]["outcome"] == "not_covered"
+    assert printed["answer"]["reason"] == "NO_PASS"
+    status, printed = run(["redeem-enrolment", *T, "--token", "   ", *MOVE], capsys)
+    assert status == 1 and printed["enrolment"]["refused"] == f.REFUSAL_FIELD_BLANK
+    assert printed["enrolment"]["field"] == "token"
+    # issued, redeemed: covered, 0; redeemed again: the refusal half, and STILL 0 --
+    # the car is on the pass, the lane hears that
+    status, printed = run([*issue, "--days-valid", "3"], capsys)
+    assert status == 0 and printed["enrolment"] == "qr-1"
+    token = printed["token"]
+    status, printed = run(["redeem-enrolment", *T, "--token", token, *MOVE], capsys)
+    assert status == 0 and printed["enrolment"]["redeemed"] is True
+    assert printed["enrolment"]["pass_state_change"] is None, "the document's pass is active"
+    assert printed["enrolment"]["registration"]["vehicle_identity"] == "CAR-1"
+    assert printed["answer"]["outcome"] == "covered"
+    assert "token" not in json.dumps(printed["enrolment"]) or token not in json.dumps(printed)
+    status, printed = run(["redeem-enrolment", *T, "--token", token, *MOVE], capsys)
+    assert status == 0 and printed["enrolment"]["refused"] == f.REFUSAL_CREDENTIAL_ALREADY_USED
+    assert printed["answer"]["outcome"] == "covered"
+    # the holder link, twice
+    link = ["issue-holder-link", *T, "--pass-id", "pass-1", "--link-id", "link-1",
+            "--starts-on", "2026-06-01", "--days-valid", "3", *who]
+    status, printed = run(link, capsys)
+    assert status == 0 and printed["holder_link"] == "link-1"
+    redeem_link = ["redeem-holder-link", *T, "--token", printed["token"], "--name", "Her",
+                   "--phone", "1", "--enrolment-id", "qr-2", "--starts-on", "2026-06-01",
+                   "--days-valid", "3", "--at", "2026-06-01T12:00:00-06:00"]
+    status, printed = run(redeem_link, capsys)
+    assert status == 0 and printed["enrolment"]["enrolment"] == "qr-2"
+    status, printed = run(redeem_link, capsys)
+    assert status == EXIT_REFUSED_REQUEST
+    assert printed["refused"] == f.REFUSAL_CREDENTIAL_ALREADY_USED
+    assert query(app, tenant_id, "SELECT count(*) FROM enrolments") == [(2,)]
+
+
 # ---------------------------------------------------------------------------
 # The document boundary: every value checked against its declared type (W2, W3).
 # ---------------------------------------------------------------------------

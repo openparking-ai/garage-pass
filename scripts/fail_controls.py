@@ -83,8 +83,15 @@ G12 = "tests/test_g12_state_changes_are_append_only.py"
 G13 = "tests/test_g13_the_label_is_only_a_label.py"
 G17 = "tests/test_g17_a_stored_row_the_module_cannot_read_still_answers.py"
 G18 = "tests/test_g18_the_command_line_refuses_never_tracebacks.py"
+G19 = "tests/test_g19_one_qr_one_car_once.py"
+G20 = "tests/test_g20_the_enrolment_opens_nothing_on_its_own.py"
+G21 = "tests/test_g21_a_redemption_refusal_is_never_an_exit_refusal.py"
+G22 = "tests/test_g22_the_vehicle_description_decides_nothing.py"
+G23 = "tests/test_g23_the_token_is_never_stored_and_never_rendered.py"
+G24 = "tests/test_g24_a_holder_link_writes_two_columns_and_nothing_else.py"
 MIGRATION = "migrations/0001_garages_passes_registrations_and_rls.sql"
 MIGRATION_0002 = "migrations/0002_garage_changes_are_recorded.sql"
+MIGRATION_0003 = "migrations/0003_enrolments_holder_links_and_where_a_garage_enrols.sql"
 
 #: control id -> (test target, source file, anchor, replacement, what breaks)
 CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
@@ -1264,6 +1271,299 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
         ),
         "a repair with no reason is accepted and recorded with a guessed one -- the silent "
         "default this module exists to refuse",
+    ),
+    # --- G2: enrolment (migration 0003) --------------------------------------------
+    "G10/predicate-enrolments": (
+        G10, MIGRATION_0003,
+        source(
+            "CREATE POLICY enrolments_tenant_isolation ON enrolments",
+            "  USING      (tenant_id = current_tenant_id())",
+            "  WITH CHECK (tenant_id = current_tenant_id());",
+        ),
+        source(
+            "CREATE POLICY enrolments_tenant_isolation ON enrolments",
+            "  USING      (true)",
+            "  WITH CHECK (true);  -- PLANTED: the tenant predicate stripped",
+        ),
+        "the policy on enrolments still EXISTS -- the catalogue is satisfied -- but isolates "
+        "nothing: every tenant reads and writes every other's credentials there",
+    ),
+    "G10/predicate-holder_links": (
+        G10, MIGRATION_0003,
+        source(
+            "CREATE POLICY holder_links_tenant_isolation ON holder_links",
+            "  USING      (tenant_id = current_tenant_id())",
+            "  WITH CHECK (tenant_id = current_tenant_id());",
+        ),
+        source(
+            "CREATE POLICY holder_links_tenant_isolation ON holder_links",
+            "  USING      (true)",
+            "  WITH CHECK (true);  -- PLANTED: the tenant predicate stripped",
+        ),
+        "the policy on holder_links still EXISTS -- the catalogue is satisfied -- but "
+        "isolates nothing",
+    ),
+    "G12/delete-grant-leaf": (
+        G12, MIGRATION_0003,
+        "GRANT SELECT, INSERT, UPDATE ON enrolments, holder_links TO garage_pass_app;",
+        "GRANT SELECT, INSERT, UPDATE, DELETE ON enrolments, holder_links TO garage_pass_app;"
+        "  -- PLANTED: DELETE on a LEAF",
+        "DELETE granted on a leaf table that cascades into no history: the first cut's walk "
+        "from the histories could not see it (G2's brief correction 1); the whole-schema "
+        "assertion names the leaf",
+    ),
+    "G12/enrols-at-history-row": (
+        G12, "store/records.py",
+        source(
+            '        "INSERT INTO garage_changes (tenant_id, garage_id, changed_by, changed_at, '
+            'reason, "',
+            "        \"field, old_value, new_value) VALUES (%s, %s, %s, %s, %s, 'enrols_at', "
+            '%s, %s)",',
+            "        (tenant_uuid, garage_uuid, by.strip(), at, reason.strip(), garage.enrols_at, "
+            "new_value),",
+        ),
+        source(
+            '        "SELECT 1",  # PLANTED: the enrols-at repair leaves no record',
+            "        (),",
+        ),
+        "the enrols-at repair moves the field and leaves no record of who, when or why",
+    ),
+    "G12/enrols-at-contradiction-on-repair": (
+        G12, "store/records.py",
+        "    refuse_enrols_at_contradiction(garage.transient_available, new_value)",
+        "    pass  # PLANTED: the repair accepts 'exit' on a no-transient garage",
+        "the R1 contradiction is refused at creation and accepted on the repair: the "
+        "repair reaches the CHECK as a bare constraint instead of the refusal by name",
+    ),
+    "G19/redeem-twice": (
+        G19, "store/enrolments.py",
+        "    if state == CredentialState.REDEEMED.value:\n        raise Refused(",
+        "    if False:  # PLANTED: a redeemed credential is redeemed again\n        raise Refused(",
+        "a used QR binds a second car -- the registration is written twice",
+    ),
+    "G19/atomic": (
+        G19, "store/enrolments.py",
+        '        cursor.execute(f"ROLLBACK TO SAVEPOINT {SAVEPOINT}")',
+        '        cursor.execute(f"RELEASE SAVEPOINT {SAVEPOINT}")  # PLANTED: the writes stand',
+        "a refusal after the registration was written leaves the registration standing: a "
+        "half-landed redemption, the QR still issued -- usable twice",
+    ),
+    "G19/days-valid-default": (
+        G19, "enrolment.py",
+        '        raise Refused(REFUSAL_DAYS_VALID_NOT_STATED, "days_valid", '
+        '"days_valid is not stated.")',
+        "        return 3  # PLANTED: the product's number as a silent default",
+        "an absent days_valid is defaulted to three instead of refused by name",
+    ),
+    "G19/expiry-derived": (
+        G19, "enrolment.py",
+        "    if today > last_day(starts_on, days_valid):\n        return EXPIRED_CREDENTIAL",
+        "    if False:  # PLANTED: a credential never expires\n        return EXPIRED_CREDENTIAL",
+        "a QR presented a day late is redeemed; the window is decoration",
+    ),
+    "G19/revocation-cancels": (
+        G19, "store/records.py",
+        '        for table in ("enrolments", "holder_links"):',
+        "        for table in ():  # PLANTED: revocation leaves the credentials outstanding",
+        "a revoked pass's outstanding QRs and links stay issued: the credential outlives "
+        "the pass (the state check still refuses the redemption -- G19's in-test control "
+        "proves which layer is load-bearing)",
+    ),
+    "G19/state-check": (
+        G19, "store/records.py",
+        "REGISTRABLE_STATES = frozenset({State.DRAFT, State.AWAITING_ENROLMENT, State.ACTIVE})",
+        "REGISTRABLE_STATES = frozenset({State.DRAFT, State.AWAITING_ENROLMENT, State.ACTIVE, "
+        "State.REVOKED})  # PLANTED: revoked takes a registration",
+        "with the cancellation put back by a raw write, a revoked pass's QR binds a car: the "
+        "state check the brief requires to be load-bearing is gone from both layers at once "
+        "(both read this set)",
+    ),
+    "G20/divergence": (
+        G20, "store/enrolments.py",
+        source(
+            "    answer = answer_in_transaction(",
+            "        cursor, tenant_uuid, garage_external_id, vehicle_identity, lane, direction, "
+            "at,",
+            "    )",
+            "    return Redemption(",
+        ),
+        source(
+            "    answer = answer_in_transaction(",
+            "        cursor, tenant_uuid, garage_external_id, vehicle_identity, lane, direction, "
+            "at,",
+            "    )",
+            '    answer = Answer(**{**answer.__dict__, "detail": "PLANTED: opened by the '
+            'enrolment"})',
+            "    return Redemption(",
+        ),
+        "the redemption's answer diverges from the access call's -- a second layer deciding "
+        "one concept, the trap this estate keeps re-learning",
+    ),
+    "G20/unstated-defaulted": (
+        G20, "enrolment.py",
+        source(
+            "    if garage.enrols_at is None:",
+            "        raise Refused(",
+            '            REFUSAL_WHERE_TO_ENROL_UNSTATED, "garage.enrols_at",',
+        ),
+        source(
+            "    if garage.enrols_at is None:",
+            "        return ENROLS_AT_ENTRY  # PLANTED: a guessed default",
+            "        raise Refused(",
+            '            REFUSAL_WHERE_TO_ENROL_UNSTATED, "garage.enrols_at",',
+        ),
+        "a transient garage that never said where it enrols is read as enrolling at entry",
+    ),
+    "G20/derived-entry": (
+        G20, "enrolment.py",
+        "    if garage.transient_available is False:\n        return ENROLS_AT_ENTRY",
+        "    if garage.transient_available is False:\n        return 'exit'  # PLANTED: R1 "
+        "inverted",
+        "a no-transient garage is derived as enrolling at exit -- the R1 contradiction as "
+        "the derived answer",
+    ),
+    "G20/contradiction": (
+        G20, "garage.py",
+        "    if transient_available is False and enrols_at == ENROLS_AT_EXIT:",
+        "    if False:  # PLANTED: the R1 contradiction is accepted at creation",
+        "a garage that sells no transient and enrols at exit is built; the CHECK is the only "
+        "thing left, for a raw write",
+    ),
+    "G20/check": (
+        G20, MIGRATION_0003,
+        source(
+            "ALTER TABLE garages",
+            "  ADD CONSTRAINT garages_no_transient_means_enrols_at_entry CHECK (",
+            "    NOT (transient_available = false AND enrols_at = 'exit')",
+            "  );",
+        ),
+        "-- PLANTED: the CHECK removed",
+        "the backstop for a raw write is gone: a raw row can say no transient AND enrols at "
+        "exit",
+    ),
+    "G20/wrong-end": (
+        G20, "store/enrolments.py",
+        "        if direction.value != end:",
+        "        if False:  # PLANTED: a QR at either end is redeemed",
+        "a QR is redeemed at the end the garage does not enrol at",
+    ),
+    "G21/answer-withheld": (
+        G21, "store/enrolments.py",
+        "        refusal = refused\n        registration = change = None",
+        "        refusal = refused\n        registration = change = None\n        raise refused"
+        "  # PLANTED: a refused redemption gives the lane no answer",
+        "a refused redemption raises instead of answering -- the lane asked a question and "
+        "was told nothing it can act on; at an exit that is the unanswered exit G4 forbids",
+    ),
+    "G21/exit-refused": (
+        G21, "store/enrolments.py",
+        source(
+            "    return Redemption(",
+            "        enrolment=enrolment_id, redeemed=refusal is None, refusal=refusal,",
+        ),
+        source(
+            "    if refusal is not None and direction is Direction.EXIT:  # PLANTED",
+            '        answer = Answer(**{**answer.__dict__, "outcome": answer.outcome.__class__(',
+            '            "refused_to_answer"), "missing": "enrolment", "means": None})',
+            "    return Redemption(",
+            "        enrolment=enrolment_id, redeemed=refusal is None, refusal=refusal,",
+        ),
+        "a redemption refusal at an exit lane becomes a refused-to-answer exit: a car that "
+        "presented a bad QR on the way out is kept inside",
+    ),
+    "G22/spelling-eq": (
+        G22, "store/enrolments.py",
+        "        _refuse_unless_redeemable(ENROLMENT, enrolment, today)",
+        source(
+            "        if enrolment.vehicle_description == vehicle_identity:  # PLANTED",
+            '            raise Refused(REFUSAL_CREDENTIAL_UNKNOWN, "token", "described car")',
+            "        _refuse_unless_redeemable(ENROLMENT, enrolment, today)",
+        ),
+        "the description decides: an identity that spells it is refused",
+    ),
+    "G22/spelling-in": (
+        G22, "store/enrolments.py",
+        "        _refuse_unless_redeemable(ENROLMENT, enrolment, today)",
+        source(
+            "        if enrolment.vehicle_description and vehicle_identity in "
+            "enrolment.vehicle_description:  # PLANTED",
+            '            raise Refused(REFUSAL_CREDENTIAL_UNKNOWN, "token", "described car")',
+            "        _refuse_unless_redeemable(ENROLMENT, enrolment, today)",
+        ),
+        "the description decides: an identity the description contains is refused",
+    ),
+    "G22/spelling-lower": (
+        G22, "store/enrolments.py",
+        "        _refuse_unless_redeemable(ENROLMENT, enrolment, today)",
+        source(
+            "        if (enrolment.vehicle_description or '').lower() == "
+            "vehicle_identity.lower():  # PLANTED",
+            '            raise Refused(REFUSAL_CREDENTIAL_UNKNOWN, "token", "described car")',
+            "        _refuse_unless_redeemable(ENROLMENT, enrolment, today)",
+        ),
+        "the description decides, case-folded",
+    ),
+    "G22/spelling-startswith": (
+        G22, "store/enrolments.py",
+        "        _refuse_unless_redeemable(ENROLMENT, enrolment, today)",
+        source(
+            "        if (enrolment.vehicle_description or '').startswith(vehicle_identity[:3]):"
+            "  # PLANTED",
+            '            raise Refused(REFUSAL_CREDENTIAL_UNKNOWN, "token", "described car")',
+            "        _refuse_unless_redeemable(ENROLMENT, enrolment, today)",
+        ),
+        "the description decides, by its first characters",
+    ),
+    "G22/spelling-len": (
+        G22, "store/enrolments.py",
+        "        _refuse_unless_redeemable(ENROLMENT, enrolment, today)",
+        source(
+            "        if len(enrolment.vehicle_description or '') > 8:  # PLANTED",
+            '            raise Refused(REFUSAL_CREDENTIAL_UNKNOWN, "token", "described car")',
+            "        _refuse_unless_redeemable(ENROLMENT, enrolment, today)",
+        ),
+        "the description decides, by its length -- the spelling the G13 scan could not see",
+    ),
+    "G23/stored-plaintext": (
+        G23, "store/enrolments.py",
+        "        values.append(vehicle_description)",
+        "        values.append(minted.token)  # PLANTED: the plaintext stored beside the digest",
+        "the token is stored in a column of the row: a database read yields a working QR",
+    ),
+    "G23/rendered-plaintext": (
+        G23, "store/enrolments.py",
+        '            f"no {kind} in this tenant matches the token presented.",',
+        '            f"no {kind} in this tenant matches the token {presented!r}.",  # PLANTED',
+        "the unknown-credential refusal renders the token that was presented: a token issued "
+        "to one tenant and presented at another is echoed back in a refusal detail",
+    ),
+    "G24/narrow-write": (
+        G24, "store/enrolments.py",
+        '        f"UPDATE passes SET {HOLDER_WRITES[0]} = %s, {HOLDER_WRITES[1]} = %s "',
+        '        f"UPDATE passes SET {HOLDER_WRITES[0]} = %s, {HOLDER_WRITES[1]} = %s, '
+        "label = 'PLANTED' \"",
+        "the holder link writes a third column -- the label -- and the test must name it",
+    ),
+    "G24/issuer": (
+        G24, "store/enrolments.py",
+        "        days_valid, by=link.id, at=at, vehicle_description=vehicle_description,",
+        '        days_valid, by="owner", at=at, vehicle_description=vehicle_description,'
+        "  # PLANTED",
+        "the enrolment a link issues records the owner as its issuer, not the link: the row "
+        "that issued it no longer records the human",
+    ),
+    "G24/spend": (
+        G24, "store/enrolments.py",
+        source(
+            '        "UPDATE holder_links SET state = %s, redeemed_at = %s WHERE tenant_id = %s'
+            ' AND id = %s",',
+            "        (CredentialState.REDEEMED.value, at, tenant_uuid, uuid),",
+        ),
+        source(
+            '        "SELECT 1",  # PLANTED: the link is never spent',
+            "        (),",
+        ),
+        "a holder link is redeemed and stays issued: usable again",
     ),
 }
 

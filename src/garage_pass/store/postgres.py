@@ -226,6 +226,23 @@ def tables_cascading_into(connection: Any, table: str) -> frozenset[str]:
     return frozenset(found)
 
 
+def all_tables(connection: Any) -> list[str]:
+    """Every ordinary table in `public` -- the denominator of "the application
+    role holds DELETE on no table", read from the catalogue so a table added
+    tomorrow is in the set the day it lands."""
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT c.relname
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE n.nspname = 'public' AND c.relkind = 'r'
+            ORDER BY c.relname
+            """
+        )
+        return [row[0] for row in cursor.fetchall()]
+
+
 def tables_with_tenant_column(connection: Any) -> list[str]:
     """Every ordinary table in `public` carrying a ``tenant_id`` column -- the
     denominator of the isolation test, read from the catalogue."""

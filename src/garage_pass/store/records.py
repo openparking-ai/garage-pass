@@ -37,6 +37,7 @@ from datetime import date, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
+from garage_pass.enrolment import CANCELLED_BY_REVOCATION, CredentialState
 from garage_pass.findings import (
     REFUSAL_CONSTRAINT,
     REFUSAL_EXIT_BEFORE_ENTRY,
@@ -58,7 +59,13 @@ from garage_pass.findings import (
     REFUSAL_VISIT_ALREADY_OPEN,
     Refused,
 )
-from garage_pass.garage import Garage, garage_from_stored, require_text
+from garage_pass.garage import (
+    Garage,
+    garage_from_stored,
+    refuse_enrols_at_contradiction,
+    require_enrols_at,
+    require_text,
+)
 from garage_pass.localday import day_of, require_aware, zone
 from garage_pass.passes import EXPIRED, Holder, Pass, Registration, State, Visit
 from garage_pass.states import effective_state, transition
@@ -113,9 +120,10 @@ def store_garage(cursor: Any, tenant_id: Any, garage: Garage) -> UUID:
 
     try:
         cursor.execute(
-            "INSERT INTO garages (tenant_id, external_id, timezone, transient_available) "
-            "VALUES (%s, %s, %s, %s) RETURNING id",
-            (tenant_uuid, garage.id, garage.timezone, garage.transient_available),
+            "INSERT INTO garages (tenant_id, external_id, timezone, transient_available, "
+            "enrols_at) VALUES (%s, %s, %s, %s, %s) RETURNING id",
+            (tenant_uuid, garage.id, garage.timezone, garage.transient_available,
+             garage.enrols_at),
         )
     except psycopg.errors.UniqueViolation as violation:
         raise Refused(
@@ -128,7 +136,7 @@ def store_garage(cursor: Any, tenant_id: Any, garage: Garage) -> UUID:
 
 def load_garage(cursor: Any, tenant_id: Any, external_id: str) -> tuple[UUID, Garage]:
     cursor.execute(
-        "SELECT id, timezone, transient_available FROM garages "
+        "SELECT id, timezone, transient_available, enrols_at FROM garages "
         "WHERE tenant_id = %s AND external_id = %s",
         (as_uuid(tenant_id), external_id),
     )
@@ -137,7 +145,7 @@ def load_garage(cursor: Any, tenant_id: Any, external_id: str) -> tuple[UUID, Ga
         raise Refused(REFUSAL_GARAGE_NOT_FOUND, "garage", f"no garage {external_id!r}.")
     # A stored timezone the running system does not carry is an UNREADABLE
     # garage, not an exception: the access call answers, naming the field.
-    return as_uuid(row[0]), garage_from_stored(external_id, row[1], row[2])
+    return as_uuid(row[0]), garage_from_stored(external_id, row[1], row[2], row[3])
 
 
 def load_readable_garage(cursor: Any, tenant_id: Any, external_id: str) -> tuple[UUID, Garage]:
@@ -199,6 +207,47 @@ def set_garage_timezone(
     return {"garage": garage_external_id, "timezone": new_value, "was": garage.timezone,
             "was_readable": garage.unreadable is None, "changed_by": by.strip(),
             "changed_at": at, "reason": reason.strip()}
+
+
+def set_garage_enrols_at(
+    cursor: Any, tenant_id: Any, garage_external_id: str, enrols_at: str,
+    *, by: str, at: datetime, reason: str,
+) -> dict:
+    """THE SECOND REPAIR: state, or correct, where a stored garage enrols --
+    recorded into ``garage_changes`` with ``field = 'enrols_at'`` exactly as the
+    timezone repair is (migration 0003 widens that history's CHECK to admit it).
+    A garage field that can be set and never corrected is a trap, so this verb
+    exists beside the field.
+
+    **THE R1 CONTRADICTION BINDS THE REPAIR AS IT BINDS CREATION**: 'exit' on a
+    garage with no transient parking is refused by name, and nothing changes.
+    The value must be one of the two ends -- unstated is where a garage starts,
+    not where a repair sends it. Unlike the timezone repair this one requires
+    the garage to be READABLE first: a clock nobody can read is repaired with
+    ``set-garage-timezone`` before anything else is written against it."""
+    tenant_uuid = as_uuid(tenant_id)
+    new_value = require_enrols_at(require_text(enrols_at, "garage.enrols_at"))
+    require_aware(at, "at")
+    # Spelled apart from the timezone repair's check on purpose: a fail control
+    # anchors on that one and an anchor must appear exactly once.
+    for value, field, word in ((by, "changed_by", "who"), (reason, "reason", "why")):
+        if not (isinstance(value, str) and value.strip()):
+            raise Refused(REFUSAL_REPAIR_NEEDS_WHO_AND_WHY, field, f"{word} is {value!r}.")
+    garage_uuid, garage = load_readable_garage(cursor, tenant_uuid, garage_external_id)
+    refuse_enrols_at_contradiction(garage.transient_available, new_value)
+    cursor.execute(
+        "UPDATE garages SET enrols_at = %s WHERE tenant_id = %s AND id = %s",
+        (new_value, tenant_uuid, garage_uuid),
+    )
+    # the columns in another order than the timezone repair's INSERT on purpose:
+    # a fail control anchors on that one and an anchor must appear exactly once
+    cursor.execute(
+        "INSERT INTO garage_changes (tenant_id, garage_id, changed_by, changed_at, reason, "
+        "field, old_value, new_value) VALUES (%s, %s, %s, %s, %s, 'enrols_at', %s, %s)",
+        (tenant_uuid, garage_uuid, by.strip(), at, reason.strip(), garage.enrols_at, new_value),
+    )
+    return {"garage": garage_external_id, "enrols_at": new_value, "was": garage.enrols_at,
+            "changed_by": by.strip(), "changed_at": at, "reason": reason.strip()}
 
 
 # ---------------------------------------------------------------------------
@@ -380,6 +429,7 @@ def change_state(
          change.changed_by, change.changed_at, change.reason),
     )
     ended = 0
+    cancelled = {"enrolments": 0, "holder_links": 0}
     if to is State.REVOKED:
         today = day_of(at, zone(garage.timezone))
         cursor.execute(
@@ -389,10 +439,26 @@ def change_state(
             (today, ENDED_BY_REVOCATION, tenant_uuid, pass_uuid, today),
         )
         ended = cursor.rowcount
+        # A credential must not outlive the pass it opens (R5): every
+        # OUTSTANDING enrolment and holder link on the pass is cancelled here,
+        # in the same transaction as the revocation -- by the revoker, at the
+        # revocation instant, for the one reason this module cancels anything.
+        # Redeemed and already-cancelled ones are terminal and are not touched.
+        # This is the revoked branch of set-state, not a second command.
+        for table in ("enrolments", "holder_links"):
+            cursor.execute(
+                f"UPDATE {table} SET state = %s, cancelled_by = %s, cancelled_at = %s, "
+                "cancelled_reason = %s WHERE tenant_id = %s AND pass_id = %s AND state = %s",
+                (CredentialState.CANCELLED.value, change.changed_by, change.changed_at,
+                 CANCELLED_BY_REVOCATION, tenant_uuid, pass_uuid, CredentialState.ISSUED.value),
+            )
+            cancelled[table] = cursor.rowcount
     return {
         "pass": pass_external_id, "from": change.from_state.value, "to": change.to_state.value,
         "changed_by": change.changed_by, "changed_at": change.changed_at,
         "reason": change.reason, "registrations_ended": ended,
+        "enrolments_cancelled": cancelled["enrolments"],
+        "holder_links_cancelled": cancelled["holder_links"],
     }
 
 

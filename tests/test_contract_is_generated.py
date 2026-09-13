@@ -112,6 +112,23 @@ def test_a_changed_transition_changes_the_states_block():
 
 
 @pytest.mark.guarantee("G15")
+def test_a_changed_credential_state_or_payload_prefix_changes_the_credential_block():
+    """The block reads enrolment.py: a renamed derived state and a changed
+    payload prefix must each move the prose."""
+    before = gen.block_credential_states()
+    assert "`expired`" in before and "`openparking-garage-pass/1/<token>`" in before
+    original_expired, original_prefix = gen.EXPIRED_CREDENTIAL, gen.PAYLOAD_PREFIX
+    gen.EXPIRED_CREDENTIAL, gen.PAYLOAD_PREFIX = "lapsed", "planted/9/"
+    try:
+        after = gen.block_credential_states()
+    finally:
+        gen.EXPIRED_CREDENTIAL, gen.PAYLOAD_PREFIX = original_expired, original_prefix
+    assert "`lapsed`" in after and "`expired`" not in after
+    assert "`planted/9/<token>`" in after
+    assert "`issued`, `redeemed`, `cancelled`" in after, "the typed states are read from the Enum"
+
+
+@pytest.mark.guarantee("G15")
 def test_a_new_document_key_appears():
     before = gen.block_document_keys()
     original = gen.docs.TERMS_KEYS
