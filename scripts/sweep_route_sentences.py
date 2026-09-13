@@ -49,6 +49,35 @@ carries no garbage). What does not: TRUE, VAGUE (true, could be read wrong) and
 NOT-PUBLISHED (a docstring or comment-like string nobody outside reads) -- the
 property certified is ZERO FALSE over every hit, not zero hits.
 
+**THE SECOND HALF READS WHAT IS RENDERED, NOT ONLY WHAT IS WRITTEN.** A sweep of
+literals cannot see a sentence assembled at run time -- ``"is " + "stored" +
+" with"``, ``"".join(...)``, ``%``, ``.format()``, an f-string whose route word
+sits inside a placeholder, a ``.replace()`` on a true literal. Measured: six such
+spellings of the exact falsehood the round before this removed rendered to the
+operator and left this sweep green. So the test suite COLLECTS every detail the
+module renders while it runs (``tests/conftest.py``: every ``Answer`` built, every
+``Refused`` the command line prints -- what the operator reads is the definition)
+and hands them to ``judge_rendered`` here: THE SAME templates, THE SAME key, THE
+SAME judgements file, THE SAME fail-closed loader. **The file of a rendered
+sentence is the file of the LITERAL it was rendered from, and that file must be
+on the call stack that rendered it.** A rendered detail carrying a route word is
+matched WHOLE, anchored at both ends, against every literal in the package as a
+template -- literal segments escaped and in order, each ``{…}`` placeholder a
+minimal wildcard that consumes exactly what the value rendered, and nothing
+else: there is no character-level scrubber of ids, paths or instants, because a
+scrubber is a second copy of the sentence's shape and this pass built four that
+were each wrong the same way. A match to a template that stands in a file on the
+rendering stack is covered by THAT literal's ``(text, file)`` judgements; a route
+word that fell inside a wildcard is matched again, recursively, as its own text;
+no match anywhere is UNJUDGED -- red, naming the rendered text and its call site.
+**No judgement is ever written for a rendered-only text**: a route sentence the
+module assembles at run time has one honest fix, which is to make it a literal so
+the first half can see it, never a second judgement store. **The scope, said
+plainly:** the sweep certifies the MODULE's sentences. A value rendered into a
+detail is data the module was handed, and a green sweep does not say that no
+false text can reach an operator through a value -- it says the module's own
+sentences are judged and none is false.
+
 ``--self-test`` plants a "stored"-style falsehood into a rendered detail that is
 NOT the one this sweep was built for, in a COPY of the source, and requires the
 run to go red naming that sentence; then edits one judged-true sentence by a
@@ -64,6 +93,7 @@ import ast
 import json
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -271,6 +301,210 @@ def run(src: Path = ROOT / "src" / "garage_pass", root: Path = ROOT,
 
 
 # ---------------------------------------------------------------------------
+# the rendered half: what the module renders, matched to the literal it came from
+# ---------------------------------------------------------------------------
+
+PLACEHOLDER = "{…}"
+_SPLIT_PLACEHOLDERS = re.compile(r"(\{…\})")
+_WILDCARD = "(?s:.*?)"
+
+
+class Template:
+    """One literal as a whole-text template. ``anywhere`` is True for a registry or
+    guarantee VALUE (``by_import``): a published sentence is the module's wherever
+    it is rendered -- the code reads it as data, so the file it stands in is
+    never on the rendering stack -- and its judgement was made for that."""
+
+    __slots__ = ("text", "file", "anywhere", "whole", "prefix", "route_keys", "literal_length")
+
+    def __init__(self, text: str, file: str, anywhere: bool) -> None:
+        self.text, self.file, self.anywhere = text, file, anywhere
+        body = "".join(_WILDCARD if part == PLACEHOLDER else re.escape(part)
+                       for part in _SPLIT_PLACEHOLDERS.split(text))
+        self.whole = re.compile(body)
+        self.prefix = re.compile(body + "(?=\\s|$)")
+        self.route_keys = [keyed(s, file) for s in sentences(text) if ROUTE.search(s)]
+        self.literal_length = sum(len(part) for part in _SPLIT_PLACEHOLDERS.split(text)
+                                  if part != PLACEHOLDER)
+
+    def spans(self, text: str, whole: bool) -> list[tuple[int, int]] | None:
+        """The spans the wildcards consumed, and where the match ended -- by matching
+        with each wildcard made a group. ``None`` when the template does not match."""
+        grouped = re.compile((self.whole if whole else self.prefix).pattern.replace(
+            _WILDCARD, f"({_WILDCARD})"))
+        m = grouped.fullmatch(text) if whole else grouped.match(text)
+        if not m:
+            return None
+        return [m.span(i) for i in range(1, grouped.groups + 1)] + [(m.end(), m.end())]
+
+
+def templates(src: Path = ROOT / "src" / "garage_pass", root: Path = ROOT) -> list[Template]:
+    """Every string literal in the package (by AST, ``{…}`` for a formatted part)
+    and every registry and guarantee value (by import, usable from any stack), as
+    templates; a literal with no placeholder matches only itself."""
+    out: dict[tuple[str, str], Template] = {}
+    for anywhere, rows in ((False, [(f, x) for _, f, x in strings_by_ast(src)]),
+                           (True, [(f, x) for _, f, x in by_import(root)])):
+        for file, text in rows:
+            t = normalise(text)
+            if not t:
+                continue
+            if (t, file) in out:  # a registry value is also a literal in its own file: the
+                out[(t, file)].anywhere |= anywhere  # value's reach wins
+                continue
+            out[(t, file)] = Template(t, file, anywhere)
+    return list(out.values())
+
+
+def match_rendered(detail: str, stack_files: frozenset[str], templates_: list[Template],
+                   judged: dict[tuple[str, str], dict], depth: int = 0,
+                   memo: dict | None = None) -> tuple[str, list]:
+    """One rendered text against the templates on the stack that rendered it (and
+    the registry values, usable from any stack). A text is ACCOUNTED FOR when it
+    is one template whole, or a template as its PREFIX followed by text that is
+    itself accounted for -- a detail is often two literals side by side (a
+    registry sentence and the f-string beside it; describes joined by a
+    separator that is itself a literal). Among the templates that match, **the
+    most specific wins** -- the least text consumed by wildcards, then the most
+    literal text -- because ``f"--{option}"`` also matches every refusal that
+    begins with two dashes, and a permissive template must never be the one that
+    accounts for a route word.
+
+    **A ROUTE PHRASE IS ASSERTED BY WHOEVER SPELLED IT WHOLE.** Every route phrase
+    in the text must lie entirely inside ONE literal segment of the template (then
+    that literal's judged route sentence covers it), or entirely inside one
+    captured value (then the value is matched again as its own text), or entirely
+    in the rest after a prefix (matched again). A phrase that straddles a boundary
+    -- ``is`` in the literal, ``stored`` in the value; ``stored`` as one literal
+    and ``with`` in the next -- rejects the candidate: that is exactly how a
+    sentence gets assembled at run time, and the assembly is the thing to catch.
+    Text with no route phrase needs no accounting: the sweep judges the module's
+    route sentences, not every character it prints.
+
+    Returns ``("covered", keys)`` -- every judged ``(text, file)`` key of the route
+    sentences that account for the route phrases -- or ``("unjudged", [])``."""
+    text = normalise(detail)
+    if memo is None:
+        memo = {}
+    phrases = [m.span() for m in ROUTE.finditer(text)]
+    if not phrases:
+        return "covered", []
+    if depth > 8:
+        return "unjudged", []
+    key = (text, stack_files)
+    if key in memo:
+        return memo[key]
+    memo[key] = ("unjudged", [])  # a cycle reads as unjudged
+    usable = [tp for tp in templates_ if tp.anywhere or tp.file in stack_files]
+
+    def inside(span: tuple[int, int], segment: tuple[int, int]) -> bool:
+        return segment[0] <= span[0] and span[1] <= segment[1]
+
+    for whole in (True, False):
+        candidates = []
+        for tp in usable:
+            spans = tp.spans(text, whole)
+            if spans is None:
+                continue
+            end = spans.pop()[0]
+            if not whole and end == 0:
+                continue
+            consumed = sum(b - a for a, b in spans)
+            candidates.append(((consumed, -end, -tp.literal_length), tp, spans, end))
+        for _, tp, spans, end in sorted(candidates, key=lambda c: c[0]):
+            # the literal segments: the gaps between the wildcards, up to the end
+            cursor, literals = 0, []
+            for a, b in spans:
+                if a > cursor:
+                    literals.append((cursor, a))
+                cursor = b
+            if end > cursor:
+                literals.append((cursor, end))
+            rest = (end, len(text))
+            ok, keys = True, list(tp.route_keys)
+            for phrase in phrases:
+                if any(inside(phrase, seg) for seg in literals):
+                    if not tp.route_keys:  # cannot happen: the phrase is in the template's text
+                        ok = False
+                elif not (any(inside(phrase, seg) for seg in spans) or inside(phrase, rest)):
+                    ok = False  # the phrase straddles a boundary: assembled, not spelled
+                if not ok:
+                    break
+            if not ok:
+                continue
+            for a, b in spans:  # a route phrase inside a value must itself be accounted for
+                if any(inside(ph, (a, b)) for ph in phrases):
+                    verdict, more = match_rendered(text[a:b], stack_files, templates_, judged,
+                                                   depth + 1, memo)
+                    if verdict == "unjudged":
+                        ok = False
+                        break
+                    keys += more
+            if ok and not whole and any(inside(ph, rest) for ph in phrases):
+                verdict, more = match_rendered(text[end:].lstrip(), stack_files, templates_,
+                                               judged, depth + 1, memo)
+                if verdict == "unjudged":
+                    ok = False
+                keys += more
+            if ok:
+                memo[key] = ("covered", keys)
+                return memo[key]
+    return memo[key]
+
+
+def judge_rendered(collected: list[tuple[str, frozenset[str]]],
+                   src: Path = ROOT / "src" / "garage_pass",
+                   judgements: Path = JUDGEMENTS) -> tuple[int, dict]:
+    """The rendered half's verdict over ``collected`` -- ``(detail, files on the stack)``
+    pairs, as the test suite collected them. Distinct pairs are judged once. The
+    denominator is reported so a collector that collected nothing reads as
+    UNMEASURED, never as clean."""
+    judged = load_judgements(judgements)
+    templates_ = templates(src)
+    distinct = sorted(set(collected), key=lambda c: (c[0], sorted(c[1])))
+    route = [(d, s) for d, s in distinct if ROUTE.search(normalise(d))]
+    unjudged: list[tuple[str, frozenset[str]]] = []
+    false: list[tuple[str, tuple[str, str], str]] = []
+    covered = 0
+    memo: dict = {}
+    for detail, stack in route:
+        verdict, keys = match_rendered(detail, stack, templates_, judged, memo=memo)
+        if verdict == "unjudged":
+            unjudged.append((detail, stack))
+            continue
+        rows = [judged.get(key) for key in keys]
+        if any(row is None for row in rows):  # a literal the first half has not judged yet
+            unjudged.append((detail, stack))
+            continue
+        covered += 1
+        for key, row in zip(keys, rows, strict=True):
+            if row["verdict"] == "FALSE":
+                false.append((detail, key, row.get("why", "")))
+    result = {"collected": len(collected), "distinct": len(distinct), "route_asserting": len(route),
+              "covered": covered,
+              "unjudged": [f"{sorted(s)}: {d}" for d, s in unjudged],
+              "false": [f"{k[1]}: {d}" for d, k, _ in false]}
+    status = 1 if (unjudged or false or not collected) else 0
+    return status, result
+
+
+def report_rendered(result: dict) -> str:
+    lines = [f"RENDERED: {result['collected']} details collected, {result['distinct']} distinct "
+             f"(detail, stack); {result['route_asserting']} route-asserting; "
+             f"{result['covered']} accounted for by literals on the stack or registry "
+             f"values; UNJUDGED {len(result['unjudged'])}; FALSE {len(result['false'])}"]
+    if result["collected"] == 0:
+        lines.append("UNMEASURED -- the collector saw no rendered detail at all; a zero from "
+                     "an unproven collector is not a clean reading")
+    for u in result["unjudged"]:
+        lines.append("\nUNJUDGED RENDERED -- no literal on the rendering stack produces this "
+                     f"text; if the module assembled it at run time, make it a literal:\n  {u}")
+    for f_ in result["false"]:
+        lines.append(f"\nFALSE RENDERED -- {f_}")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
 # the self-test: the sweep proven able to go red, on a COPY of the source
 # ---------------------------------------------------------------------------
 
@@ -366,7 +600,107 @@ def self_test() -> int:
     status4, result4 = run(quiet=True)
     print(f"self-test 4: the unmodified tree: exit {status4} (FALSE {result4['FALSE']}, "
           f"UNJUDGED {len(result4['unjudged'])}, STALE {len(result4['stale'])})")
-    return 0 if status4 == 0 else 1
+    if status4 != 0:
+        return 1
+    return rendered_self_test()
+
+
+# the rendered half's self-test: a COPY of the package rendered in a subprocess with
+# the suite's collector installed -- no database, no test session -- then judged here
+_RENDER_ANCHOR = ('                f"refuses to read -- {pass_.unreadable.describe()}"\n'
+                  '            )\n            if is_exit:')
+#: the seventh spelling -- a .replace() on a TRUE literal, a shape the gate's six did not use
+_RENDER_PLANT = ('                f"refuses to read -- {pass_.unreadable.describe()}"\n'
+                 '            )\n'
+                 '            what = what.replace("carries a value", "is stored with a value")\n'
+                 '            if is_exit:')
+_FOOL_ANCHOR = ('    return {"refused": refused.code, "field": refused.field, '
+                '"detail": refused.detail}')
+#: one word inserted beside a route phrase: the literal segments now differ from every template
+_FOOL_PLANT = ('    return {"refused": refused.code, "field": refused.field,\n'
+               '            "detail": refused.detail.replace("regular file (", '
+               '"regular file indeed (")}')
+
+
+def _render_from(copy_src: Path, argv: list[str]) -> list[tuple[str, frozenset[str]]]:
+    """The command line of the package at ``copy_src`` run in a fresh interpreter
+    with the suite's collector installed; what it rendered, with the stack files."""
+    code = (
+        "import json, sys\n"
+        f"sys.path[:0] = [{str(copy_src.parent)!r}, {str(ROOT / 'tests')!r}, "
+        f"{str(ROOT / 'scripts')!r}]\n"
+        # the COPY's package first: importing the collector imports this sweep, which
+        # puts the tree's own src at the front of sys.path
+        "import garage_pass.cli\n"
+        f"assert garage_pass.cli.__file__.startswith({str(copy_src)!r}), "
+        "garage_pass.cli.__file__\n"
+        "import _rendered_sentences as r\n"
+        f"out = r.render_and_collect({argv!r})\n"
+        "print(json.dumps([[d, sorted(s)] for d, s in out]))\n"
+    )
+    done = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    if done.returncode != 0:
+        raise SystemExit(f"the rendering subprocess failed:\n{done.stderr[-1500:]}")
+    return [(d, frozenset(s)) for d, s in json.loads(done.stdout)]
+
+
+def rendered_self_test() -> int:
+    docs = ROOT / "tests" / "documents"
+    with tempfile.TemporaryDirectory() as tmp:
+        copy = Path(tmp) / "src" / "garage_pass"
+        shutil.copytree(ROOT / "src" / "garage_pass", copy)
+        bad = Path(tmp) / "bad_pass.json"
+        document = json.loads((docs / "pass_employee.json").read_text())
+        document["terms"]["allowed_lanes"] = []
+        bad.write_text(json.dumps(document))
+        exit_ = ["access", "--garage", str(docs / "garage_downtown.json"), "--pass", str(bad),
+                 "--registrations", str(docs / "registrations.json"), "--vehicle", "CAR-1",
+                 "--lane", "L1", "--direction", "exit", "--at", "2026-03-02T09:00:00-07:00"]
+        # 5. the collector is not vacuous: the unplanted copy renders a route-asserting refusal
+        #    (a directory as the garage document) and it is COVERED by cli.py's literal
+        directory = ["access", "--garage", tmp, "--pass", str(docs / "pass_employee.json"),
+                     "--vehicle", "CAR-1", "--lane", "L1", "--direction", "exit",
+                     "--at", "2026-03-02T09:00:00-07:00"]
+        collected = _render_from(copy, directory)
+        status5, result5 = judge_rendered(collected, src=copy)
+        print(f"self-test 5: the unplanted copy, a directory as --garage: {result5['collected']} "
+              f"detail(s) collected, {result5['route_asserting']} route-asserting, "
+              f"{result5['covered']} covered, exit {status5}")
+        if status5 != 0 or result5["route_asserting"] < 1 or result5["covered"] < 1:
+            return 1
+        # 6. the seventh spelling: a .replace() on a true literal renders "is stored with" and
+        #    no literal on the stack produces it -- UNJUDGED
+        access = copy / "access.py"
+        text = access.read_text()
+        if text.count(_RENDER_ANCHOR) != 1:
+            print(f"self-test 6: the render anchor appears {text.count(_RENDER_ANCHOR)}x, not once")
+            return 1
+        access.write_text(text.replace(_RENDER_ANCHOR, _RENDER_PLANT))
+        collected = _render_from(copy, exit_)
+        status6, result6 = judge_rendered(collected, src=copy)
+        named = [u for u in result6["unjudged"] if "is stored with a value" in u]
+        print(f"self-test 6: a run-time spelling (.replace on a true literal) rendered from the "
+              f"copy: exit {status6}, the rendered falsehood reads UNJUDGED: {bool(named)}")
+        if status6 != 1 or not named:
+            return 1
+        access.write_text(text)
+        # 7. the match is not foolable: one word inserted beside a route phrase makes the
+        #    rendered text differ from every template by a literal segment -- UNJUDGED, even
+        #    though the generic {…} {…} could not be read: {…} template matches the whole
+        cli = copy / "cli.py"
+        text = cli.read_text()
+        if text.count(_FOOL_ANCHOR) != 1:
+            print(f"self-test 7: the fool anchor appears {text.count(_FOOL_ANCHOR)}x, not once")
+            return 1
+        cli.write_text(text.replace(_FOOL_ANCHOR, _FOOL_PLANT))
+        collected = _render_from(copy, directory)
+        status7, result7 = judge_rendered(collected, src=copy)
+        named = [u for u in result7["unjudged"] if "regular file indeed" in u]
+        print(f"self-test 7: one word inserted beside 'regular file' in the rendered refusal: "
+              f"exit {status7}, matches no template and reads UNJUDGED: {bool(named)}")
+        if status7 != 1 or not named:
+            return 1
+    return 0
 
 
 def main(argv: list[str]) -> int:

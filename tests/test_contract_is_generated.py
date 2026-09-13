@@ -176,6 +176,7 @@ def test_a_code_published_but_produced_nowhere_fails_the_check():
 # The route sweep: every published sentence that asserts a route, judged by content.
 # ---------------------------------------------------------------------------
 
+import json  # noqa: E402
 import subprocess  # noqa: E402
 
 import sweep_route_sentences as sweep  # noqa: E402
@@ -225,3 +226,50 @@ def test_the_route_sweep_goes_red_on_a_falsehood_planted_where_it_was_not_lookin
     assert "edited by one word: exit 1, reads UNJUDGED: True" in done.stdout, done.stdout
     assert "the same sentence in a NEW file reads UNJUDGED: True" in done.stdout, done.stdout
     assert "the unmodified tree: exit 0" in done.stdout, done.stdout
+    # the rendered half's own three: the collector not vacuous on the unplanted copy; a
+    # run-time spelling UNJUDGED; one inserted word beside a route phrase UNJUDGED
+    assert "1 route-asserting, 1 covered, exit 0" in done.stdout, done.stdout
+    assert "the rendered falsehood reads UNJUDGED: True" in done.stdout, done.stdout
+    assert "matches no template and reads UNJUDGED: True" in done.stdout, done.stdout
+
+
+@pytest.mark.guarantee("G15")
+def test_what_the_module_renders_is_judged_by_the_same_mechanism_as_what_it_writes(tmp_path):
+    """THE RENDERED HALF, ON A DENOMINATOR THIS TEST RENDERS ITSELF -- so it does
+    not depend on which tests ran before it. The suite's collector
+    (``tests/_rendered_sentences.py``) wraps every ``Answer`` built and every
+    ``Refused`` the command line prints; here the command line is run in-process
+    over shapes that render route-asserting details -- a directory as the garage
+    document, a missing document -- and a PASS_UNREADABLE exit answer from a pass
+    document, and what was collected is handed to ``judge_rendered``: the SAME
+    templates, key and judgements file as the literal sweep. Every route-asserting
+    detail must be accounted for by a literal on its own rendering stack (or a
+    registry value); the count must be non-zero, or the collector is unproven and
+    the reading is UNMEASURED, not clean. Measured before this round: six run-time
+    spellings of a removed falsehood rendered to the operator and left the literal
+    sweep green -- this is the half that sees them."""
+    import _rendered_sentences as rendered
+    from garage_pass.cli import main
+
+    docs = ROOT / "tests" / "documents"
+    bad = tmp_path / "bad_pass.json"
+    document = json.loads((docs / "pass_employee.json").read_text())
+    document["terms"]["allowed_lanes"] = []
+    bad.write_text(json.dumps(document))
+    move = ["--vehicle", "CAR-1", "--lane", "L1", "--direction", "exit",
+            "--at", "2026-03-02T09:00:00-07:00"]
+    before = len(rendered.rendered_so_far())
+    for argv in (["access", "--garage", str(tmp_path), "--pass", str(docs / "pass_employee.json"),
+                  *move],
+                 ["access", "--garage", str(tmp_path / "nowhere.json"),
+                  "--pass", str(docs / "pass_employee.json"), *move],
+                 ["access", "--garage", str(docs / "garage_downtown.json"), "--pass", str(bad),
+                  "--registrations", str(docs / "registrations.json"), *move]):
+        main(argv)
+    collected = rendered.rendered_so_far()[before:]
+    status, result = sweep.judge_rendered(collected)
+    assert result["collected"] == 3, ("the collector saw", result["collected"], "of 3 renders")
+    assert result["route_asserting"] >= 1, result  # the directory refusal carries 'regular file'
+    assert result["unjudged"] == [], sweep.report_rendered(result)
+    assert result["false"] == [], sweep.report_rendered(result)
+    assert status == 0, sweep.report_rendered(result)

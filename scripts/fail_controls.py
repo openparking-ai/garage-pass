@@ -857,11 +857,11 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
     ),
     "G18/traceback": (
         "tests/test_g18_the_command_line_refuses_never_tracebacks.py", "cli.py",
-        "    except Refused as refused:\n        print(json.dumps({\"refused\": refused.code,",
+        "    except Refused as refused:\n        print(json.dumps(_refusal(refused), indent=2))",
         "    except Refused as refused:\n"
         "        if refused.field == \"garage.timezone\":\n"
         "            raise  # PLANTED: the traceback is back\n"
-        "        print(json.dumps({\"refused\": refused.code,",
+        "        print(json.dumps(_refusal(refused), indent=2))",
         "an unknown timezone at the command line is a traceback again -- the gate's finding",
     ),
     "G18/sweep": (
@@ -1225,6 +1225,23 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
         "a judged-TRUE sentence copied verbatim into another file inherits TRUE there -- the "
         "self-test's copy step must read judged instead of UNJUDGED, and the test that reads the "
         "self-test's lines must go red",
+    ),
+    "G15/rendered-collector-collects-nothing": (
+        "tests/test_contract_is_generated.py", "tests/_rendered_sentences.py",
+        "        if self.detail:\n            _rendered.append((self.detail, _stack_files()))",
+        "        if False and self.detail:  # PLANTED: the collector sees nothing\n"
+        "            _rendered.append((self.detail, _stack_files()))",
+        "the rendered half collects no Answer; the test that renders its own denominator must "
+        "read the collector as unproven (3 renders, fewer collected), never as clean",
+    ),
+    "G15/rendered-match-accounts-for-everything": (
+        "tests/test_contract_is_generated.py", "scripts/sweep_route_sentences.py",
+        '    phrases = [m.span() for m in ROUTE.finditer(text)]\n    if not phrases:\n'
+        '        return "covered", []',
+        '    phrases = [m.span() for m in ROUTE.finditer(text)]\n    if True or not phrases:'
+        '  # PLANTED: every rendered text reads covered\n        return "covered", []',
+        "the rendered matcher accounts for every text; the self-test's run-time spelling and its "
+        "inserted word both read covered, and the test that reads the self-test's lines goes red",
     ),
     "G15/rendered-detail-falsehood": (
         "tests/test_contract_is_generated.py", "access.py",

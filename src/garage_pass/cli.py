@@ -428,8 +428,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return _run(args)
     except Refused as refused:
-        print(json.dumps({"refused": refused.code, "field": refused.field,
-                          "detail": refused.detail}, indent=2))
+        print(json.dumps(_refusal(refused), indent=2))
         return EXIT_REFUSED_REQUEST
     except TimezoneDatabaseUnavailable as missing:
         # The MACHINE's configuration, not a refusal of the request: one
@@ -453,6 +452,15 @@ _SQLSTATE_CLASSES = {
     "53": "the database is out of a resource (connections, disk, memory)",
     "57": "the database is shutting down or cancelled the command",
 }
+
+
+def _refusal(refused: Refused) -> dict[str, Any]:
+    """The JSON refusal the operator reads -- THE ONE PLACE a ``Refused`` becomes
+    output. Everything the command line refuses passes through here, so this is
+    where the test suite's rendered-sentence collector stands (``tests/conftest.py``):
+    a refusal caught and degraded inside the module never reaches an operator and
+    is not collected; one that reaches this function is, by definition, read."""
+    return {"refused": refused.code, "field": refused.field, "detail": refused.detail}
 
 
 def _driver_sentence(exc: Exception) -> str:
