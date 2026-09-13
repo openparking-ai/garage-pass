@@ -300,10 +300,15 @@ def _document(path: str, option: str) -> Any:
     a directory, a device (``/dev/null`` reads empty; ``/dev/zero`` never
     ends), a pipe, a socket -- reads *is not a regular file*, decided by
     ``S_ISREG`` on the descriptor before a byte is read; every other
-    ``OSError`` the open or the read raises (``EACCES``, ``ELOOP``, ``ENOTDIR``,
-    ``ENAMETOOLONG``, ``ENXIO`` on a socket) carries the system's own text.
-    ``os.open`` follows symlinks, so a symlink to a regular file still reads
-    (tested). The descriptor is closed on every path out, refusals included.
+    ``OSError`` the open or the read raises carries the system's own text --
+    ``EACCES``, ``ELOOP``, ``ENOTDIR`` (a regular file named with a trailing
+    slash is this: the kernel reads the slash as "a directory", where the
+    path-based reader before this silently dropped it and read the file),
+    ``ENAMETOOLONG``, a socket (``ENXIO`` on Linux, ``EOPNOTSUPP`` on a Mac -- it
+    cannot be opened at all), a device with nothing behind it (``/dev/tty``
+    with no terminal, ``ENXIO``). ``os.open`` follows symlinks, so a symlink to
+    a regular file still reads (tested). The descriptor is closed on every path
+    out, refusals included.
 
     **WHAT IS CAUGHT IS WHAT THE CALLS CAN RAISE, BY NAME -- NOT A BARE
     ``Exception``**, which would turn the next programming error into a
