@@ -12,8 +12,8 @@ request was refused (a contradiction, a bad document, a field of the wrong
 type, an unknown timezone, a malformed instant or day). At an EXIT a document
 that is JSON but cannot be read is not refused but answered not-covered naming
 the field, exit 1 -- the module answers when it holds a record whose content it
-cannot read, and refuses when it holds no record at all (a file missing or not
-JSON) or no instant (``_access_from_documents``). The answer is printed as
+cannot read, and refuses when it holds no record at all (a file missing, not a
+regular file, or not JSON) or no instant (``_access_from_documents``). The answer is printed as
 JSON, and there is no money in it.
 
 Against the store (``GARAGE_PASS_DSN``, ``--tenant``): ``create-garage``,
@@ -67,6 +67,7 @@ import os
 import sys
 from datetime import date, datetime
 from enum import Enum
+from pathlib import Path
 from typing import Any
 from uuid import UUID
 
@@ -215,8 +216,9 @@ def _access_from_documents(args: argparse.Namespace) -> Answer:
             passes=[load_pass(d) for d in pass_documents],
             registrations=[load_registration(r)
                            for r in _list(args.registrations, "--registrations")]
-            if args.registrations else [],
-            visits=[load_visit(v) for v in _list(args.visits, "--visits")] if args.visits else [],
+            if args.registrations is not None else [],
+            visits=[load_visit(v) for v in _list(args.visits, "--visits")]
+            if args.visits is not None else [],
             vehicle_identity=args.vehicle, lane=args.lane, direction=direction, at=at,
         )
     loaded: list[Any] = [load_or_degrade(Garage, garage_document, "garage")]
@@ -224,8 +226,8 @@ def _access_from_documents(args: argparse.Namespace) -> Answer:
     for option, cls, what in (("registrations", Registration, "registration"),
                               ("visits", Visit, "visit")):
         path = getattr(args, option)
-        if not path:
-            continue
+        if path is None:  # the option was not given -- NOT ``if not path``: an empty
+            continue      # string is a path that cannot be read, never "not given"
         document = _document(path, f"--{option}")
         if not isinstance(document, list):
             loaded.append(Unreadable(REFUSAL_FIELD_BLANK, f"--{option}",
@@ -291,7 +293,27 @@ def _document(path: str, option: str) -> Any:
     timezone database, and is not blamed on the request. Measured before this:
     the nested document was a traceback in BOTH directions, exit 1 with no
     answer -- the L5 gate's B1 -- because ``RecursionError`` is a
-    ``RuntimeError``, not a ``ValueError``, and the catch did not name it."""
+    ``RuntimeError``, not a ``ValueError``, and the catch did not name it.
+
+    **AND ONLY A REGULAR FILE IS OPENED.** ``open()`` on a named pipe with no
+    writer blocks until one arrives -- the command line never returned, in
+    both directions, on all four document arguments: an exit that never
+    answers, which is not a traceback and so escaped every sweep that counts
+    them. So the boundary refuses anything that is not a regular file BEFORE
+    the read -- a directory, a device, a pipe, a socket, a path that does not
+    exist -- by name, the same refusal. ``Path.is_file`` follows symlinks, so a
+    symlink to a regular file still reads (tested), and nothing here is a
+    timeout: a timeout would be a number nobody set, and would make a slow
+    filesystem read the same as a hostile one."""
+    file = Path(path)
+    if not file.is_file():
+        why = "does not exist" if not file.exists() else (
+            "is not a regular file (a directory, a device, a pipe or a socket)"
+        )
+        raise Refused(
+            REFUSAL_DOCUMENT_UNREADABLE, option,
+            f"{option} {path!r} could not be read: it {why}.",
+        )
     try:
         return read_json(path)
     except (OSError, ValueError, RecursionError) as exc:

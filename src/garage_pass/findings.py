@@ -256,8 +256,9 @@ REFUSALS: dict[str, str] = {
     ),
     REFUSAL_DOCUMENT_UNREADABLE: (
         "A document named on the command line could not be read: the file is "
-        "missing, unreadable, not JSON, or JSON nested deeper than the decoder can "
-        "read. The detail names the path and what went wrong."
+        "missing, not a regular file, unreadable, not JSON, or JSON the decoder "
+        "cannot decode (nested deeper than it can read, or a number longer than it "
+        "will convert). The detail names the path and what went wrong."
     ),
     REFUSAL_GARAGE_MISMATCH: (
         "A pass belongs to one garage and was asked about another. One garage per "
@@ -355,7 +356,9 @@ NOT_COVERED_REASONS: dict[str, str] = {
     ),
     PASS_UNREADABLE: (
         "The pass this vehicle is registered to carries a value this module "
-        "refuses to read -- terms or a holder that would be refused at creation. "
+        "refuses to read -- terms or a holder that would be refused at creation, a "
+        "holder or terms field that is missing or of the wrong type, or a field this "
+        "module does not know. "
         "Reached by a stored row (a raw write, or a validator tightened after the "
         "pass was stored) and, at an EXIT, by a pass document handed to the command "
         "line whose id, garage, label and state read. The detail names the pass and "
@@ -417,8 +420,8 @@ NOT_COVERED_REASONS: dict[str, str] = {
         "fields read is not this: it degrades to the unreadable pass or garage a stored "
         "row becomes, and answers PASS_UNREADABLE or GARAGE_UNREADABLE only if the "
         "vehicle is on it. (At an entry the same document is refused by name. The module "
-        "refuses only when it holds no record at all -- a file that is missing or cannot "
-        "be read as JSON -- or no instant to read it at.)"
+        "refuses only when it holds no record at all -- a file that is missing, not a "
+        "regular file, or cannot be read as JSON -- or no instant to read it at.)"
     ),
 }
 

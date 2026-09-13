@@ -393,8 +393,14 @@ def access(
         if pass_.unreadable is not None:
             # Its expiry cannot be derived (valid_to lives in the terms), so
             # nothing below can be read. Stated, naming the pass and the field.
+            # ONE sentence for BOTH doors -- a stored row (G17) and, at an exit,
+            # a document (documents.load_or_degrade) -- so it says "carries",
+            # never "is stored with": measured before this, 66 of 199 answered
+            # exits in the gate's census told the operator a row was stored
+            # that never existed, and sent them to a database to undo a charge
+            # against it. The wording is the registry sentence's own.
             what = (
-                f"pass {pass_.id!r} ({pass_.label}) is stored with a value this module "
+                f"pass {pass_.id!r} ({pass_.label}) carries a value this module "
                 f"refuses to read -- {pass_.unreadable.describe()}"
             )
             if is_exit:

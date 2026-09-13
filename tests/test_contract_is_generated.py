@@ -170,3 +170,50 @@ def test_a_code_published_but_produced_nowhere_fails_the_check():
         assert gen.orphan_codes() == {"NOT_COVERED_REASONS": ["PLANTED_REASON"]}
     finally:
         del gen.NOT_COVERED_REASONS["PLANTED_REASON"]
+
+
+# ---------------------------------------------------------------------------
+# The route sweep: every published sentence that asserts a route, judged by content.
+# ---------------------------------------------------------------------------
+
+import subprocess  # noqa: E402
+
+import sweep_route_sentences as sweep  # noqa: E402
+
+
+@pytest.mark.guarantee("G15")
+def test_every_route_asserting_sentence_is_judged_by_content_and_none_is_false():
+    """A sentence true when written and false after a later round opened a new
+    door survived one sweep because that sweep's denominator was the registries
+    and the prose, never the DETAILS the operator reads in an answer. The shipped
+    sweep derives its denominator (every string literal in the package by AST,
+    the registries and guarantees by import, README and CONTRACT), flags every
+    route-asserting sentence, and requires a recorded judgement KEYED BY THE
+    SENTENCE'S CONTENT -- so an edit makes it unjudged, and an unjudged hit, a
+    FALSE one, or a stale judgement fails this test. Zero FALSE is the property,
+    not zero hits."""
+    status, result = sweep.run(quiet=True)
+    assert result["found"] >= 40, (
+        f"the sweep found {result['found']} sentences: the instrument is broken"
+    )
+    assert result["unjudged"] == [], f"UNJUDGED route-asserting sentence(s): {result['unjudged']}"
+    assert result["false"] == [], f"a published sentence judged FALSE: {result['false']}"
+    assert result["stale"] == [], (
+        f"stale judgement(s) for sentences that no longer exist: {result['stale']}"
+    )
+    assert status == 0
+
+
+@pytest.mark.guarantee("G15")
+def test_the_route_sweep_goes_red_on_a_falsehood_planted_where_it_was_not_looking():
+    """The instrument proven able to fail, on a COPY of the source: a "stored"
+    falsehood planted into the GARAGE_UNREADABLE detail -- not the PASS one the
+    sweep was built for -- must be named UNJUDGED; a judged-true sentence edited
+    by one word must read UNJUDGED (content-keyed, not location-keyed); the
+    unmodified tree must read clean. A sweep that only catches the line already
+    known has not widened."""
+    done = subprocess.run([sys.executable, str(ROOT / "scripts" / "sweep_route_sentences.py"),
+                           "--self-test"], capture_output=True, text=True, cwd=ROOT)
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert "named: 'garage {…} is stored with a value this module refuses to read" in done.stdout
+    assert "reads UNJUDGED: True" in done.stdout and "the unmodified tree: exit 0" in done.stdout

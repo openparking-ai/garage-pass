@@ -98,7 +98,7 @@ name, naming the state.
 **Covered**, with the pass and the term that covers it. **Not covered**, with a
 plain reason: no pass · not active · not started · expired · suspended ·
 revoked · direction not allowed · wrong lane · outside window · out of visits ·
-over maximum stay · a pass or garage stored with a value the module cannot read
+over maximum stay · a pass or garage carrying a value the module cannot read
 · at an exit, a blank identity or lane. Or — **at an entry only** — **refused to
 answer**, naming the field that would let it: a garage that has not stated
 whether it sells transient parking, a blank identity, a pass whose stored terms

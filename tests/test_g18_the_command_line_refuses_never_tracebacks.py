@@ -1134,3 +1134,246 @@ def test_the_exit_answer_on_unreadable_records_has_every_exit_answers_shape():
             exit_on_unreadable_records([marker], **bad)
     with pytest.raises(TypeError):
         exit_on_unreadable_records([], vehicle_identity="C", lane="L1")
+
+
+# ---------------------------------------------------------------------------
+# The T round: the sentence the operator reads, and the boundary that let a
+# document through unread (a pipe that hangs; an empty path read as "not given").
+# ---------------------------------------------------------------------------
+
+BOUND_SECONDS = 10  #: a call that has not returned by then is a HANG, and a failure
+
+
+def _process(argv: list[str]) -> subprocess.CompletedProcess:
+    """The actual process, under a bound. A command line that never returns is the
+    purest unanswered exit, and it is not a traceback, so no sweep that counts
+    tracebacks sees it; this is where it is counted."""
+    try:
+        return subprocess.run(
+            [sys.executable, "-m", "garage_pass.cli", *argv],
+            capture_output=True, text=True, cwd=ROOT, timeout=BOUND_SECONDS,
+            stdin=subprocess.DEVNULL,
+        )
+    except subprocess.TimeoutExpired:
+        pytest.fail(f"the command line HUNG: no return within {BOUND_SECONDS}s for {argv[:4]}")
+
+
+def _argv(garage: Path, pass_: Path, **documents: Path | str) -> list[str]:
+    out = ["access", "--garage", str(garage), "--pass", str(pass_)]
+    for option, path in documents.items():
+        out += [f"--{option}", str(path)]
+    return out
+
+
+@pytest.mark.guarantee("G4")
+def test_the_unreadable_pass_detail_says_carries_on_both_doors_never_stored(tmp_path, capsys):
+    """THE SENTENCE THE OPERATOR READS. The PASS_UNREADABLE answer's detail is what
+    the registry tells the operator to use to "find the row and undo the charge".
+    Measured before this: on a pass DOCUMENT handed to the command line -- a
+    route where nothing is stored -- 66 of 199 answered exits in the gate's
+    census said the pass "is stored with a value this module refuses to read",
+    the falsehood the registry sentence had already been corrected for, at its
+    other end. ONE string feeds both doors, so it must be true at both: it says
+    "carries", and the stored-row door (the shape ``records._pass_from_row``
+    builds) renders the SAME sentence."""
+    garage, pass_ = _documents(tmp_path)
+    bad = _write(tmp_path, "p_bad.json", _with(pass_document(), "terms.allowed_lanes", []))
+    regs = _write(tmp_path, "r.json", [REGISTRATION])
+    status, printed = run([*_argv(garage, bad, registrations=regs),
+                           "--vehicle", "CAR-1", "--lane", "L1", "--direction", "exit",
+                           "--at", "2026-06-01T12:00:00-06:00"], capsys)
+    _assert_exit_answered(status, printed, f.PASS_UNREADABLE, "pass-1",
+                          f.REFUSAL_LANES_STATED_BUT_EMPTY)
+    assert "stored" not in printed["detail"], (
+        f"a DOCUMENT route rendered 'stored' -- nothing is stored: {printed['detail']!r}"
+    )
+    assert "carries a value this module refuses to read" in printed["detail"], printed["detail"]
+    # the other door: the carrier a stored row becomes (holder=None, terms=None, the marker)
+    from datetime import UTC, datetime
+
+    from fixtures import transient_garage
+    from garage_pass.access import access
+    from garage_pass.findings import Unreadable
+    from garage_pass.passes import Pass, Registration, State
+    from garage_pass.terms import Direction
+
+    stored = Pass(id="pass-1", garage_id="garage-downtown", label="Employee", holder=None,
+                  terms=None, state=State.ACTIVE,
+                  unreadable=Unreadable(f.REFUSAL_LANES_STATED_BUT_EMPTY, "allowed_lanes",
+                                        "allowed_lanes is an empty set."))
+    answer = access(garage=transient_garage("America/Denver"), passes=[stored],
+                    registrations=[Registration(pass_id="pass-1", vehicle_identity="CAR-1",
+                                                effective_day=REGISTRATION_DAY)],
+                    visits=[], vehicle_identity="CAR-1", lane="L1", direction=Direction.EXIT,
+                    at=datetime(2026, 6, 1, 18, 0, tzinfo=UTC))
+    assert answer.reason == f.PASS_UNREADABLE
+    assert "carries a value this module refuses to read" in answer.detail, answer.detail
+    assert answer.detail.split(" -- ")[0] == printed["detail"].split(" -- ")[0], (
+        "the two doors render different sentences", answer.detail, printed["detail"]
+    )
+
+
+REGISTRATION_DAY = __import__("datetime").date(2026, 1, 1)
+
+
+@pytest.mark.guarantee("G4")
+def test_pass_unreadable_names_every_door_the_load_can_open(tmp_path, capsys):
+    """DERIVED, NOT LISTED FROM A BRIEF. What can set ``Pass.unreadable`` with the
+    carrier fields readable is every ``Refused`` ``documents.load`` raises for a
+    pass: an unknown key (``_only``), a missing or wrong-typed holder/terms field
+    (the type checks), and the dataclasses' own validators (the creation-time
+    refusals). Each is handed in as a document at an EXIT here, must answer
+    PASS_UNREADABLE naming its code, and the registry sentence must name the
+    CLASS it belongs to -- so the sentence cannot say "terms or a holder" while
+    an unknown field reaches the same reason (measured before this: it did)."""
+    garage, pass_ = _documents(tmp_path)
+    regs = _write(tmp_path, "r.json", [REGISTRATION])
+    doors = {
+        "an unknown field": (_with(pass_document(), "x", 1), f.REFUSAL_UNKNOWN_FIELD,
+                             "does not know"),
+        "a missing holder field": (_with(pass_document(), "holder.email", ...),
+                                   f.REFUSAL_FIELD_BLANK, "missing"),
+        "a wrong-typed terms field": (_with(pass_document(), "terms.max_stay_minutes", "ten"),
+                                      f.REFUSAL_FIELD_WRONG_TYPE, "wrong type"),
+        "a validator's refusal": (_with(pass_document(), "terms.allowed_lanes", []),
+                                  f.REFUSAL_LANES_STATED_BUT_EMPTY, "refused at creation"),
+    }
+    sentence = f.NOT_COVERED_REASONS[f.PASS_UNREADABLE]
+    for door, (document, code, phrase) in doors.items():
+        path = _write(tmp_path, "p.json", document)
+        status, printed = run([*_argv(garage, path, registrations=regs), "--vehicle", "CAR-1",
+                               "--lane", "L1", "--direction", "exit",
+                               "--at", "2026-06-01T12:00:00-06:00"], capsys)
+        _assert_exit_answered(status, printed, f.PASS_UNREADABLE, code)
+        assert phrase in sentence, (
+            f"{door} reaches PASS_UNREADABLE ({code}) and the sentence does not name it: "
+            f"{sentence!r}"
+        )
+
+
+@pytest.mark.guarantee("G18")
+@pytest.mark.parametrize("option", ["garage", "pass", "registrations", "visits"])
+def test_a_named_pipe_with_no_writer_is_refused_by_name_under_a_bound(tmp_path, option):
+    """Measured before this: ``open()`` on a FIFO with no writer blocked forever,
+    on all four document arguments, in both directions -- the command line never
+    returned. Not a traceback, so every sweep that counts tracebacks read it
+    clean. Now anything that is not a regular file is refused BEFORE the read,
+    by name, the same refusal a missing file gets; and this test runs the actual
+    process UNDER A BOUND so a regression is a failure, not a hung suite."""
+    garage, pass_ = _documents(tmp_path)
+    fifo = tmp_path / "a_fifo"
+    __import__("os").mkfifo(fifo)
+    docs = {"garage": garage, "pass": pass_,
+            "registrations": _write(tmp_path, "r.json", [REGISTRATION]),
+            "visits": _write(tmp_path, "v.json", [])}
+    docs[option] = fifo
+    for direction in ("entry", "exit"):
+        done = _process([*_argv(docs["garage"], docs["pass"], registrations=docs["registrations"],
+                                visits=docs["visits"]), "--vehicle", "CAR-1", "--lane", "L1",
+                         "--direction", direction, "--at", "2026-06-01T12:00:00-06:00"])
+        assert done.returncode == EXIT_REFUSED_REQUEST and done.stderr == "", (
+            option, direction, done.returncode, done.stderr[-300:]
+        )
+        printed = json.loads(done.stdout)
+        assert printed["refused"] == f.REFUSAL_DOCUMENT_UNREADABLE
+        assert printed["field"] == f"--{option}" and "not a regular file" in printed["detail"]
+
+
+@pytest.mark.guarantee("G18")
+def test_the_regular_file_guard_keeps_a_symlink_and_refuses_a_device_a_socket_and_a_directory(
+    tmp_path, capsys
+):
+    """The controls for the guard above, in one run: ``Path.is_file`` follows
+    symlinks, so a symlink to a regular file STILL READS (breaking that would be
+    worse than the hang); a device, a unix socket and a directory refuse by
+    name before any read -- the device (``/dev/null``) used to be refused for
+    reading as empty, and is now refused for not being a regular file, the same
+    code; and the well-formed call still answers covered."""
+    import socket
+
+    garage, pass_ = _documents(tmp_path)
+    regs = _write(tmp_path, "r.json", [REGISTRATION])
+    link = tmp_path / "link_to_pass.json"
+    link.symlink_to(pass_)
+    for direction in ("entry", "exit"):
+        status, printed = run([*_argv(garage, link, registrations=regs), "--vehicle", "CAR-1",
+                               "--lane", "L1", "--direction", direction,
+                               "--at", "2026-06-01T12:00:00-06:00"], capsys)
+        assert status == 0 and printed["outcome"] == "covered", (direction, status, printed)
+    a_dir = tmp_path / "a_dir"
+    a_dir.mkdir()
+    # a unix socket's path is bounded (~104 bytes on a Mac), and pytest's tmp_path
+    # is longer than that; a short directory of our own, removed after
+    import shutil
+    import tempfile
+
+    short = Path(tempfile.mkdtemp(prefix="gp", dir="/tmp"))
+    sock_path = short / "s"
+    sock = socket.socket(socket.AF_UNIX)
+    sock.bind(str(sock_path))
+    try:
+        for name, bad in (("a device", Path("/dev/null")), ("a socket", sock_path),
+                          ("a directory", a_dir)):
+            status, printed = run([*_argv(bad, pass_, registrations=regs), "--vehicle", "CAR-1",
+                                   "--lane", "L1", "--direction", "exit",
+                                   "--at", "2026-06-01T12:00:00-06:00"], capsys)
+            assert status == EXIT_REFUSED_REQUEST, (name, status, printed)
+            assert printed["refused"] == f.REFUSAL_DOCUMENT_UNREADABLE
+            assert printed["field"] == "--garage"
+            assert "not a regular file" in printed["detail"], (name, printed["detail"])
+    finally:
+        sock.close()
+        shutil.rmtree(short, ignore_errors=True)
+    status, printed = run([*_argv(garage, tmp_path / "nowhere.json", registrations=regs),
+                           "--vehicle", "CAR-1", "--lane", "L1", "--direction", "exit",
+                           "--at", "2026-06-01T12:00:00-06:00"], capsys)
+    assert status == EXIT_REFUSED_REQUEST and "does not exist" in printed["detail"], printed
+
+
+@pytest.mark.guarantee("G18")
+def test_an_empty_option_value_is_a_path_that_cannot_be_read_not_an_option_not_given(
+    tmp_path, capsys
+):
+    """Measured before this: ``--visits ''`` answered COVERED with the visits
+    document silently unread, and ``--registrations ''`` answered as if no
+    registration had been handed in -- ``if args.visits`` read the empty string
+    as "not given". Visits are the evidence for the visit allowance and the
+    maximum stay; dropping them unread turns an over-allowance into covered, a
+    SILENT WRONG ANSWER, which this project ranks above a traceback. Now the
+    test is ``is None``: an empty string is a path (``.``, a directory) and is
+    refused by name in both directions; omitting the option still means "not
+    given" and still answers. The control that proves the wrong-answer shape is
+    gone: a spent allowance with the visits document present is not-covered,
+    and the SAME case with ``--visits ''`` must NOT read covered."""
+    garage, pass_ = _documents(tmp_path)
+    regs = _write(tmp_path, "r.json", [REGISTRATION])
+    for option in ("registrations", "visits"):
+        for direction in ("entry", "exit"):
+            argv = [*_argv(garage, pass_, registrations=regs), f"--{option}", "",
+                    "--vehicle", "CAR-1", "--lane", "L1", "--direction", direction,
+                    "--at", "2026-06-01T12:00:00-06:00"]
+            status, printed = run(argv, capsys)
+            assert status == EXIT_REFUSED_REQUEST, (
+                f"--{option} '' at {direction} was read as 'not given': exit {status}, {printed}"
+            )
+            assert printed["refused"] == f.REFUSAL_DOCUMENT_UNREADABLE
+            assert printed["field"] == f"--{option}"
+    # the silent-wrong-answer control: the allowance (3 per window) spent by three entries today
+    spent = [{"pass_id": "pass-1", "vehicle_identity": "CAR-1", "entry_lane": "L1",
+              "entered_at": f"2026-06-01T0{h}:00:00-06:00",
+              "exited_at": f"2026-06-01T0{h}:30:00-06:00", "exit_lane": "L1"} for h in (7, 8, 9)]
+    visits = _write(tmp_path, "spent.json", spent)
+    move = ["--vehicle", "CAR-1", "--lane", "L1", "--direction", "entry",
+            "--at", "2026-06-01T12:00:00-06:00"]
+    with_visits = [*_argv(garage, pass_, registrations=regs, visits=visits), *move]
+    status, printed = run(with_visits, capsys)
+    assert status == 1 and printed["reason"] == f.OUT_OF_VISITS, printed
+    status, printed = run([*_argv(garage, pass_, registrations=regs), "--visits", "", *move],
+                          capsys)
+    assert printed.get("outcome") != "covered", (
+        f"--visits '' dropped the visits document unread and answered COVERED on a spent "
+        f"allowance: {printed}"
+    )
+    assert status == EXIT_REFUSED_REQUEST and printed["field"] == "--visits", printed
+    status, printed = run([*_argv(garage, pass_, registrations=regs), *move], capsys)
+    assert status == 0 and printed["outcome"] == "covered", ("omitted must still answer", printed)

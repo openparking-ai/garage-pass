@@ -1144,6 +1144,70 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
         "the command line again -- RecursionError is a RuntimeError, not a ValueError -- in "
         "both directions, exit 1 with no answer; the red must name the traceback",
     ),
+    # --- the T round: the sentence the operator reads, and the boundary that let a
+    # --- document through unread ----------------------------------------------------
+    "G4/unreadable-detail-says-stored": (
+        G18, "access.py",
+        '                f"pass {pass_.id!r} ({pass_.label}) carries a value this module "',
+        '                f"pass {pass_.id!r} ({pass_.label}) is stored with a value this module "'
+        '  # PLANTED: the old sentence, false on the document door',
+        "the PASS_UNREADABLE detail tells the operator a row is stored on a route where "
+        "nothing is -- the red must name the falsehood (a DOCUMENT route rendered 'stored'), "
+        "and the stored-row door's own assertion reads the same sentence",
+    ),
+    "G4/unreadable-sentence-names-only-terms-or-holder": (
+        G18, "findings.py",
+        source(
+            '        "refuses to read -- terms or a holder that would be refused at creation, a "',
+            '        "holder or terms field that is missing or of the wrong type, or a field '
+            'this "',
+            '        "module does not know. "',
+        ),
+        source(
+            '        "refuses to read -- terms or a holder that would be refused at creation. "'
+            "  # PLANTED: the unknown-field door unnamed",
+        ),
+        "the registry sentence enumerates two of the doors to PASS_UNREADABLE while an unknown "
+        "field reaches it too; the derived door test must name the door the sentence lost",
+    ),
+    "G18/document-not-a-regular-file": (
+        G18, "cli.py",
+        "    if not file.is_file():",
+        "    if False and not file.is_file():  # PLANTED: the guard is gone; open() blocks "
+        "on a pipe",
+        "a named pipe with no writer is opened again and the command line never returns; the "
+        "bounded process test must fail as a HANG, not hang the suite",
+    ),
+    "G18/empty-option-read-as-not-given-at-exit": (
+        G18, "cli.py",
+        "        if path is None:  # the option was not given -- NOT ``if not path``: an empty",
+        "        if not path:  # PLANTED: '' is 'not given' again -- the document is never opened",
+        "--visits '' at an EXIT drops the visits document unread; the control case (a spent "
+        "allowance) is what shows it, and the empty-string case must read as refused",
+    ),
+    "G18/empty-option-read-as-not-given-at-entry": (
+        G18, "cli.py",
+        "            if args.visits is not None else [],",
+        "            if args.visits else [],  # PLANTED: '' is 'not given' at an entry",
+        "--visits '' at an ENTRY answers COVERED on a spent allowance -- the silent wrong "
+        "answer the control case names",
+    ),
+    "G15/route-sweep-blind-to-stored": (
+        "tests/test_contract_is_generated.py", "scripts/sweep_route_sentences.py",
+        '    r"\\b(raw write|raw insert|written raw|stored with|is stored|are stored|stored row|"',
+        '    r"\\b(raw write|raw insert|written raw|stored row|"  # PLANTED: blind to '
+        '"is stored with"',
+        "the sweep no longer flags a sentence that says a value 'is stored with' -- the "
+        "self-test's planted falsehood goes unnamed and the judged set turns stale",
+    ),
+    "G15/rendered-detail-falsehood": (
+        "tests/test_contract_is_generated.py", "access.py",
+        '        what = f"garage {garage.id!r}: {garage.unreadable.describe()}"',
+        '        what = f"garage {garage.id!r} is stored with a value this module refuses to read: '
+        '{garage.unreadable.describe()}"  # PLANTED: a falsehood in a rendered detail',
+        "a 'stored' falsehood in a rendered detail the old sweep never read -- the shipped "
+        "sweep must go red naming the sentence as unjudged",
+    ),
     "G12/garage-who-why": (
         G12, "store/records.py",
         source(
