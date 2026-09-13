@@ -33,10 +33,38 @@ on the terms that can be evaluated with the stay marked UNMEASURED in
 ``Answer.unmeasured``; a stored pass or garage this module cannot read is
 not-covered naming the pass and the field; two passes that both hold the
 vehicle -- a state this module refuses to create -- are each evaluated and the
-vehicle is covered if any of them covers it, the inconsistency named. A garage
-whose transient mode is unstated is refused an answer at ENTRY only; the exit
-half of the call does not read that field at all, because nothing about an
-exit may depend on configuration.
+vehicle is covered if any of them covers it, the inconsistency named; a
+registration naming a pass that was not handed in -- inconsistent data, which
+an integrator assembling registrations from their own store can produce -- is
+answered not-covered naming that pass, never raised. A garage whose transient
+mode is unstated is refused an answer at ENTRY only; the exit half of the call
+does not read that field at all, because nothing about an exit may depend on
+configuration.
+
+**WHAT "NEVER AN EXCEPTION" DOES NOT COVER, SAID PLAINLY -- AND IT IS A CLASS,
+NOT A LIST.** A value of a type the signature does not accept -- for any
+parameter, or any element of ``passes``, ``registrations`` or ``visits``; a
+naive ``at`` is one (an instant with no timezone is not an instant) -- raises
+on the first touch (``_require_inputs``), before there is an instant, a pass or
+an answer to give, and NEVER answers: measured before this, ``vehicle_identity
+=None`` was answered as a blank identity, which read a caller's bug as a car
+with no plate. G4's test enumerates the signature and proves each parameter
+raises; the class is closed by execution, which is what lets the sentence name
+it rather than count instances. One environment error is raised by its own
+name: a machine with no timezone database at all
+(``TimezoneDatabaseUnavailable``), on which nothing can be read. A garage
+carrying a zone this system does not carry cannot be constructed
+(``Garage.__post_init__`` refuses it), and neither can a registration or a
+visit with a wrong-typed field (``typed.require_typed``) -- through the pure
+API. THE MODULE ANSWERS WHEN IT HOLDS A RECORD WHOSE CONTENT IT CANNOT READ,
+and refuses only when it holds no record at all, or no instant: a STORED row it
+cannot read loads unreadable and answers, above; a DOCUMENT it cannot read is
+answered at an exit the same way (``documents.load_or_degrade`` builds the
+same carrier a stored row becomes, or ``exit_on_unreadable_records`` below
+states the not-covered answer for a registration, a visit, or a carrier that
+cannot be built) and refused by name at an entry. A pass handed in twice under
+one id is inconsistent data like the dangling registration: never resolved by
+order, every copy evaluated, the duplication named.
 
 **THE ORDER OF THE CHECKS IS PART OF THE CONTRACT.** An unreadable garage
 answers first (without a clock nothing else can be read). Then the blank
@@ -59,6 +87,7 @@ from garage_pass.findings import (
     BLANK_IDENTITY,
     BLANK_LANE,
     DIRECTION_NOT_ALLOWED,
+    DUPLICATED_PASS_ID,
     EXIT_IS_NEVER_REFUSED,
     EXPIRED,
     GARAGE_UNREADABLE,
@@ -68,6 +97,7 @@ from garage_pass.findings import (
     MEANS_TRANSIENT_STAY,
     MISSING_LANE,
     MISSING_ONE_PASS,
+    MISSING_PASS_HANDED_IN,
     MISSING_TIMEZONE,
     MISSING_TRANSIENT_MODE,
     MISSING_VEHICLE_IDENTITY,
@@ -77,14 +107,16 @@ from garage_pass.findings import (
     OUT_OF_VISITS,
     OUTSIDE_WINDOW,
     OVER_MAX_STAY,
+    PASS_DUPLICATED,
+    PASS_NOT_HANDED_IN,
     PASS_UNREADABLE,
-    REFUSAL_PASS_NOT_FOUND,
+    RECORD_UNREADABLE,
     REFUSED_TO_ANSWER,
     REVOKED,
     SUSPENDED,
     UNREADABLE_TERMS,
     WRONG_LANE,
-    Refused,
+    Unreadable,
 )
 from garage_pass.garage import Garage
 from garage_pass.localday import (
@@ -148,11 +180,9 @@ def access(
     direction: Direction,
     at: datetime,
 ) -> Answer:
-    require_aware(at, "at")
-    if not isinstance(direction, Direction):
-        raise TypeError(f"direction must be a Direction, not {direction!r}")
-    identity = vehicle_identity.strip() if isinstance(vehicle_identity, str) else ""
-    lane_name = lane.strip() if isinstance(lane, str) else ""
+    _require_inputs(garage, passes, registrations, visits, vehicle_identity, lane, direction, at)
+    identity = vehicle_identity.strip()
+    lane_name = lane.strip()
     is_exit = direction is Direction.EXIT
     exit_note = EXIT_IS_NEVER_REFUSED if is_exit else None
 
@@ -253,27 +283,84 @@ def access(
         return refused(MISSING_TRANSIENT_MODE, f"garage {garage.id!r}.")
 
     # --- which pass, if any -------------------------------------------------
-    by_id = {p.id: p for p in passes if p.garage_id == garage.id}
+    # A pass handed in TWICE under one id is INCONSISTENT DATA and is never
+    # resolved by order. Measured before this: ``by_id`` was a dict, so the
+    # last copy won silently and ``[revoked p1, active p1]`` admitted at an
+    # entry the car that ``[active p1, revoked p1]`` refused. Copies are grouped
+    # by id; an id with more than one copy, any of them at this garage, is
+    # duplicated, and whether the copies agree is not asked -- the caller who
+    # sent one id twice does not know which they meant. At an entry the call
+    # refuses to answer naming the id; at an exit every copy is evaluated in a
+    # fixed order, the holder is covered if any copy covers, and the
+    # duplication is named either way.
+    copies: dict[str, list[Pass]] = {}
+    for p in passes:
+        copies.setdefault(p.id, []).append(p)
+    duplicated = {
+        pid: sorted(ps, key=_copy_order)
+        for pid, ps in copies.items()
+        if len(ps) > 1 and any(p.garage_id == garage.id for p in ps)
+    }
+    by_id = {p.id: p for p in passes if p.garage_id == garage.id and p.id not in duplicated}
     here = []
+    # A registration naming a pass that was NOT handed in is INCONSISTENT DATA
+    # -- the registrations and the passes disagree -- and it is answered, not
+    # raised. Measured before this: it raised ``Refused(REFUSAL_PASS_NOT_FOUND)``
+    # at an exit, which an outside review read against the published sentence
+    # "never an exception" and was right to. The store cannot produce it (it
+    # loads the passes its registrations name); an integrator assembling
+    # registrations from their own store can. Only a dangling registration IN
+    # FORCE today bears on this instant; one that has ended, or has not started,
+    # bears on no answer and is not consulted, like any other such registration.
+    dangling: list[Registration] = []
     for registration in registrations:
         if registration.vehicle_identity.strip() != identity:
+            continue
+        if registration.pass_id in duplicated:
+            here.append(registration)
             continue
         if registration.pass_id not in by_id:
             if any(p.id == registration.pass_id for p in passes):
                 continue  # a pass at another garage; not this garage's business
-            raise Refused(
-                REFUSAL_PASS_NOT_FOUND,
-                "registration.pass_id",
-                f"registration names pass {registration.pass_id!r}, which was not handed in.",
-            )
+            if registration.covers(today):
+                dangling.append(registration)
+            continue
         here.append(registration)
     effective = [r for r in here if r.covers(today)]
+    handed_in = sorted(repr(pid) for pid in copies if pid in by_id or pid in duplicated)
+    duplicated_named = sorted({r.pass_id for r in effective if r.pass_id in duplicated})
+    if dangling and not is_exit:
+        named = ", ".join(sorted(repr(r.pass_id) for r in dangling))
+        return refused(
+            MISSING_PASS_HANDED_IN,
+            f"registration of {identity!r} names pass {named}, in force on {today}, and no "
+            f"pass with that id was handed in (handed in: {', '.join(handed_in) or 'none'}).",
+        )
+    if duplicated_named and not is_exit:
+        return refused(
+            DUPLICATED_PASS_ID,
+            "; ".join(_duplication(pid, duplicated[pid]) for pid in duplicated_named)
+            + f" -- the registration of {identity!r} in force on {today} names it.",
+        )
+    if dangling and not effective:
+        r = dangling[0]
+        return not_covered(
+            PASS_NOT_HANDED_IN,
+            f"INCONSISTENT: registration of {identity!r} names pass {r.pass_id!r}, in force "
+            f"on {today}, and no pass with that id was handed in (handed in: "
+            f"{', '.join(handed_in) or 'none'}); the registrations and the passes disagree. "
+            "Answered not-covered, never raised.",
+        )
     if not effective:
         # A stated answer for an unknown identity -- never an accidental
         # refusal and never a silent pass. Where a registration exists but is
         # not in force today, the detail says which and when; a revoked pass
         # is named as revoked, because that is the reason and not "no pass".
-        revoked = [r for r in here if by_id[r.pass_id].state is State.REVOKED]
+        # (A pass handed in twice is not read for its state here: that would be
+        # picking a copy.)
+        revoked = [
+            r for r in here if r.pass_id in by_id and by_id[r.pass_id].state is State.REVOKED
+        ]
         if revoked:
             r = max(revoked, key=lambda r: (r.end_day or today, r.effective_day))
             return not_covered(
@@ -306,8 +393,14 @@ def access(
         if pass_.unreadable is not None:
             # Its expiry cannot be derived (valid_to lives in the terms), so
             # nothing below can be read. Stated, naming the pass and the field.
+            # ONE sentence for BOTH doors -- a stored row (G17) and, at an exit,
+            # a document (documents.load_or_degrade) -- so it says "carries",
+            # never "is stored with": measured before this, 66 of 199 answered
+            # exits in the gate's census told the operator a row was stored
+            # that never existed, and sent them to a database to undo a charge
+            # against it. The wording is the registry sentence's own.
             what = (
-                f"pass {pass_.id!r} ({pass_.label}) is stored with a value this module "
+                f"pass {pass_.id!r} ({pass_.label}) carries a value this module "
                 f"refuses to read -- {pass_.unreadable.describe()}"
             )
             if is_exit:
@@ -410,7 +503,7 @@ def access(
 
         return covered(pass_, "; ".join(covering), unmeasured)
 
-    if len(effective) == 1:
+    if len(effective) == 1 and not dangling and not duplicated_named:
         return evaluate(by_id[effective[0].pass_id])
 
     # More than one pass holds the vehicle today -- a state this module refuses
@@ -419,20 +512,138 @@ def access(
     # not pick one. At an EXIT every one is evaluated: the vehicle is covered
     # if any of them covers it, and the inconsistency is named either way,
     # because the holder who does have a covering pass gets out on it and the
-    # operator has to be able to see the corruption.
-    named = ", ".join(sorted(repr(r.pass_id) for r in effective))
+    # operator has to be able to see the corruption. A dangling registration
+    # beside an effective one is the same shape at an EXIT (the entry was
+    # refused above): the passes that were handed in are evaluated, the one
+    # that was not is named. A pass handed in twice is the same shape again:
+    # every copy is evaluated, in a fixed order, so the answer does not depend
+    # on the order the copies arrived in.
+    named = ", ".join(sorted(repr(r.pass_id) for r in effective + dangling))
     if not is_exit:
         return refused(MISSING_ONE_PASS, f"passes {named}.")
-    answers = [evaluate(by_id[r.pass_id]) for r in effective]
-    inconsistency = (
-        f" INCONSISTENT: {identity!r} is registered on {len(effective)} passes at once "
-        f"({named}), which one car, one pass forbids; every one was evaluated."
-    )
+    candidates: list[Pass] = []
+    for r in sorted(effective, key=lambda r: r.pass_id):
+        candidates.extend(duplicated.get(r.pass_id) or [by_id[r.pass_id]])
+    answers = [evaluate(p) for p in candidates]
+    parts = []
+    if len(effective) + len(dangling) > 1:
+        parts.append(
+            f"{identity!r} is registered on {len(effective) + len(dangling)} passes at once "
+            f"({named}), which one car, one pass forbids; every one that was handed in was "
+            "evaluated"
+            + (
+                f"; {', '.join(sorted(repr(r.pass_id) for r in dangling))} was not handed in "
+                "and could not be"
+                if dangling else ""
+            )
+        )
+    parts.extend(_duplication(pid, duplicated[pid]) for pid in duplicated_named)
+    inconsistency = " INCONSISTENT: " + "; ".join(parts) + "."
     for answer in answers:
         if answer.outcome is Outcome.COVERED:
             return replace(answer, detail=answer.detail + inconsistency)
+    if duplicated_named and len(effective) == 1 and not dangling:
+        # The only inconsistency is the duplication, and no copy covers.
+        return not_covered(
+            PASS_DUPLICATED,
+            f"INCONSISTENT: {_duplication(duplicated_named[0], candidates)}; no copy covers "
+            "this exit -- "
+            + "; ".join(f"copy {i + 1}: {a.reason}, {a.detail}" for i, a in enumerate(answers))
+            + " Answered not-covered, never raised, whatever the order the copies arrived in.",
+        )
     first = answers[0]
     return replace(first, detail=first.detail + inconsistency)
+
+
+def _copy_order(pass_: Pass) -> tuple:
+    """A fixed order for the copies of one id, so that which copy is
+    evaluated first -- and so the answer -- does not depend on the order the
+    caller's list happened to have. The label is the last tie-break only."""
+    return (
+        pass_.state.value,
+        pass_.unreadable is not None,
+        pass_.terms.describe() if pass_.terms is not None else "",
+        pass_.label,
+    )
+
+
+def _duplication(pass_id: str, copies: Sequence[Pass]) -> str:
+    states = ", ".join(
+        f"{p.state.value}" + (" (unreadable)" if p.unreadable is not None else "")
+        for p in copies
+    )
+    return (
+        f"pass {pass_id!r} was handed in {len(copies)} times (copies: {states}), which one id, "
+        "one pass forbids"
+    )
+
+
+def _require_inputs(
+    garage: object, passes: object, registrations: object, visits: object,
+    vehicle_identity: object, lane: object, direction: object, at: object,
+) -> None:
+    """Every parameter of ``access()`` has the type its signature declares, or a
+    ``TypeError`` naming the parameter -- raised on the first touch, before an
+    instant, a pass or an answer exists. A wrong-typed value NEVER answers:
+    measured before this, ``vehicle_identity=None`` was answered as a blank
+    identity, which read a caller's bug as a car with no plate. G4's test
+    enumerates the signature and hands each parameter a wrong-typed value."""
+    require_aware(at, "at")
+    if not isinstance(direction, Direction):
+        raise TypeError(f"direction must be a Direction, not {direction!r}")
+    if not isinstance(garage, Garage):
+        raise TypeError(f"garage must be a Garage, not {garage!r}")
+    for name, value, element in (
+        ("passes", passes, Pass),
+        ("registrations", registrations, Registration),
+        ("visits", visits, Visit),
+    ):
+        if isinstance(value, str | bytes) or not isinstance(value, Sequence):
+            raise TypeError(f"{name} must be a sequence of {element.__name__}, not {value!r}")
+        for item in value:
+            if not isinstance(item, element):
+                raise TypeError(f"{name} must hold only {element.__name__}, not {item!r}")
+    for name, value in (("vehicle_identity", vehicle_identity), ("lane", lane)):
+        if not isinstance(value, str):
+            raise TypeError(f"{name} must be text, not {value!r}")
+
+
+def exit_on_unreadable_records(
+    unreadable: Sequence[Unreadable], *, vehicle_identity: str, lane: str
+) -> Answer:
+    """THE EXIT ANSWER WHEN A RECORD HANDED IN CANNOT BE READ. The module holds
+    the record -- a registration or visit document, or a pass or garage document
+    too malformed to carry its refusal the way a stored row does -- and cannot
+    read its content, so the exit is ANSWERED: not-covered, RECORD_UNREADABLE,
+    naming every document and field, with the exit note and the OUT-OF-TERMS
+    meaning every exit answer carries. Never a refusal, never an exception.
+    Exit only: at an entry the same document is refused by name (the command
+    line does that; this is not called). Measured before this: six malformed
+    documents at an exit were six refusals with no outcome."""
+    if not isinstance(vehicle_identity, str) or not isinstance(lane, str):
+        raise TypeError("vehicle_identity and lane must be text")
+    if not unreadable or not all(isinstance(u, Unreadable) for u in unreadable):
+        raise TypeError("unreadable must be one or more Unreadable markers")
+    named = "; ".join(u.describe() for u in unreadable)
+    return Answer(
+        outcome=Outcome.NOT_COVERED,
+        direction=Direction.EXIT,
+        vehicle_identity=vehicle_identity.strip(),
+        lane=lane.strip(),
+        pass_id=None,
+        pass_label=None,
+        covering_term=None,
+        reason=RECORD_UNREADABLE,
+        missing=None,
+        means=MEANS_EXIT_OUT_OF_TERMS,
+        detail=(
+            f"{len(unreadable)} record(s) handed in with this exit could not be read as what "
+            f"they claim to be, so the vehicle cannot be matched to a pass: {named} "
+            "Answered not-covered, never refused."
+        ),
+        exit_note=EXIT_IS_NEVER_REFUSED,
+        unmeasured=None,
+    )
 
 
 def _day_name(weekday: int) -> str:

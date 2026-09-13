@@ -21,6 +21,10 @@ import pytest
 
 from _guarantees import ALLOW_ENV, GUARANTEES
 
+#: The rendered-sentence collector and its judgement live in their own plugin,
+#: so this file stays the guarantee guard and nothing else.
+pytest_plugins = ["_rendered_sentences"]
+
 _ran: set[str] = set()
 #: Per guarantee: how many marked tests were skipped, and how many were
 #: collected. A guarantee half of whose tests skipped is NOT covered, and a

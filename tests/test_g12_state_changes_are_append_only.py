@@ -11,10 +11,20 @@ from the catalogue and walked transitively, never typed -- and the module
 issues no DELETE at all. Measured before the fix: ``DELETE FROM passes`` as the
 application role took the history from one row to none.
 
+**AND THE GARAGE REPAIR IS RECORDED THE SAME WAY** (migration 0002).
+``set_garage_timezone`` changes how every pass at the garage is read, and it
+left no record but the row -- measured at the re-gate. Now who, when, why, the
+old value and the new go into ``garage_changes``, append-only by the same
+grant, cascading from ``garages`` and ``tenants`` on which the application
+role holds no DELETE. The set of histories is DERIVED: every table the role
+may only SELECT and INSERT on, read from the catalogue, must be exactly the
+two published ones, and each is walked for cascade parents.
+
 Controls: the INSERT of the history row planted away; the grant on the
 history widened to UPDATE in the migration; the who/why check planted away;
 the revocation's registration update planted away; DELETE on ``passes`` granted
-back to the application role.
+back to the application role; the garage history's INSERT planted away; its
+grant widened; the repair's who/why check planted away.
 """
 
 from __future__ import annotations
@@ -145,19 +155,38 @@ def test_the_history_is_append_only_by_grant_and_by_a_refused_update(app, tenant
         app.rollback()
 
 
+HISTORIES = {"pass_state_changes": {"passes", "tenants"}, "garage_changes": {"garages", "tenants"}}
+
+
+def append_only_tables(app) -> set[str]:
+    """Every table the application role may only SELECT and INSERT on -- the
+    histories, read from the catalogue rather than typed."""
+    from garage_pass.store.postgres import tables_with_tenant_column
+
+    return {t for t in tables_with_tenant_column(app) if grants_on(app, t) == {"SELECT", "INSERT"}}
+
+
 @pytest.mark.guarantee("G12")
 @store_test
-def test_no_table_whose_deletion_cascades_into_the_history_grants_the_app_role_delete(
-    app, tenant_id
+def test_the_append_only_histories_are_exactly_the_published_two(app):
+    assert append_only_tables(app) == set(HISTORIES)
+
+
+@pytest.mark.guarantee("G12")
+@store_test
+@pytest.mark.parametrize("history", sorted(HISTORIES))
+def test_no_table_whose_deletion_cascades_into_a_history_grants_the_app_role_delete(
+    app, tenant_id, history
 ):
     """Derived, not listed: every ancestor by ON DELETE CASCADE, transitively."""
-    cascading = tables_cascading_into(app, "pass_state_changes")
-    assert {"passes", "tenants"} <= cascading, (
-        f"the walk did not find the two known parents; found {sorted(cascading)}"
+    cascading = tables_cascading_into(app, history)
+    assert HISTORIES[history] <= cascading, (
+        f"the walk did not find the known parents of {history}; found {sorted(cascading)}"
     )
-    assert "garages" not in cascading, "garages -> passes is RESTRICT; the walk over-reached"
+    if history == "pass_state_changes":
+        assert "garages" not in cascading, "garages -> passes is RESTRICT; the walk over-reached"
     offenders = sorted(t for t in cascading if "DELETE" in grants_on(app, t))
-    assert offenders == [], f"the application role can erase the history through {offenders}"
+    assert offenders == [], f"the application role can erase {history} through {offenders}"
     # and it really cannot: the way the code would make the call, at its role
     seed(app, tenant_id, GARAGE, (a_pass(),))
     with pytest.raises(psycopg.errors.InsufficientPrivilege):
@@ -218,3 +247,81 @@ def test_revoking_ends_the_passs_registrations_on_the_revocation_day(app, tenant
         ("CAR-1", date(2026, 6, 1), ENDED_BY_REVOCATION),
         ("CAR-2", date(2026, 7, 1), ENDED_BY_REVOCATION),
     ]
+
+
+# ---------------------------------------------------------------------------
+# the garage repair is recorded (migration 0002)
+# ---------------------------------------------------------------------------
+
+
+def garage_history(app, tenant_id):
+    return query(
+        app, tenant_id,
+        "SELECT field, old_value, new_value, changed_by, changed_at, reason FROM garage_changes "
+        "ORDER BY changed_at, created_at",
+    )
+
+
+@pytest.mark.guarantee("G12")
+@store_test
+def test_the_repair_records_who_when_why_the_old_value_and_the_new(app, owner, tenant_id):
+    from garage_pass.store.records import set_garage_timezone
+
+    with owner.cursor() as cursor:
+        cursor.execute(
+            "INSERT INTO garages (tenant_id, external_id, timezone, transient_available) "
+            "VALUES (%s, 'g-badtz', 'Mars/Olympus', true)", (tenant_id,),
+        )
+    assert garage_history(app, tenant_id) == []
+    with tenant(app, tenant_id) as cursor:
+        set_garage_timezone(cursor, tenant_id, "g-badtz", "America/Denver", by="operator",
+                            at=at(date(2026, 6, 2), 9), reason="stored from a laptop")
+        set_garage_timezone(cursor, tenant_id, "g-badtz", "America/Phoenix", by="owner",
+                            at=at(date(2026, 6, 3), 9), reason="the garage moved")
+    app.commit()
+    assert garage_history(app, tenant_id) == [
+        ("timezone", "Mars/Olympus", "America/Denver", "operator", at(date(2026, 6, 2), 9),
+         "stored from a laptop"),
+        ("timezone", "America/Denver", "America/Phoenix", "owner", at(date(2026, 6, 3), 9),
+         "the garage moved"),
+    ]
+    assert query(app, tenant_id, "SELECT timezone FROM garages") == [("America/Phoenix",)]
+
+
+@pytest.mark.guarantee("G12")
+@store_test
+@pytest.mark.parametrize("by,reason,field", [("", "r", "changed_by"), ("owner", " ", "reason"),
+                                             (None, "r", "changed_by")])
+def test_a_repair_without_who_or_why_is_refused_and_changes_nothing(
+    app, owner, tenant_id, by, reason, field
+):
+    from garage_pass.store.records import set_garage_timezone
+
+    with owner.cursor() as cursor:
+        cursor.execute(
+            "INSERT INTO garages (tenant_id, external_id, timezone, transient_available) "
+            "VALUES (%s, 'g-badtz', 'Mars/Olympus', true)", (tenant_id,),
+        )
+    with pytest.raises(f.Refused) as refused:
+        with tenant(app, tenant_id) as cursor:
+            set_garage_timezone(cursor, tenant_id, "g-badtz", "America/Denver", by=by,
+                                at=NOON_MONDAY, reason=reason)
+    app.rollback()
+    assert refused.value.code == f.REFUSAL_REPAIR_NEEDS_WHO_AND_WHY
+    assert refused.value.field == field
+    assert query(app, tenant_id, "SELECT timezone FROM garages") == [("Mars/Olympus",)]
+    assert garage_history(app, tenant_id) == []
+
+
+@pytest.mark.guarantee("G12")
+@store_test
+def test_the_garage_history_is_append_only_by_grant_and_by_a_refused_update(app, tenant_id):
+    assert grants_on(app, "garage_changes") == {"SELECT", "INSERT"}
+    assert "UPDATE" in grants_on(app, "garages"), "the control: the query sees UPDATE elsewhere"
+    seed(app, tenant_id, GARAGE, ())
+    for statement in ("UPDATE garage_changes SET reason = 'edited'",
+                      "DELETE FROM garage_changes", "DELETE FROM garages"):
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            with tenant(app, tenant_id) as cursor:
+                cursor.execute(statement)
+        app.rollback()

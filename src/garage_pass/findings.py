@@ -38,10 +38,12 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class Unreadable:
-    """A stored value this module refuses to read -- carried on the pass or the
-    garage it came from instead of raised, so an access call about it produces a
-    STATED answer and never an exception. Reached by a raw write, or by a
-    validator tightened after the row was stored.
+    """A value this module refuses to read -- carried on the pass or the garage
+    it came from instead of raised, so an access call about it produces a
+    STATED answer and never an exception. Reached by a stored row (a raw write,
+    or a validator tightened after the row was stored) and, at an EXIT, by a
+    document handed to the command line (``documents.load_or_degrade``) -- the
+    same carrier either way.
 
     ``code`` is a registered refusal (``UnknownTimezone`` is one), ``field`` the
     one that fails, ``detail`` the sentence an operator reads.
@@ -104,6 +106,7 @@ REFUSAL_STATE_TRANSITION_NOT_ALLOWED = "REFUSAL_STATE_TRANSITION_NOT_ALLOWED"
 REFUSAL_REVOKED_IS_TERMINAL = "REFUSAL_REVOKED_IS_TERMINAL"
 REFUSAL_EXPIRED_IS_DERIVED = "REFUSAL_EXPIRED_IS_DERIVED"
 REFUSAL_STATE_CHANGE_NEEDS_WHO_AND_WHY = "REFUSAL_STATE_CHANGE_NEEDS_WHO_AND_WHY"
+REFUSAL_REPAIR_NEEDS_WHO_AND_WHY = "REFUSAL_REPAIR_NEEDS_WHO_AND_WHY"
 REFUSAL_VEHICLE_ON_ANOTHER_PASS = "REFUSAL_VEHICLE_ON_ANOTHER_PASS"
 REFUSAL_PASS_NOT_REGISTRABLE = "REFUSAL_PASS_NOT_REGISTRABLE"
 REFUSAL_REGISTRATION_OUTLIVES_THE_PASS = "REFUSAL_REGISTRATION_OUTLIVES_THE_PASS"
@@ -121,6 +124,8 @@ REFUSAL_NO_OPEN_VISIT = "REFUSAL_NO_OPEN_VISIT"
 REFUSAL_VISIT_ALREADY_OPEN = "REFUSAL_VISIT_ALREADY_OPEN"
 REFUSAL_EXIT_BEFORE_ENTRY = "REFUSAL_EXIT_BEFORE_ENTRY"
 REFUSAL_CONSTRAINT = "REFUSAL_CONSTRAINT"
+REFUSAL_FIELD_WRONG_TYPE = "REFUSAL_FIELD_WRONG_TYPE"
+REFUSAL_TENANT_NOT_FOUND = "REFUSAL_TENANT_NOT_FOUND"
 
 REFUSALS: dict[str, str] = {
     REFUSAL_VALID_TO_BEFORE_VALID_FROM: (
@@ -174,8 +179,9 @@ REFUSALS: dict[str, str] = {
         "A required field is blank. The field is named beside this code."
     ),
     REFUSAL_HOLDER_EMAIL_MALFORMED: (
-        "The holder's email address does not look like one -- it needs one @ with "
-        "something on both sides. The email is the holder's identity in this "
+        "The holder's email address does not look like one -- it needs an @ with "
+        "something before it and something after it. The email is the holder's "
+        "identity in this "
         "module, so a malformed one identifies nobody."
     ),
     REFUSAL_UNKNOWN_FIELD: (
@@ -200,6 +206,13 @@ REFUSALS: dict[str, str] = {
     ),
     REFUSAL_STATE_CHANGE_NEEDS_WHO_AND_WHY: (
         "A state change records who made it and why, and one of those is blank."
+    ),
+    REFUSAL_REPAIR_NEEDS_WHO_AND_WHY: (
+        "A garage repair -- set-garage-timezone, which changes how every pass at the "
+        "garage is read -- records who made it, when and why into an append-only "
+        "history, and one of who or why is blank. The repair is refused and nothing "
+        "changes: a change to every clock in the building with no record of who made "
+        "it is the one write this module would not be able to explain afterwards."
     ),
     REFUSAL_VEHICLE_ON_ANOTHER_PASS: (
         "This vehicle identity is already registered to another pass at this "
@@ -243,8 +256,9 @@ REFUSALS: dict[str, str] = {
     ),
     REFUSAL_DOCUMENT_UNREADABLE: (
         "A document named on the command line could not be read: the file is "
-        "missing, unreadable, or not JSON. The detail names the path and what went "
-        "wrong."
+        "missing, not a regular file, unreadable, not JSON, or JSON the decoder "
+        "cannot decode (nested deeper than it can read, or a number longer than it "
+        "will convert). The detail names the path and what went wrong."
     ),
     REFUSAL_GARAGE_MISMATCH: (
         "A pass belongs to one garage and was asked about another. One garage per "
@@ -264,8 +278,23 @@ REFUSALS: dict[str, str] = {
     ),
     REFUSAL_CONSTRAINT: (
         "The database refused the write by a constraint the module did not catch "
-        "first. Named by its constraint so it is a refusal and not a traceback; two "
-        "writers racing end here."
+        "first, or rolled it back to break a deadlock at that constraint's lock. "
+        "Named by its constraint so it is a refusal and not a traceback; two writers "
+        "racing end here. Under a deadlock the detail carries the database's own "
+        "account of the cycle and asserts no cause the module did not observe."
+    ),
+    REFUSAL_FIELD_WRONG_TYPE: (
+        "A document field carries a value of the wrong type -- text where a list "
+        "belongs, a number where text belongs, an object where an id belongs. The "
+        "document is refused naming the field, the type it declares and the value; "
+        "it is never reinterpreted (text is not read as a list of its characters) and "
+        "never a traceback. The check is derived from the dataclass the document loads "
+        "into, so a field added later is covered the day it is added."
+    ),
+    REFUSAL_TENANT_NOT_FOUND: (
+        "No tenant row has the id given. The first write for a tenant -- create-garage "
+        "-- reads the tenant row before it writes, so an id nobody seeded is refused by "
+        "name rather than met at the database's foreign key."
     ),
 }
 
@@ -289,6 +318,9 @@ PASS_UNREADABLE = "PASS_UNREADABLE"
 GARAGE_UNREADABLE = "GARAGE_UNREADABLE"
 BLANK_IDENTITY = "BLANK_IDENTITY"
 BLANK_LANE = "BLANK_LANE"
+PASS_NOT_HANDED_IN = "PASS_NOT_HANDED_IN"
+PASS_DUPLICATED = "PASS_DUPLICATED"
+RECORD_UNREADABLE = "RECORD_UNREADABLE"
 
 NOT_COVERED_REASONS: dict[str, str] = {
     NO_PASS: (
@@ -323,18 +355,26 @@ NOT_COVERED_REASONS: dict[str, str] = {
         "wall-clock hours."
     ),
     PASS_UNREADABLE: (
-        "The pass this vehicle is registered to is stored with a value this module "
-        "refuses to read -- terms or a holder that would be refused at creation. "
-        "Reached only by a raw write or by a validator tightened after the pass was "
-        "stored. The detail names the pass and the field. At an EXIT this is "
+        "The pass this vehicle is registered to carries a value this module "
+        "refuses to read -- terms or a holder that would be refused at creation, a "
+        "holder or terms field that is missing or of the wrong type, or a field this "
+        "module does not know. "
+        "Reached by a stored row (a raw write, or a validator tightened after the "
+        "pass was stored) and, at an EXIT, by a pass document handed to the command "
+        "line whose id, garage, label and state read. The detail names the pass and "
+        "the field. At an EXIT this is "
         "out-of-terms and therefore chargeable at a transient garage: stated so "
         "nobody reads it as a free exit, and named so an operator can find the row "
         "and undo the charge."
     ),
     GARAGE_UNREADABLE: (
-        "The garage is stored with a timezone this system does not carry, so no "
-        "window, day or registration range can be evaluated. Answered ahead of every "
-        "term. At an EXIT this is out-of-terms; at an entry the call refuses to answer."
+        "The garage carries a value this module refuses to read -- a stored row "
+        "whose timezone this system does not carry, or, at an EXIT, a garage document "
+        "handed to the command line whose id, timezone and transient mode read but "
+        "which is refused for any reason (an unknown zone, an unknown field). Without "
+        "a clock no window, day or registration range can be evaluated, so it is "
+        "answered ahead of every term. At an EXIT this is out-of-terms; at an entry "
+        "the call refuses to answer."
     ),
     BLANK_IDENTITY: (
         "The vehicle identity is blank at an EXIT, so there is nothing to look up -- "
@@ -345,6 +385,43 @@ NOT_COVERED_REASONS: dict[str, str] = {
         "The lane is blank at an EXIT, so lane terms cannot be evaluated -- and an "
         "exit is answered, never refused. At an entry the same input is refused an "
         "answer."
+    ),
+    PASS_NOT_HANDED_IN: (
+        "A registration of this vehicle, in force on this day, names a pass that was "
+        "not handed in with the call -- the registrations and the passes disagree, "
+        "which is INCONSISTENT data, not a term, a state or a revocation. At an EXIT "
+        "it is answered, never raised: not-covered, naming the pass the registration "
+        "names, so an integrator assembling registrations from their own store can "
+        "see which one. Where another registration in force names a pass that was "
+        "handed in, that pass is evaluated and covers the vehicle if it covers it, "
+        "with the inconsistency named in the detail. (At an entry the call refuses to "
+        "answer, naming the field.) The store cannot produce this: it loads the "
+        "passes its registrations name."
+    ),
+    PASS_DUPLICATED: (
+        "The pass this vehicle is registered to was handed in more than once under "
+        "one id, and no copy covers this exit. Two passes carrying one id is "
+        "INCONSISTENT data: the module never picks a copy, whatever the order they "
+        "arrived in. At an EXIT every copy is evaluated -- the vehicle is covered if "
+        "any copy covers it, the duplication named -- and where none does, this is the "
+        "reason, with each copy's own reason in the detail. (At an entry the call "
+        "refuses to answer, naming the id.) The store cannot produce this: one id, one "
+        "pass, per garage."
+    ),
+    RECORD_UNREADABLE: (
+        "A record handed in with the call at an EXIT cannot be read as what it claims to "
+        "be -- a registration or a visit document with a field missing, of the wrong "
+        "type or unknown, or a pass or garage document too malformed to carry the marker "
+        "a stored row would (its id, garage, label or state unreadable). The module holds "
+        "the record and cannot read its content, so the exit is ANSWERED, never refused: "
+        "not-covered, naming the document and the field so the integrator can find it, "
+        "with the exit note and the OUT-OF-TERMS meaning every exit answer carries -- at "
+        "a transient garage chargeable, said so. A pass or garage document whose carrier "
+        "fields read is not this: it degrades to the unreadable pass or garage a stored "
+        "row becomes, and answers PASS_UNREADABLE or GARAGE_UNREADABLE only if the "
+        "vehicle is on it. (At an entry the same document is refused by name. The module "
+        "refuses only when it holds no record at all -- a file that is missing, not a "
+        "regular file, or cannot be read as JSON -- or no instant to read it at.)"
     ),
 }
 
@@ -397,6 +474,8 @@ MISSING_LANE = "lane"
 MISSING_ONE_PASS = "registration.pass_id"
 MISSING_TIMEZONE = "garage.timezone"
 UNREADABLE_TERMS = "pass.terms"
+MISSING_PASS_HANDED_IN = "passes"
+DUPLICATED_PASS_ID = "passes[].id"
 
 REFUSED_TO_ANSWER: dict[str, str] = {
     MISSING_TRANSIENT_MODE: (
@@ -431,5 +510,23 @@ REFUSED_TO_ANSWER: dict[str, str] = {
         "The pass this vehicle is registered to is stored with terms or a holder "
         "this module refuses to read, and an ENTRY on it is not guessed. The detail "
         "names the pass and the field. (An exit is answered not-covered, naming both.)"
+    ),
+    MISSING_PASS_HANDED_IN: (
+        "A registration of this vehicle, in force on this day, names a pass that is "
+        "not among the passes handed in, at an ENTRY. The registrations and the "
+        "passes disagree and the module will not guess which is right: hand in the "
+        "pass the registration names, or the registrations that match the passes. "
+        "(At an exit the vehicle is answered not-covered naming that pass -- or "
+        "covered by another pass in force that was handed in, the inconsistency "
+        "named. An exit is never refused and never raises on data.)"
+    ),
+    DUPLICATED_PASS_ID: (
+        "The pass this vehicle is registered to was handed in more than once under one "
+        "id, at an ENTRY -- whether or not the copies agree, since the caller who sent "
+        "one id twice does not know which they meant, and the module will not resolve "
+        "an inconsistency it should be naming. Measured before this: the LAST copy in "
+        "the list won silently, so the same inputs in a different order admitted or "
+        "refused the same car. Hand in each pass once. (At an exit every copy is "
+        "evaluated and the vehicle is covered if any covers it, the duplication named.)"
     ),
 }

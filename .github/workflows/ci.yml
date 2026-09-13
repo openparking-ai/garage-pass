@@ -248,6 +248,25 @@ jobs:
           python scripts/generate_contract.py --check
           git diff --exit-code docs/CONTRACT.md
 
+      - name: Every route-asserting sentence is judged by content, and none is false -- written or rendered
+        # The registries, the guarantees, README, CONTRACT AND every string the
+        # package renders (the details an operator reads) -- by AST and by import,
+        # never a hand list. A sentence that says where a code comes from carries
+        # a recorded judgement keyed to its CONTENT AND ITS FILE, so an edit makes
+        # it unjudged -- and so does the same sentence standing in a file it was
+        # not judged in -- and turns this red until someone judges it again. The
+        # self-test first: a falsehood planted into a rendered detail must be named
+        # before the clean reading is trusted -- and the RENDERED half proven here
+        # too, on a copy of the package rendered in a subprocess with no database:
+        # a run-time spelling of a falsehood and a one-word change beside a route
+        # phrase both read UNJUDGED. The rendered half itself runs where every door
+        # renders: the test job's full run (tests/_rendered_sentences.py, at
+        # sessionfinish, on both interpreters). A step here, not a job: the
+        # required contexts are exactly the seven branch protection names.
+        run: |
+          python scripts/sweep_route_sentences.py --self-test
+          python scripts/sweep_route_sentences.py
+
       - name: Generation is not verification
         # The step above proves the document matches the generator. These tests
         # plant values that contradict the prose and require the prose to change.

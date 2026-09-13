@@ -15,10 +15,21 @@ $ garage-pass access --garage garage.json --pass pass.json \
 
 And, against the store: create the pass, register the vehicle, record what the
 lane saw, answer the lane from what is actually recorded. Exit status 0 covered,
-1 not covered, 2 refused to answer, 3 the request was refused — and a refusal is
-always the JSON `{"refused", "field", "detail"}`, never a traceback: a mistyped
-timezone, a document that is not JSON, an instant without an offset, a day that
-does not parse are each refused naming the option and the value.
+1 not covered, 2 refused to answer or the machine's configuration (one sentence
+on stderr: no DSN, a database that does not connect or is not migrated, a role
+without its grants, no timezone database), 3 the request was refused — and a
+refusal is always the JSON `{"refused", "field", "detail"}`, never a traceback:
+a mistyped timezone, a document that is not JSON, an instant without an offset,
+a day that does not parse, and — at an entry — a field of the wrong type are each
+refused naming the field and the value; at an exit a document the module cannot
+read is answered not-covered naming the field, because an exit is never refused. **Every value a document carries is checked against
+the type the dataclass it loads into declares** — derived from the annotation,
+not from a list, so a field added later is covered the day it is added — and a
+string is never reinterpreted as a list of its characters. What the database
+driver raises that the store did not turn into a named refusal is the sentence
+on stderr with its SQLSTATE, exit 2, mapped last: the refusals the store names
+(a unique violation, the one-car-one-pass exclusion, a deadlock with its DETAIL)
+keep their names.
 
 ```
 $ garage-pass create-pass --tenant T --garage garage-downtown --pass pass.json --by owner --at ...
@@ -87,7 +98,7 @@ name, naming the state.
 **Covered**, with the pass and the term that covers it. **Not covered**, with a
 plain reason: no pass · not active · not started · expired · suspended ·
 revoked · direction not allowed · wrong lane · outside window · out of visits ·
-over maximum stay · a pass or garage stored with a value the module cannot read
+over maximum stay · a pass or garage carrying a value the module cannot read
 · at an exit, a blank identity or lane. Or — **at an entry only** — **refused to
 answer**, naming the field that would let it: a garage that has not stated
 whether it sells transient parking, a blank identity, a pass whose stored terms
@@ -116,7 +127,37 @@ all. A pass stored with terms the module refuses to read — a raw write, or a
 validator tightened after the pass was stored — is answered not-covered at the
 exit, naming the pass and the field, which at a transient garage means the stay
 is chargeable: said so, so nobody reads it as a free exit, and named so the
-operator can find the row.
+operator can find the row. Inconsistent data is answered too: a registration
+naming a pass that was not handed in is not-covered at the exit, naming that
+pass, never an exception; a pass handed in twice under one id is never resolved
+by the order the copies arrived in — every copy is evaluated, the holder is
+covered if any copy covers, the duplication is named, and the same inputs in any
+order give the same answer (at an entry the call refuses to answer, naming the
+id, whether or not the copies agree).
+
+**What that sentence does not cover, named because it cannot be otherwise — a
+class proven closed by execution, not a list:** a value of a type the signature
+does not accept — for any parameter of the call, or any element of its
+sequences; an instant with no timezone is one — raises on the first touch,
+before there is a movement to answer about, and never answers (the test
+enumerates the signature and hands every parameter a wrong-typed value); and a
+machine with no timezone database at all raises by its own name, never as an
+unknown zone, because nothing can be read on it. Neither is a term, a state, a
+revocation or data.
+
+**The module answers when it holds a record whose content it cannot read, and
+refuses when it holds no record at all, or no instant to read it at.** A stored
+row it cannot read loads unreadable and answers; a document it cannot read — a
+field missing, of the wrong type or unknown, a contradiction, an unknown zone —
+is answered at an exit the same way: a pass or garage document degrades to the
+unreadable pass or garage a stored row becomes, a registration or visit
+document to a not-covered answer naming the document and the field. At an entry
+the same document is refused by name. A file that is missing or is not JSON,
+and an instant that does not parse, are refused in both directions: there is no
+record, or no now. (A missing file breaks the integrator's own invocation at
+every lane in both directions — an outage of the integration, not a wrong
+answer; a malformed record breaks one parker while everything else works, and
+that is the car that must not be stuck.)
 
 ### What not-covered means depends on the garage
 
@@ -157,11 +198,11 @@ pip install -e '.[store]'   # with the Postgres store
 pip install -e '.[dev]'     # to run the suite and the controls
 ```
 
-The store needs a database with the migration applied as its owner, and the
-application role given a login:
+The store needs a database with the migrations applied in order as its owner,
+and the application role given a login:
 
 ```
-psql "$DSN" -v ON_ERROR_STOP=1 -f migrations/0001_garages_passes_registrations_and_rls.sql
+for m in migrations/*.sql; do psql "$DSN" -v ON_ERROR_STOP=1 -f "$m"; done   # 0001, then 0002
 GARAGE_PASS_APP_PASSWORD=... python scripts/ensure-app-role.py "$DSN"
 ```
 
@@ -175,8 +216,22 @@ refused-to-answer at an entry, naming `garage.timezone`), but takes no write
 until it is repaired; the repair is the one write it takes:
 
 ```
-$ garage-pass set-garage-timezone --tenant T --garage garage-downtown --timezone America/Denver
+$ garage-pass set-garage-timezone --tenant T --garage garage-downtown --timezone America/Denver \
+      --by operator --at 2026-06-01T12:00:00-06:00 --reason "stored from a laptop as america/denver"
 ```
+
+The repair is recorded — who, when, why, the old value and the new — into a
+garage history the application can only append to, exactly as a pass state
+change is; a repair with no who or no why is refused and changes nothing. The
+zone name is checked case-exactly against the tz database's own names, so
+`america/denver` is refused on every filesystem, not only a case-sensitive one.
+
+**A timezone database is required.** The engine reads every term in the
+garage's local day and cannot read one without a tz database; it does not ship
+one. On a machine with none — no system zoneinfo and no Python `tzdata`
+package — every command says so by name on stderr and exits 2, rather than
+refusing each good zone as unknown. Install the system tz database (`tzdata`
+on Debian, Ubuntu, Alpine and the RPM family) or `pip install tzdata`.
 
 The suite reads `GARAGE_PASS_TEST_DSN` for a database it may drop and rebuild.
 Without one, the store-backed tests skip and the run **fails**, on purpose: a

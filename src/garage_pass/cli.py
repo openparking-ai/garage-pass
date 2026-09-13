@@ -5,13 +5,21 @@
         [--registrations r.json] [--visits v.json] \
         --vehicle ID --lane L --direction entry|exit --at 2026-04-01T09:00:00-06:00
 
-Exit status: 0 covered, 1 not covered, 2 refused to answer, 3 the request was
-refused (a contradiction, a bad document, an unknown timezone, a malformed
-instant or day). The answer is printed as JSON, and there is no money in it.
+Exit status: 0 covered, 1 not covered, 2 refused to answer OR the machine's
+configuration (a sentence on stderr: no DSN, a database that does not connect
+or is not migrated, a role without its grants, no timezone database), 3 the
+request was refused (a contradiction, a bad document, a field of the wrong
+type, an unknown timezone, a malformed instant or day). At an EXIT a document
+that is JSON but cannot be read is not refused but answered not-covered naming
+the field, exit 1 -- the module answers when it holds a record whose content it
+cannot read, and refuses when it holds no record at all (a file missing, not a
+regular file, or not JSON) or no instant (``_access_from_documents``). The answer is printed as
+JSON, and there is no money in it.
 
 Against the store (``GARAGE_PASS_DSN``, ``--tenant``): ``create-garage``,
 ``set-garage-timezone`` (the repair for a garage stored with a timezone the
-system does not carry -- the one write that takes an unreadable garage),
+system does not carry -- the one write that takes an unreadable garage, and it
+records who, when and why like a state change does),
 ``create-pass``, ``register-vehicle``, ``end-registration``, ``set-state``,
 ``record-entry``, ``record-exit`` and ``access-in-store``. A store command with
 no ``GARAGE_PASS_DSN``, or one the database refuses to connect, prints a
@@ -21,13 +29,33 @@ sentence to stderr and exits 2.
 raises -- and ``UnknownTimezone`` is one -- reaches this boundary and is printed
 as ``{"refused": code, "field": ..., "detail": ...}`` with exit 3. What the
 libraries this boundary calls can raise is mapped here too: a document that
-cannot be read as JSON, an instant or a day that does not parse, a naive
-instant, a registrations or visits document that is not a list. Measured
+cannot be read as JSON -- missing, not JSON, not UTF-8, or valid JSON nested
+deeper than the decoder reads (``_document``) -- an instant or a day that does
+not parse, a naive
+instant, a registrations or visits document that is not a list, a field of the
+wrong type (every document value is checked against the type its dataclass
+declares, in ``documents.py``, before anything is built from it). Measured
 before this: ``create-garage`` with a mistyped zone printed sixty lines of
-``zoneinfo`` stack. ``tests/test_g18_...`` enumerates every ``raise`` in the
+``zoneinfo`` stack; a registration document with no ``vehicle_identity`` was an
+``AttributeError`` at an exit.
+
+**WHAT THE DATABASE DRIVER RAISES AND THE MODULE DID NOT NAME IS THE MACHINE'S
+CONFIGURATION**: one sentence on stderr naming the SQLSTATE, exit 2, the shape
+of a DSN that does not connect -- an unmigrated database, a role without its
+grants, a DSN that is not one. It is the LAST resort, after every named
+refusal has had its chance: the module turns the SQLSTATEs it knows -- a unique
+violation, the one-car-one-pass exclusion, a deadlock -- into named refusals
+INSIDE the store, so the generic mapping here sees only what nothing named.
+Measured before this: those were tracebacks, four of them in the L3's census.
+
+``tests/test_g18_...`` enumerates every ``raise`` in the
 package by AST and classifies each as rendered here or a programming error a
 command cannot reach, so a new exception class fails that test until it is
-classified.
+classified. A value that starts with a dash (``--timezone -06:00``) reaches the
+module and is refused by name rather than read by argparse as an option
+(``_values_that_start_with_a_dash``). A machine with no timezone database at
+all is a sentence on stderr and exit 2, like a DSN that does not connect: the
+machine's configuration, not the request.
 """
 
 from __future__ import annotations
@@ -36,25 +64,30 @@ import argparse
 import dataclasses
 import json
 import os
+import stat
 import sys
 from datetime import date, datetime
 from enum import Enum
 from typing import Any
 from uuid import UUID
 
-from garage_pass.access import Outcome, access
+from garage_pass.access import Answer, Outcome, access, exit_on_unreadable_records
 from garage_pass.documents import (
     load_garage,
+    load_or_degrade,
     load_pass,
     load_registration,
     load_visit,
-    read_json,
 )
 from garage_pass.findings import (
     REFUSAL_DOCUMENT_UNREADABLE,
     REFUSAL_FIELD_BLANK,
     Refused,
+    Unreadable,
 )
+from garage_pass.garage import Garage
+from garage_pass.localday import TimezoneDatabaseUnavailable
+from garage_pass.passes import Pass, Registration, Visit
 from garage_pass.states import parse_state
 from garage_pass.terms import Direction
 
@@ -104,6 +137,9 @@ def _parser() -> argparse.ArgumentParser:
     s.add_argument("--tenant", required=True, type=UUID, help="the tenant's uuid")
     s.add_argument("--garage", required=True, help="the garage's external id")
     s.add_argument("--timezone", required=True, help="an IANA name such as America/Denver")
+    s.add_argument("--by", required=True, help="who repaired it, for the garage's history")
+    s.add_argument("--at", required=True, help="when, as an ISO instant with an offset")
+    s.add_argument("--reason", required=True, help="why, for the garage's history")
 
     def store(name: str, help_: str) -> argparse.ArgumentParser:
         s = sub.add_parser(name, help=help_)
@@ -155,6 +191,61 @@ def _movement(s: argparse.ArgumentParser) -> None:
 # ---- the boundary: what the libraries raise, rendered as refusals ----------
 
 
+def _access_from_documents(args: argparse.Namespace) -> Answer:
+    """The access answer from documents. THE LINE: the module answers when it
+    holds a record whose content it cannot read; it refuses when it holds no
+    record at all, or no instant to read it at. So the instant (``--at``) and
+    the files (missing, not JSON, or JSON the decoder cannot decode) refuse in
+    both directions; a document that IS
+    JSON but cannot be read as a garage, pass, registration or visit is refused
+    at an ENTRY and ANSWERED at an EXIT -- degraded the way a stored row with
+    the same content is (``documents.load_or_degrade``), so a pass or garage
+    document becomes the unreadable carrier ``access`` already answers on, and
+    a registration, a visit or a carrier that cannot be built is the
+    not-covered answer ``exit_on_unreadable_records`` states. Measured before
+    this: the same six documents refused at an exit and answered from the
+    store."""
+    direction = Direction(args.direction)
+    at = _at(args.at)
+    garage_document = _document(args.garage, "--garage")
+    pass_documents = [_document(p, "--pass") for p in args.passes]
+    if direction is not Direction.EXIT:
+        return access(
+            garage=load_garage(garage_document),
+            passes=[load_pass(d) for d in pass_documents],
+            registrations=[load_registration(r)
+                           for r in _list(args.registrations, "--registrations")]
+            if args.registrations is not None else [],
+            visits=[load_visit(v) for v in _list(args.visits, "--visits")]
+            if args.visits is not None else [],
+            vehicle_identity=args.vehicle, lane=args.lane, direction=direction, at=at,
+        )
+    loaded: list[Any] = [load_or_degrade(Garage, garage_document, "garage")]
+    loaded += [load_or_degrade(Pass, d, "pass") for d in pass_documents]
+    for option, cls, what in (("registrations", Registration, "registration"),
+                              ("visits", Visit, "visit")):
+        path = getattr(args, option)
+        if path is None:  # the option was not given -- NOT ``if not path``: an empty
+            continue      # string is a path that cannot be read, never "not given"
+        document = _document(path, f"--{option}")
+        if not isinstance(document, list):
+            loaded.append(Unreadable(REFUSAL_FIELD_BLANK, f"--{option}",
+                                     f"--{option} {path!r} must be a JSON list, not "
+                                     f"{type(document).__name__}."))
+            continue
+        loaded += [load_or_degrade(cls, entry, f"{what}[{i}]") for i, entry in enumerate(document)]
+    unreadable = [u for u in loaded if isinstance(u, Unreadable)]
+    if unreadable:
+        return exit_on_unreadable_records(unreadable, vehicle_identity=args.vehicle, lane=args.lane)
+    return access(
+        garage=loaded[0],
+        passes=[p for p in loaded if isinstance(p, Pass)],
+        registrations=[r for r in loaded if isinstance(r, Registration)],
+        visits=[v for v in loaded if isinstance(v, Visit)],
+        vehicle_identity=args.vehicle, lane=args.lane, direction=direction, at=at,
+    )
+
+
 def _at(text: str, option: str = "--at") -> datetime:
     """An ISO instant WITH an offset, or a refusal naming the option and the
     value. A naive instant would be read as the running machine's local time,
@@ -181,11 +272,93 @@ def _day(text: str, option: str) -> date:
 
 
 def _document(path: str, option: str) -> Any:
-    """``read_json``, with a missing, unreadable or non-JSON file refused by
-    name rather than raised as ``FileNotFoundError`` or ``JSONDecodeError``."""
+    """The document at ``path`` decoded, with a file the boundary cannot read
+    refused by name -- never raised. THIS IS THE ONE DECODE BOUNDARY: every
+    document argument (``--garage``, ``--pass``, ``--registrations``,
+    ``--visits``, and the store commands' documents) comes through here, so
+    what is caught here is caught for all of them at once.
+
+    **THE CHECK AND THE READ ARE THE SAME FILE.** The path is resolved ONCE,
+    by ``os.open`` with ``O_NONBLOCK``; everything after that asks the
+    DESCRIPTOR, never the name again: ``fstat`` says whether it is a regular
+    file, and the bytes that are decoded are read from that same descriptor.
+    Measured before this: the guard was ``Path(path).is_file()`` and the read
+    was ``open(path)`` -- two resolutions of the name -- and a writer swapping
+    the file for a named pipe between the two put the command line back into
+    the blocking ``open()`` the guard was written to prevent (3 hangs in
+    620,000 racing calls, both interpreters; 0 in 400,000 without the race).
+    A check on the name and a read on the name is a race whatever the check
+    says; a check on the descriptor is not, because nothing can change what an
+    open descriptor refers to. ``O_NONBLOCK`` is what makes the single open
+    safe on a pipe with no writer -- it returns instead of blocking -- and on
+    a regular file it changes nothing about the read. Nothing here is a
+    timeout: a timeout would be a number nobody set, and would make a slow
+    filesystem read the same as a hostile one.
+
+    **WHAT IS REFUSED, BY NAME.** A path that does not exist (``ENOENT``)
+    reads *does not exist*; anything that opens but is not a regular file --
+    a directory, a device (``/dev/null`` reads empty; ``/dev/zero`` never
+    ends), a pipe, a socket -- reads *is not a regular file*, decided by
+    ``S_ISREG`` on the descriptor before a byte is read; every other
+    ``OSError`` the open or the read raises carries the system's own text --
+    ``EACCES``, ``ELOOP``, ``ENOTDIR`` (a regular file named with a trailing
+    slash is this: the kernel reads the slash as "a directory", where the
+    path-based reader before this silently dropped it and read the file),
+    ``ENAMETOOLONG``, a socket (``ENXIO`` on Linux, ``EOPNOTSUPP`` on a Mac -- it
+    cannot be opened at all), a device with nothing behind it (``/dev/tty``
+    with no terminal, ``ENXIO``). ``os.open`` follows symlinks, so a symlink to
+    a regular file still reads (tested). The descriptor is closed on every path
+    out, refusals included.
+
+    **WHAT IS CAUGHT IS WHAT THE CALLS CAN RAISE, BY NAME -- NOT A BARE
+    ``Exception``**, which would turn the next programming error into a
+    refusal and make it invisible. ``os.open`` and ``os.fstat`` raise
+    ``OSError``, and ``ValueError`` on a NUL byte in the path; the text read
+    raises ``UnicodeDecodeError`` (a ``ValueError`` subclass) when the bytes
+    are not text in the interpreter's locale encoding -- the SAME decoding
+    ``Path.read_text`` performed before this, deliberately unchanged, so no
+    document that was refused as undecodable is decoded now (``json.loads``
+    handed raw bytes would auto-detect UTF-16 and UTF-32, and would turn a
+    boundary refusal into content); ``json.loads`` raises ``JSONDecodeError``
+    (not JSON; a ``ValueError`` subclass) and ``RecursionError`` -- a document
+    that IS valid JSON but is nested deeper than the decoder can read (996
+    levels, 1,992 bytes, on Python 3.11). That is every class the calls
+    document, so the tuple is complete; ``MemoryError`` is deliberately not
+    here: a document too large for the machine is the machine's resource, the
+    same family as a machine with no timezone database, and is not blamed on
+    the request. Measured before this: the nested document was a traceback in
+    BOTH directions, exit 1 with no answer -- the L5 gate's B1 -- because
+    ``RecursionError`` is a ``RuntimeError``, not a ``ValueError``, and the
+    catch did not name it."""
     try:
-        return read_json(path)
-    except (OSError, ValueError) as exc:
+        # INSIDE the try, all of it: os.open raises OSError for every shape
+        # of unreadable path (ENOENT, EACCES, ELOOP, ENOTDIR, ENAMETOOLONG),
+        # and ValueError for a NUL byte; a path past NAME_MAX outside the try
+        # was 16 tracebacks of 432 in the round before this.
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+        except FileNotFoundError:
+            raise Refused(
+                REFUSAL_DOCUMENT_UNREADABLE, option,
+                f"{option} {path!r} could not be read: it does not exist.",
+            ) from None
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise Refused(
+                    REFUSAL_DOCUMENT_UNREADABLE, option,
+                    f"{option} {path!r} could not be read: it is not a regular file "
+                    f"(a directory, a device, a pipe or a socket).",
+                )
+            # fdopen takes ownership of the descriptor: from here the `with`
+            # closes it, on the read's success and on its failure alike
+            handle = os.fdopen(fd, "r")
+        except BaseException:
+            os.close(fd)
+            raise
+        with handle:
+            text = handle.read()
+        return json.loads(text)
+    except (OSError, ValueError, RecursionError) as exc:
         raise Refused(
             REFUSAL_DOCUMENT_UNREADABLE, option,
             f"{option} {path!r} could not be read: {exc}",
@@ -203,14 +376,101 @@ def _list(path: str, option: str) -> list:
     return document
 
 
+def _values_that_start_with_a_dash(parser: argparse.ArgumentParser, argv: list[str]) -> list[str]:
+    """``--timezone -06:00`` reaches the MODULE, not argparse's usage error.
+
+    argparse reads a token that starts with ``-`` as an option unless it looks
+    like a negative number, so ``--timezone -06:00`` was "expected one
+    argument", a usage message and exit 2 -- a third shape beside the JSON
+    refusal and the traceback G18 forbids, found by an operator walking the
+    product. The value belongs to the module, which refuses it by name
+    (``-06:00`` is not an IANA name). So: where an option that takes one value
+    is followed by a token that starts with ``-`` and is not itself an option
+    of that command, the two are joined as ``--option=value``, which argparse
+    always accepts. Every option string is read from the parser, not typed.
+    """
+    commands = {
+        name: sub for action in parser._actions
+        if isinstance(action, argparse._SubParsersAction)
+        for name, sub in action.choices.items()
+    }
+    sub = commands.get(argv[0]) if argv else None
+    if sub is None:
+        return argv
+    options = {opt for action in sub._actions for opt in action.option_strings}
+    takes_one = {
+        opt for action in sub._actions if action.nargs in (None, 1)
+        and not isinstance(action, argparse._StoreConstAction)
+        for opt in action.option_strings
+    }
+    joined: list[str] = []
+    skip = False
+    for i, token in enumerate(argv):
+        if skip:
+            skip = False
+            continue
+        following = argv[i + 1] if i + 1 < len(argv) else None
+        if (
+            token in takes_one and following is not None
+            and following.startswith("-") and following not in options
+        ):
+            joined.append(f"{token}={following}")
+            skip = True
+        else:
+            joined.append(token)
+    return joined
+
+
 def main(argv: list[str] | None = None) -> int:
-    args = _parser().parse_args(argv)
+    parser = _parser()
+    argv = list(sys.argv[1:] if argv is None else argv)
+    args = parser.parse_args(_values_that_start_with_a_dash(parser, argv))
     try:
         return _run(args)
     except Refused as refused:
-        print(json.dumps({"refused": refused.code, "field": refused.field,
-                          "detail": refused.detail}, indent=2))
+        print(json.dumps(_refusal(refused), indent=2))
         return EXIT_REFUSED_REQUEST
+    except TimezoneDatabaseUnavailable as missing:
+        # The MACHINE's configuration, not a refusal of the request: one
+        # sentence, exit 2, the shape of the unset DSN below. Not the JSON
+        # refusal, which would name a field the operator can change.
+        print(str(missing), file=sys.stderr)
+        return 2
+
+
+#: What a SQLSTATE class says about WHOSE problem it is, in the operator's
+#: words. Derived from the class digits the standard defines, not from a list
+#: of the errors somebody has met; every class not named here is the last line.
+_SQLSTATE_CLASSES = {
+    "08": "the connection to the database failed",
+    "28": "the database refused the login",
+    "3D": "the database named does not exist",
+    "40": "the database rolled this command back to break a deadlock or a serialization "
+          "failure; nothing was written -- run it again",
+    "42": "the database is not set up for this command (a missing table or function, or a "
+          "role without its grants): the machine's configuration, not the request",
+    "53": "the database is out of a resource (connections, disk, memory)",
+    "57": "the database is shutting down or cancelled the command",
+}
+
+
+def _refusal(refused: Refused) -> dict[str, Any]:
+    """The JSON refusal the operator reads -- THE ONE PLACE a ``Refused`` becomes
+    output. Everything the command line refuses passes through here, so this is
+    where the test suite's rendered-sentence collector stands (``tests/conftest.py``):
+    a refusal caught and degraded inside the module never reaches an operator and
+    is not collected; one that reaches this function is, by definition, read."""
+    return {"refused": refused.code, "field": refused.field, "detail": refused.detail}
+
+
+def _driver_sentence(exc: Exception) -> str:
+    """One line for a database error the store did not name: what class of
+    problem it is, the driver's class and SQLSTATE, the first line of its
+    message. The DSN is never in it."""
+    state = getattr(exc, "sqlstate", None) or "?"
+    what = _SQLSTATE_CLASSES.get(state[:2], "the database could not run this command")
+    message = str(exc).strip().splitlines()[0] if str(exc).strip() else repr(exc)
+    return f"{what}: {type(exc).__name__} (SQLSTATE {state}): {message}"
 
 
 def _run(args: argparse.Namespace) -> int:
@@ -221,18 +481,7 @@ def _run(args: argparse.Namespace) -> int:
         return 0
 
     if args.command == "access":
-        answer = access(
-            garage=load_garage(_document(args.garage, "--garage")),
-            passes=[load_pass(_document(p, "--pass")) for p in args.passes],
-            registrations=[load_registration(r)
-                           for r in _list(args.registrations, "--registrations")]
-            if args.registrations else [],
-            visits=[load_visit(v) for v in _list(args.visits, "--visits")] if args.visits else [],
-            vehicle_identity=args.vehicle,
-            lane=args.lane,
-            direction=Direction(args.direction),
-            at=_at(args.at),
-        )
+        answer = _access_from_documents(args)
         _print(answer)
         return EXIT_BY_OUTCOME[answer.outcome]
 
@@ -249,9 +498,10 @@ def _run(args: argparse.Namespace) -> int:
 
     try:
         connection = connect(dsn)
-    except psycopg.OperationalError as exc:
+    except psycopg.Error as exc:
         # Configuration, not a refusal of the request: one sentence, exit 2,
-        # like the unset DSN above. The DSN itself is not echoed.
+        # like the unset DSN above. The DSN itself is not echoed. A DSN that
+        # is not a conninfo string at all (ProgrammingError) is the same shape.
         print(f"GARAGE_PASS_DSN did not connect: {exc}".strip(), file=sys.stderr)
         return 2
     connection.autocommit = False
@@ -269,7 +519,10 @@ def _run(args: argparse.Namespace) -> int:
                 records.store_garage(cursor, args.tenant, garage)
                 out: Any = {"stored": garage.id, "transient_available": garage.transient_available}
             elif args.command == "set-garage-timezone":
-                out = records.set_garage_timezone(cursor, args.tenant, args.garage, args.timezone)
+                out = records.set_garage_timezone(
+                    cursor, args.tenant, args.garage, args.timezone,
+                    by=args.by, at=_at(args.at), reason=args.reason,
+                )
             elif args.command == "create-pass":
                 pass_ = load_pass(_document(args.pass_, "--pass"))
                 records.create_pass(cursor, args.tenant, args.garage, pass_, by=args.by,
@@ -309,6 +562,15 @@ def _run(args: argparse.Namespace) -> int:
     except Refused:
         connection.rollback()
         raise
+    except psycopg.Error as exc:
+        # THE LAST RESORT, deliberately after Refused: a driver error the store
+        # did not turn into a named refusal is one sentence with its SQLSTATE,
+        # exit 2, never a traceback -- and never a refusal of the request's
+        # content, because nothing about the content was judged. Nothing the
+        # store names by SQLSTATE reaches here: those are Refused above.
+        connection.rollback()
+        print(_driver_sentence(exc), file=sys.stderr)
+        return 2
     finally:
         connection.close()
 

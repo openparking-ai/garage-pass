@@ -82,7 +82,9 @@ G11 = "tests/test_g11_nothing_real_in_the_tree.py"
 G12 = "tests/test_g12_state_changes_are_append_only.py"
 G13 = "tests/test_g13_the_label_is_only_a_label.py"
 G17 = "tests/test_g17_a_stored_row_the_module_cannot_read_still_answers.py"
+G18 = "tests/test_g18_the_command_line_refuses_never_tracebacks.py"
 MIGRATION = "migrations/0001_garages_passes_registrations_and_rls.sql"
+MIGRATION_0002 = "migrations/0002_garage_changes_are_recorded.sql"
 
 #: control id -> (test target, source file, anchor, replacement, what breaks)
 CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
@@ -849,17 +851,17 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
     ),
     "G17/repair-validates": (
         G17, "store/records.py",
-        '    zone(require_text(timezone, "garage.timezone"))  # refuses an unknown zone by name',
-        '    require_text(timezone, "garage.timezone")  # PLANTED: any text is a timezone',
+        "    zone(new_value)  # refuses an unknown zone by name",
+        "    pass  # PLANTED: any text is a timezone",
         "the repair stores a zone the system does not carry -- the defect it exists to repair",
     ),
     "G18/traceback": (
         "tests/test_g18_the_command_line_refuses_never_tracebacks.py", "cli.py",
-        "    except Refused as refused:\n        print(json.dumps({\"refused\": refused.code,",
+        "    except Refused as refused:\n        print(json.dumps(_refusal(refused), indent=2))",
         "    except Refused as refused:\n"
         "        if refused.field == \"garage.timezone\":\n"
         "            raise  # PLANTED: the traceback is back\n"
-        "        print(json.dumps({\"refused\": refused.code,",
+        "        print(json.dumps(_refusal(refused), indent=2))",
         "an unknown timezone at the command line is a traceback again -- the gate's finding",
     ),
     "G18/sweep": (
@@ -868,6 +870,400 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
         "        raise RuntimeError(  # PLANTED: an exception class nobody classified\n"
         "            f\"{what} must carry a timezone.",
         "a new exception class is raised in the package and the sweep does not notice it",
+    ),
+    # --- the outside pass's fixes ------------------------------------------------
+    "G4/dangling-registration": (
+        G4, "access.py",
+        source(
+            "    if dangling and not effective:",
+            "        r = dangling[0]",
+        ),
+        source(
+            "    if dangling and not effective:",
+            "        r = dangling[0]",
+            "        from garage_pass.findings import REFUSAL_PASS_NOT_FOUND, Refused  # PLANTED",
+            "        raise Refused(REFUSAL_PASS_NOT_FOUND, 'registration.pass_id',",
+            "                      f'PLANTED: the raise is back for {r.pass_id!r}')",
+        ),
+        "THE RAISE PLANTED BACK: a registration naming a pass not handed in raises at an "
+        "exit again -- the outside review's counterexample, an exception at an exit lane",
+    ),
+    "G17/case-fold": (
+        G17, "localday.py",
+        "    if name not in names:\n        raise UnknownTimezone(",
+        "    name = next((n for n in names if n.lower() == name.lower()), name)  # PLANTED\n"
+        "    if name not in names:\n        raise UnknownTimezone(",
+        "the lookup folds its case and canonicalises: 'america/denver' is accepted as "
+        "America/Denver on EVERY filesystem, so this control reads the same on a "
+        "case-insensitive Mac and on case-sensitive CI -- which is the whole defect",
+    ),
+    "G17/empty-set-blames-the-value": (
+        G17, "localday.py",
+        "    if not names:\n        raise TimezoneDatabaseUnavailable()",
+        "    if not names:\n        raise UnknownTimezone('PLANTED: an empty set refuses the "
+        "value as unknown')",
+        "a machine with no tz database refuses every good zone as UNKNOWN, blaming the "
+        "caller's input for the machine's missing data -- the shape worse than the bug",
+    ),
+    "G1/deadlock-cause": (
+        G1, "store/records.py",
+        source(
+            '        detail = (deadlock.diag.message_detail or "").strip()',
+            "        raise Refused(",
+            '            REFUSAL_CONSTRAINT, "vehicle_identity",',
+            '            f"constraint {ONE_PASS_PER_GARAGE}: the database detected a deadlock '
+            'while this "',
+            '            f"registration of {identity!r} waited on another transaction, and '
+            'rolled this "',
+        ),
+        source(
+            '        detail = ""  # PLANTED: the DETAIL dropped, a cause asserted',
+            "        raise Refused(",
+            '            REFUSAL_CONSTRAINT, "vehicle_identity",',
+            '            f"constraint {ONE_PASS_PER_GARAGE}: two registrations of {identity!r} '
+            'raced and "',
+            '            "the database rolled this one back (deadlock detected). "',
+        ),
+        "the deadlock refusal names a cause it did not observe ('two registrations raced') "
+        "and throws PostgreSQL's DETAIL away -- under a deadlock from a raw FOR UPDATE the "
+        "module never takes, that sentence is false",
+    ),
+    "G18/dash-value": (
+        G18, "cli.py",
+        "    args = parser.parse_args(_values_that_start_with_a_dash(parser, argv))",
+        "    args = parser.parse_args(argv)  # PLANTED: a dash-leading value is an option again",
+        "`--timezone -06:00` is argparse's usage error and exit 2 again -- the re-gate's "
+        "third shape beside the refusal and the traceback",
+    ),
+    "G18/tz-database-sentence": (
+        G18, "cli.py",
+        "    except TimezoneDatabaseUnavailable as missing:\n",
+        "    except TimezoneDatabaseUnavailable as missing:\n        raise  # PLANTED\n",
+        "a machine with no tz database is a traceback at the command line, not a sentence",
+    ),
+    "G12/garage-history-row": (
+        G12, "store/records.py",
+        '    cursor.execute(\n        "INSERT INTO garage_changes (tenant_id, garage_id, field, ',
+        '    _ = (  # PLANTED: the repair is not recorded\n'
+        '        "INSERT INTO garage_changes (tenant_id, garage_id, field, ',
+        "the repair changes the garage and writes no history row: who, when and why are "
+        "lost again",
+    ),
+    "G12/garage-grant": (
+        G12, MIGRATION_0002,
+        "GRANT SELECT, INSERT ON garage_changes TO garage_pass_app;",
+        "GRANT SELECT, INSERT, UPDATE ON garage_changes TO garage_pass_app;  -- PLANTED",
+        "the application role can rewrite the garage history: the widened grant is read "
+        "from the catalogue and the derived set of append-only histories no longer matches",
+    ),
+    "G10/predicate-garage_changes": (
+        G10, MIGRATION_0002,
+        source(
+            "CREATE POLICY garage_changes_tenant_isolation ON garage_changes",
+            "  USING      (tenant_id = current_tenant_id())",
+            "  WITH CHECK (tenant_id = current_tenant_id());",
+        ),
+        source(
+            "CREATE POLICY garage_changes_tenant_isolation ON garage_changes",
+            "  USING      (true)",
+            "  WITH CHECK (true);  -- PLANTED: the tenant predicate stripped",
+        ),
+        "the policy on garage_changes still EXISTS -- the catalogue is satisfied -- but "
+        "isolates nothing: every tenant reads and writes every other's rows there. The "
+        "ninth table gets the same control as the eight; the isolation test's denominator "
+        "is the catalogue, so it sees the table without being told",
+    ),
+    # --- the document boundary, and the answer that depended on list order (W1-W5) ---
+    "G4/duplicate-last-wins": (
+        G4, "access.py",
+        source(
+            "    duplicated = {",
+            "        pid: sorted(ps, key=_copy_order)",
+            "        for pid, ps in copies.items()",
+            "        if len(ps) > 1 and any(p.garage_id == garage.id for p in ps)",
+            "    }",
+        ),
+        source(
+            "    duplicated: dict = {}  # PLANTED: last-wins is back; a repeated id is not seen",
+        ),
+        "a pass handed in twice under one id is resolved by ORDER again: by_id is a dict, "
+        "the last copy wins silently, and [revoked p1, active p1] admits at an entry the "
+        "car that [active p1, revoked p1] refuses -- the L3's order-dependent answer",
+    ),
+    "G4/wrong-type-answers": (
+        G4, "access.py",
+        source(
+            '    for name, value in (("vehicle_identity", vehicle_identity), ("lane", lane)):',
+            "        if not isinstance(value, str):",
+            "            raise TypeError(f\"{name} must be text, not {value!r}\")",
+        ),
+        source(
+            "    return  # PLANTED: a wrong-typed identity or lane is read as blank and ANSWERED",
+        ),
+        "a wrong-typed identity or lane is no longer refused at the signature: it reaches "
+        ".strip() and is an AttributeError at an exit lane (the L3's shape through the pure "
+        "API) -- and with the old blank-reading back it would be an ANSWER, a caller's bug "
+        "read as a car with no plate. The signature enumeration reddens either way; the "
+        "naive-at and direction checks stay",
+    ),
+    "G4/registration-untyped": (
+        G4, "passes.py",
+        source(
+            "        # without complaint and raised at an EXIT lane instead.",
+            "        require_typed(self)",
+        ),
+        source(
+            "        # without complaint and raised at an EXIT lane instead.",
+            "        return  # PLANTED: Registration validates nothing again",
+        ),
+        "a Registration with a None identity or a string day is constructed again and "
+        "raises at an exit lane -- the eight pure-API raises the L3 found",
+    ),
+    "G18/document-untyped-scalar": (
+        G18, "documents.py",
+        source(
+            "    if arm is str:",
+            "        if not isinstance(value, str):",
+            "            _refuse_wrong_type(field, hint, value)",
+        ),
+        source(
+            "    if arm is str:",
+            "        pass  # PLANTED: text fields take any value; a number where an id belongs",
+        ),
+        "a registration document whose vehicle_identity is a number reaches the module "
+        "and is an AttributeError at an exit again (the loader's type check for text is gone)",
+    ),
+    "G18/string-as-collection": (
+        G18, "documents.py",
+        source(
+            "        if not isinstance(value, list):",
+            "            _refuse_wrong_type(field, hint, value)",
+        ),
+        source(
+            "        if isinstance(value, str):  # PLANTED: text is read as its characters",
+            "            value = list(value)",
+            "        elif not isinstance(value, list):",
+            "            _refuse_wrong_type(field, hint, value)",
+        ),
+        "allowed_lanes: 'L1' loads as the lane set {'1', 'L'} again -- no traceback, no "
+        "refusal, a silently wrong pass, WRONG_LANE on a legitimate lane",
+    ),
+    "G18/keys-hand-listed": (
+        G18, "documents.py",
+        "    return frozenset(f.key for f in document_fields(cls))",
+        source(
+            "    listed = {  # PLANTED: the keys are a hand-written list again",
+            '        "Garage": {"id", "timezone", "transient_available"},',
+            '        "Pass": {"id", "garage_id", "label", "holder", "terms", "state"},',
+            '        "Holder": {"email", "name", "phone"},',
+            '        "Terms": {"valid_from", "valid_to", "windows", "max_stay_minutes",',
+            '                  "visit_allowance", "directions", "allowed_lanes"},',
+            '        "Window": {"days", "start_minute", "end_minute"},',
+            '        "VisitAllowance": {"count", "per"},',
+            '        "Registration": {"pass_id", "vehicle_identity", "effective_day", "end_day"},',
+            '        "Visit": {"pass_id", "vehicle_identity", "entry_lane", "entered_at",',
+            '                  "exited_at", "exit_lane"},',
+            "    }",
+            "    return frozenset(listed.get(cls.__name__, set()))",
+        ),
+        "the document keys are typed by hand again: a field added to a dataclass -- the "
+        "add-a-field control's scratch class -- is not a document key until somebody edits "
+        "the list, which is exactly how the L3's holes were made",
+    ),
+    "G18/driver-generic": (
+        G18, "cli.py",
+        source(
+            "    except psycopg.Error as exc:",
+            "        # THE LAST RESORT, deliberately after Refused: a driver error the store",
+        ),
+        source(
+            "    except psycopg.Error as exc:",
+            "        raise  # PLANTED: the driver's error is a traceback again",
+            "        # THE LAST RESORT, deliberately after Refused: a driver error the store",
+        ),
+        "an unmigrated database, a role without its grants: UndefinedTable and "
+        "InsufficientPrivilege escape the command line as tracebacks again -- the L3's "
+        "census, four of the nineteen",
+    ),
+    "G18/driver-generic-first": (
+        G18, "store/records.py",
+        "    except psycopg.errors.DeadlockDetected as deadlock:",
+        "    except psycopg.errors.NoDataFound as deadlock:  # PLANTED: the deadlock is not named",
+        "THE GUARD: a real deadlock at the one-car-one-pass INSERT is no longer turned into "
+        "its named refusal inside the store, so it falls through to the command line's "
+        "generic mapping and a REAL REFUSAL is reported as a broken server -- exit 2 and a "
+        "sentence instead of exit 3 and the JSON refusal carrying PostgreSQL's DETAIL. "
+        "The generic mapping is the last resort or it is a worse defect than the four "
+        "tracebacks it replaced",
+    ),
+    "G18/tenant-row": (
+        G18, "store/records.py",
+        '    cursor.execute("SELECT 1 FROM tenants WHERE id = %s", (tenant_uuid,))',
+        '    cursor.execute("SELECT 1 WHERE %s IS NOT NULL", (tenant_uuid,))  # PLANTED',
+        "create-garage with a --tenant nobody seeded reaches the INSERT and is the "
+        "database's ForeignKeyViolation again -- which the generic mapping now renders as "
+        "a configuration sentence, exit 2, instead of the refusal by name, exit 3",
+    ),
+    # --- the exit that the document boundary refused (V1) ---------------------------
+    "G4/exit-document-refuses": (
+        G18, "cli.py",
+        "    if direction is not Direction.EXIT:\n        return access(",
+        "    if True:  # PLANTED: the exit takes the entry's path; a bad document REFUSES\n"
+        "        return access(",
+        "a document the module cannot read is a refusal at an EXIT again, exit 3 and no "
+        "outcome -- chat's six probes, six refusals; the red must name the exit that went "
+        "unanswered",
+    ),
+    "G4/exit-records-raise": (
+        G18, "access.py",
+        "    named = \"; \".join(u.describe() for u in unreadable)\n    return Answer(",
+        "    named = \"; \".join(u.describe() for u in unreadable)\n"
+        "    from garage_pass.findings import REFUSAL_FIELD_BLANK, Refused  # PLANTED\n"
+        "    raise Refused(REFUSAL_FIELD_BLANK, unreadable[0].field, named)  # PLANTED\n"
+        "    return Answer(",
+        "the exit on an unreadable registration or visit is a Refused again -- rendered "
+        "as exit 3 by the boundary -- instead of the not-covered answer",
+    ),
+    "G4/carrier-not-built": (
+        G18, "documents.py",
+        "        names = CARRIER_FIELDS.get(cls)\n"
+        "        if not names or not isinstance(document, dict):",
+        "        names = None  # PLANTED: no pass or garage document is ever a carrier\n"
+        "        if not names or not isinstance(document, dict):",
+        "a pass document the module cannot read is no longer the unreadable pass a stored "
+        "row becomes: it is RECORD_UNREADABLE even when the car is on ANOTHER, readable "
+        "pass, and the parity with the store is gone (an unreadable pass is an unreadable "
+        "pass, A1.2)",
+    ),
+    # --- the document that crashes the decoder (U1, the L5 gate's B1) ------------
+    "G18/decoder-recursion": (
+        G18, "cli.py",
+        "    except (OSError, ValueError, RecursionError) as exc:",
+        "    except (OSError, ValueError) as exc:  # PLANTED: the decoder's RecursionError escapes",
+        "a document that is valid JSON nested past what json.loads decodes is a TRACEBACK at "
+        "the command line again -- RecursionError is a RuntimeError, not a ValueError -- in "
+        "both directions, exit 1 with no answer; the red must name the traceback",
+    ),
+    # --- the T round: the sentence the operator reads, and the boundary that let a
+    # --- document through unread ----------------------------------------------------
+    "G4/unreadable-detail-says-stored": (
+        G18, "access.py",
+        '                f"pass {pass_.id!r} ({pass_.label}) carries a value this module "',
+        '                f"pass {pass_.id!r} ({pass_.label}) is stored with a value this module "'
+        '  # PLANTED: the old sentence, false on the document door',
+        "the PASS_UNREADABLE detail tells the operator a row is stored on a route where "
+        "nothing is -- the red must name the falsehood (a DOCUMENT route rendered 'stored'), "
+        "and the stored-row door's own assertion reads the same sentence",
+    ),
+    "G4/unreadable-sentence-names-only-terms-or-holder": (
+        G18, "findings.py",
+        source(
+            '        "refuses to read -- terms or a holder that would be refused at creation, a "',
+            '        "holder or terms field that is missing or of the wrong type, or a field '
+            'this "',
+            '        "module does not know. "',
+        ),
+        source(
+            '        "refuses to read -- terms or a holder that would be refused at creation. "'
+            "  # PLANTED: the unknown-field door unnamed",
+        ),
+        "the registry sentence enumerates two of the doors to PASS_UNREADABLE while an unknown "
+        "field reaches it too; the derived door test must name the door the sentence lost",
+    ),
+    "G18/document-not-a-regular-file": (
+        G18, "cli.py",
+        "            if not stat.S_ISREG(os.fstat(fd).st_mode):",
+        "            if False and not stat.S_ISREG(os.fstat(fd).st_mode):  # PLANTED: the check on "
+        "the descriptor is gone; a device that never stops producing bytes is read to EOF",
+        "/dev/zero is read without end and the command line never returns; the bounded process "
+        "test must fail as a HANG, not hang the suite (a pipe with no writer no longer hangs "
+        "with the check gone -- O_NONBLOCK reads EOF -- so the pipe test is not this control)",
+    ),
+    "G18/document-check-and-read-are-one-file": (
+        G18, "cli.py",
+        '            handle = os.fdopen(fd, "r")',
+        '            os.close(fd); handle = open(path, "r")  # PLANTED: the read resolves the '
+        'NAME again -- the split is back',
+        "the bytes decoded come from a second resolution of the path, not from the descriptor "
+        "that was checked; the deterministic test that forbids every name-based open must go "
+        "red naming the open(path)",
+    ),
+    "G18/document-descriptor-closed-on-refusal": (
+        G18, "cli.py",
+        "        except BaseException:\n            os.close(fd)\n            raise",
+        "        except BaseException:\n            pass  # PLANTED: the descriptor leaks on "
+        "every refusal\n            raise",
+        "a refused document leaves its descriptor open; the fd-count test must read the leak",
+    ),
+    "G18/empty-option-read-as-not-given-at-exit": (
+        G18, "cli.py",
+        "        if path is None:  # the option was not given -- NOT ``if not path``: an empty",
+        "        if not path:  # PLANTED: '' is 'not given' again -- the document is never opened",
+        "--visits '' at an EXIT drops the visits document unread; the control case (a spent "
+        "allowance) is what shows it, and the empty-string case must read as refused",
+    ),
+    "G18/empty-option-read-as-not-given-at-entry": (
+        G18, "cli.py",
+        "            if args.visits is not None else [],",
+        "            if args.visits else [],  # PLANTED: '' is 'not given' at an entry",
+        "--visits '' at an ENTRY answers COVERED on a spent allowance -- the silent wrong "
+        "answer the control case names",
+    ),
+    "G15/route-sweep-blind-to-stored": (
+        "tests/test_contract_is_generated.py", "scripts/sweep_route_sentences.py",
+        '    r"\\b(raw write|raw insert|written raw|stored with|is stored|are stored|stored row|"',
+        '    r"\\b(raw write|raw insert|written raw|stored row|"  # PLANTED: blind to '
+        '"is stored with"',
+        "the sweep no longer flags a sentence that says a value 'is stored with' -- the "
+        "self-test's planted falsehood goes unnamed and the judged set turns stale",
+    ),
+    "G15/judgement-follows-the-text-not-the-file": (
+        "tests/test_contract_is_generated.py", "scripts/sweep_route_sentences.py",
+        "    return (sentence, file)",
+        '    return (sentence, "")  # PLANTED: the file is dropped from the key -- a verdict '
+        "travels with the text again",
+        "a judged-TRUE sentence copied verbatim into another file inherits TRUE there -- the "
+        "self-test's copy step must read judged instead of UNJUDGED, and the test that reads the "
+        "self-test's lines must go red",
+    ),
+    "G15/rendered-collector-collects-nothing": (
+        "tests/test_contract_is_generated.py", "tests/_rendered_sentences.py",
+        "        if self.detail:\n            _rendered.append((self.detail, _stack_files()))",
+        "        if False and self.detail:  # PLANTED: the collector sees nothing\n"
+        "            _rendered.append((self.detail, _stack_files()))",
+        "the rendered half collects no Answer; the test that renders its own denominator must "
+        "read the collector as unproven (3 renders, fewer collected), never as clean",
+    ),
+    "G15/rendered-match-accounts-for-everything": (
+        "tests/test_contract_is_generated.py", "scripts/sweep_route_sentences.py",
+        '    phrases = [m.span() for m in ROUTE.finditer(text)]\n    if not phrases:\n'
+        '        return "covered", []',
+        '    phrases = [m.span() for m in ROUTE.finditer(text)]\n    if True or not phrases:'
+        '  # PLANTED: every rendered text reads covered\n        return "covered", []',
+        "the rendered matcher accounts for every text; the self-test's run-time spelling and its "
+        "inserted word both read covered, and the test that reads the self-test's lines goes red",
+    ),
+    "G15/rendered-detail-falsehood": (
+        "tests/test_contract_is_generated.py", "access.py",
+        '        what = f"garage {garage.id!r}: {garage.unreadable.describe()}"',
+        '        what = f"garage {garage.id!r} is stored with a value this module refuses to read: '
+        '{garage.unreadable.describe()}"  # PLANTED: a falsehood in a rendered detail',
+        "a 'stored' falsehood in a rendered detail the old sweep never read -- the shipped "
+        "sweep must go red naming the sentence as unjudged",
+    ),
+    "G12/garage-who-why": (
+        G12, "store/records.py",
+        source(
+            "    if not isinstance(reason, str) or not reason.strip():",
+            '        raise Refused(REFUSAL_REPAIR_NEEDS_WHO_AND_WHY, "reason", '
+            'f"why is {reason!r}.")',
+        ),
+        source(
+            "    if not isinstance(reason, str) or not reason.strip():",
+            '        reason = "(unstated)"  # PLANTED: a blank why is defaulted, not refused',
+        ),
+        "a repair with no reason is accepted and recorded with a guessed one -- the silent "
+        "default this module exists to refuse",
     ),
 }
 

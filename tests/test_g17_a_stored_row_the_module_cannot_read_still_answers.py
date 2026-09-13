@@ -375,6 +375,7 @@ def test_the_stranding_test_would_have_seen_an_exception(app, tenant_id, monkeyp
 from garage_pass.store import records  # noqa: E402
 
 REPAIR = "set_garage_timezone"
+WHO_WHEN_WHY = dict(by="operator", at=NOON_MONDAY, reason="stored from a laptop, fixed")
 
 
 def writes_against_a_garage() -> list[str]:
@@ -448,10 +449,12 @@ def test_every_write_against_an_unreadable_garage_is_refused_by_name_and_the_rep
     assert exit_.reason == f.GARAGE_UNREADABLE
     # THE REPAIR: the one write an unreadable garage takes
     with tenant(app, tenant_id) as cursor:
-        out = records.set_garage_timezone(cursor, tenant_id, "g-badtz", "America/Denver")
+        out = records.set_garage_timezone(cursor, tenant_id, "g-badtz", "America/Denver",
+                                          **WHO_WHEN_WHY)
     app.commit()
     assert out == {"garage": "g-badtz", "timezone": "America/Denver", "was": "Mars/Olympus",
-                   "was_readable": False}
+                   "was_readable": False, "changed_by": "operator", "changed_at": NOON_MONDAY,
+                   "reason": "stored from a laptop, fixed"}
     with tenant(app, tenant_id) as cursor:
         records.create_pass(cursor, tenant_id, "g-badtz", pass_, by="owner", at=NOON_MONDAY)
         register_vehicle(cursor, tenant_id, "g-badtz", pass_.id, "CAR-1", date(2026, 1, 1))
@@ -472,20 +475,119 @@ def test_the_repair_refuses_a_zone_the_system_does_not_carry_and_changes_nothing
     _raw_bad_garage(owner, tenant_id)
     with pytest.raises(f.Refused) as refused:
         with tenant(app, tenant_id) as cursor:
-            records.set_garage_timezone(cursor, tenant_id, "g-badtz", "Mars/Tharsis")
+            records.set_garage_timezone(cursor, tenant_id, "g-badtz", "Mars/Tharsis",
+                                        **WHO_WHEN_WHY)
     app.rollback()
     assert refused.value.code == f.REFUSAL_TIMEZONE_UNKNOWN
     assert refused.value.field == "garage.timezone" and "Mars/Tharsis" in refused.value.detail
     assert query(app, tenant_id, "SELECT timezone FROM garages") == [("Mars/Olympus",)]
     with pytest.raises(f.Refused) as refused:
         with tenant(app, tenant_id) as cursor:
-            records.set_garage_timezone(cursor, tenant_id, "g-nowhere", "America/Denver")
+            records.set_garage_timezone(cursor, tenant_id, "g-nowhere", "America/Denver",
+                                        **WHO_WHEN_WHY)
     app.rollback()
     assert refused.value.code == f.REFUSAL_GARAGE_NOT_FOUND
     seed(app, tenant_id, GARAGE, ())
     with tenant(app, tenant_id) as cursor:
-        out = records.set_garage_timezone(cursor, tenant_id, GARAGE.id, "America/Phoenix")
+        out = records.set_garage_timezone(cursor, tenant_id, GARAGE.id, "America/Phoenix",
+                                          **WHO_WHEN_WHY)
     app.commit()
     assert out["was"] == "America/Denver" and out["was_readable"] is True
     assert query(app, tenant_id, "SELECT timezone FROM garages WHERE external_id = %s",
                  (GARAGE.id,)) == [("America/Phoenix",)]
+
+
+# ---------------------------------------------------------------------------
+# the zone check is case-exact and platform-independent; no tz database is
+# named as that, never as an unknown zone
+# ---------------------------------------------------------------------------
+
+from garage_pass import localday  # noqa: E402
+
+
+@pytest.mark.guarantee("G17")
+@pytest.mark.parametrize("spelling", ["america/denver", "AMERICA/DENVER", "America/denver",
+                                      "utc", "europe/istanbul"])
+def test_a_case_folded_zone_name_is_refused_by_name_and_the_exact_one_accepted(spelling):
+    """Measured before this on a Mac (case-insensitive APFS): ``zone()``
+    validated by opening the tz FILE, so every spelling here was ACCEPTED and
+    stored as typed -- and a case-sensitive server refused the stored row. The
+    check is now membership in ``zoneinfo.available_timezones()``, a listing
+    of names, which gives the same answer on either filesystem."""
+    exact = {"america/denver": "America/Denver", "AMERICA/DENVER": "America/Denver",
+             "America/denver": "America/Denver", "utc": "UTC",
+             "europe/istanbul": "Europe/Istanbul"}[spelling]
+    with pytest.raises(UnknownTimezone) as refused:
+        localday.zone(spelling)
+    assert refused.value.code == f.REFUSAL_TIMEZONE_UNKNOWN
+    assert repr(spelling) in refused.value.detail
+    assert str(localday.zone(exact)) == exact  # the control, in the same run
+    with pytest.raises(UnknownTimezone):
+        Garage(id="g", timezone=spelling, transient_available=True)
+
+
+@pytest.mark.guarantee("G17")
+def test_the_zone_check_does_not_consult_the_filesystem_so_it_cannot_vary_with_it(monkeypatch):
+    """THE PROPERTY, measured directly rather than on two machines: with
+    ``ZoneInfo`` replaced by one that opens ANY name -- what a case-insensitive
+    filesystem does for a folded name -- the folded spelling is still refused
+    and the exact one still accepted. The refusal comes from the name set, so
+    the filesystem's case rule cannot change it."""
+    from zoneinfo import ZoneInfo
+
+    opened: list[str] = []
+
+    class OpensAnything:
+        def __init__(self, name):
+            opened.append(name)
+            self.key = "America/Denver"
+
+    monkeypatch.setattr(localday, "ZoneInfo", OpensAnything)
+    with pytest.raises(UnknownTimezone):
+        localday.zone("america/denver")
+    assert opened == [], "the folded name reached the file open; the check is the filesystem's"
+    assert localday.zone("America/Denver").key == "America/Denver"
+    assert opened == ["America/Denver"]
+    monkeypatch.undo()
+    assert isinstance(localday.zone("America/Denver"), ZoneInfo)
+
+
+@pytest.mark.guarantee("G17")
+def test_a_machine_with_no_tz_database_is_named_as_that_never_as_an_unknown_zone(monkeypatch):
+    """An empty ``available_timezones()`` is the MACHINE's condition, not the
+    value's. A validator that asked only "is the name in the set" would refuse
+    ``America/Denver`` as unknown on a bare server -- blaming a good input for
+    missing data, and worse than the bug it fixed. Distinct error, by name;
+    the same name on a machine that has the database is the control."""
+    from garage_pass.localday import TimezoneDatabaseUnavailable
+
+    def what_is_raised(call, *args, **kwargs):
+        """The class is the subject, so a different class is an ASSERTION
+        failure and not an exception the runner cannot read."""
+        try:
+            call(*args, **kwargs)
+        except Exception as exc:  # noqa: BLE001 -- judged below
+            return exc
+        pytest.fail("nothing was raised on a machine with no tz database")
+
+    assert localday.zone("America/Denver")  # the control: the database is here
+    monkeypatch.setattr(localday, "_tz_names", lambda: frozenset())
+    raised = what_is_raised(localday.zone, "America/Denver")
+    assert isinstance(raised, TimezoneDatabaseUnavailable), f"blamed the value: {raised!r}"
+    assert not isinstance(raised, f.Refused), "it is not a refusal of the value"
+    assert "no timezone database" in str(raised) and "tzdata" in str(raised)
+    raised = what_is_raised(Garage, id="g", timezone="America/Denver", transient_available=True)
+    assert isinstance(raised, TimezoneDatabaseUnavailable), f"blamed the value: {raised!r}"
+    # and it does NOT hide behind the unreadable shape: the store's load path
+    # carries an UNKNOWN zone as unreadable, a missing DATABASE is raised
+    raised = what_is_raised(garage_from_stored, "g", "America/Denver", True)
+    assert isinstance(raised, TimezoneDatabaseUnavailable), f"blamed the value: {raised!r}"
+
+
+@pytest.mark.guarantee("G17")
+def test_the_name_set_is_the_tz_databases_own_and_carries_the_exact_spellings():
+    """The instrument's premise: the set this process reads is non-empty and
+    spells the names the way the database does."""
+    names = localday._tz_names()
+    assert len(names) > 100 and "America/Denver" in names and "UTC" in names
+    assert "america/denver" not in names and "utc" not in names

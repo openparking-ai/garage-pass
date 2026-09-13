@@ -1,0 +1,362 @@
+[
+ {
+  "sentence": "**The module answers when it holds a record whose content it cannot read, and refuses when it holds no record at all, or no instant to read it at.** A stored row it cannot read loads unreadable and answers; a document it cannot read — a field missing, of the wrong type or unknown, a contradiction, an unknown zone — is answered at an exit the same way: a pass or garage document degrades to the unreadable pass or garage a stored row becomes, a registration or visit document to a not-covered answer naming the document and the field.",
+  "file": "README.md",
+  "verdict": "TRUE",
+  "why": "README: the line; measured as G4"
+ },
+ {
+  "sentence": "A file that is missing or is not JSON, and an instant that does not parse, are refused in both directions: there is no record, or no now.",
+  "file": "README.md",
+  "verdict": "TRUE",
+  "why": "README: a subset of the refusing doors, no 'only'"
+ },
+ {
+  "sentence": "A garage stored with a timezone the running system does not carry — a raw write, or tzdata that lost the name — still answers (not-covered at an exit, refused-to-answer at an entry, naming `garage.timezone`), but takes no write until it is repaired; the repair is the one write it takes:",
+  "file": "README.md",
+  "verdict": "TRUE",
+  "why": "README: the stored case; the repair walk is measured by the install-for-real run"
+ },
+ {
+  "sentence": "A pass stored with terms the module refuses to read — a raw write, or a validator tightened after the pass was stored — is answered not-covered at the exit, naming the pass and the field, which at a transient garage means the stay is chargeable: said so, so nobody reads it as a free exit, and named so the operator can find the row.",
+  "file": "README.md",
+  "verdict": "TRUE",
+  "why": "README: describes the STORED case and asserts no 'only'; the document case is the paragraph at README:148"
+ },
+ {
+  "sentence": "A second registration is refused by name — naming the pass that holds the identity, its state and the day that registration ends — before the database's own constraint has to; every open registration counts as a holder whatever its pass's state, so the constraint is the backstop for a raw insert and for two writers genuinely racing, and nothing else reaches it through the module.",
+  "file": "README.md",
+  "verdict": "TRUE",
+  "why": "README: G1's by-name refusal and the backstop, measured"
+ },
+ {
+  "sentence": "Exit status 0 covered, 1 not covered, 2 refused to answer or the machine's configuration (one sentence on stderr: no DSN, a database that does not connect or is not migrated, a role without its grants, no timezone database), 3 the request was refused — and a refusal is always the JSON `{\"refused\", \"field\", \"detail\"}`, never a traceback: a mistyped timezone, a document that is not JSON, an instant without an offset, a day that does not parse, and — at an entry — a field of the wrong type are each refused naming the field and the value; at an exit a document the module cannot read is answered not-covered naming the field, because an exit is never refused.",
+  "file": "README.md",
+  "verdict": "TRUE",
+  "why": "README: the exit table, measured by the 109-census (every status accounted for)"
+ },
+ {
+  "sentence": "A garage or a pass stored with a value the module refuses to read (G17) takes no write — every write against it is refused with the refusal that made it unreadable — except the repair: `set-garage-timezone` corrects a stored garage's timezone, and is the one write an unreadable garage takes, because without it such a garage could never be fixed.",
+  "file": "docs/CONTRACT.md",
+  "verdict": "TRUE",
+  "why": "CONTRACT: the write gate on a STORED unreadable row, measured by G17's tests"
+ },
+ {
+  "sentence": "A stored row that the validator refuses — a raw write past the three cross-table rules the schema cannot express, or a validator tightened after the row was stored — is not an exception but an UNREADABLE pass, answered as G17 states.",
+  "file": "docs/CONTRACT.md",
+  "verdict": "TRUE",
+  "why": "CONTRACT: G17's prose; about stored rows"
+ },
+ {
+  "sentence": "At an EXIT a document that is JSON but cannot be read as a garage, pass, registration or visit is not refused but ANSWERED not-covered naming the field (G4); a file that is missing or is not JSON, and an instant that does not parse, refuse in both directions.",
+  "file": "docs/CONTRACT.md",
+  "verdict": "TRUE",
+  "why": "CONTRACT: the line and a subset of the refusing doors, no 'only'"
+ },
+ {
+  "sentence": "Every open registration is a holder in the one-car-one-pass check whatever its pass's state, so the database's `EXCLUDE` is reached through the module only by two registrations genuinely racing.",
+  "file": "docs/CONTRACT.md",
+  "verdict": "TRUE",
+  "why": "CONTRACT: G1's backstop, measured"
+ },
+ {
+  "sentence": "It returns exactly one of three outcomes: **covered**, **not covered** with a reason, or **refused to answer** naming the field that would let it answer — **and the third is an ENTRY outcome only: every exit is answered covered or not covered.** What cannot be evaluated at an exit is named (`unmeasured`, or a not-covered reason that names the field), never guessed — and that includes inconsistent data, such as a registration naming a pass that was not handed in, or a pass handed in twice under one id, or a document the module cannot read (G4: the module answers when it holds a record whose content it cannot read, and refuses only when it holds no record at all, or no instant).",
+  "file": "docs/CONTRACT.md",
+  "verdict": "TRUE",
+  "why": "CONTRACT: refused-to-answer is an ENTRY outcome only -- G4, measured"
+ },
+ {
+  "sentence": "The repair is recorded — who, when, why, the old value and the new — in `garage_changes` (`migrations/0002_garage_changes_are_recorded.sql`), append-only by the same grant as the pass history (G12); a repair with no who or no why is refused and changes nothing.",
+  "file": "docs/CONTRACT.md",
+  "verdict": "TRUE",
+  "why": "CONTRACT: 0002 and G12's grant, measured by the Z6 probe"
+ },
+ {
+  "sentence": "A garage carrying a zone this system does not carry cannot be constructed (``Garage.__post_init__`` refuses it), and neither can a registration or a visit with a wrong-typed field (``typed.require_typed``) -- through the pure API.",
+  "file": "src/garage_pass/access.py",
+  "verdict": "NOT-PUBLISHED",
+  "why": "access.py module docstring; true of the pure API (G4's exclusion class, proven by execution)"
+ },
+ {
+  "sentence": "THE MODULE ANSWERS WHEN IT HOLDS A RECORD WHOSE CONTENT IT CANNOT READ, and refuses only when it holds no record at all, or no instant: a STORED row it cannot read loads unreadable and answers, above; a DOCUMENT it cannot read is answered at an exit the same way (``documents.load_or_degrade`` builds the same carrier a stored row becomes, or ``exit_on_unreadable_records`` below states the not-covered answer for a registration, a visit, or a carrier that cannot be built) and refused by name at an entry.",
+  "file": "src/garage_pass/access.py",
+  "verdict": "NOT-PUBLISHED",
+  "why": "access.py module docstring; the line, measured by the censuses"
+ },
+ {
+  "sentence": "The module holds the record -- a registration or visit document, or a pass or garage document too malformed to carry its refusal the way a stored row does -- and cannot read its content, so the exit is ANSWERED: not-covered, RECORD_UNREADABLE, naming every document and field, with the exit note and the OUT-OF-TERMS meaning every exit answer carries.",
+  "file": "src/garage_pass/access.py",
+  "verdict": "NOT-PUBLISHED",
+  "why": "exit_on_unreadable_records docstring; measured (RECORD_UNREADABLE answers carry every field)"
+ },
+ {
+  "sentence": "**THE CHECK AND THE READ ARE THE SAME FILE.** The path is resolved ONCE, by ``os.open`` with ``O_NONBLOCK``; everything after that asks the DESCRIPTOR, never the name again: ``fstat`` says whether it is a regular file, and the bytes that are decoded are read from that same descriptor.",
+  "file": "src/garage_pass/cli.py",
+  "verdict": "NOT-PUBLISHED",
+  "why": "cli._document docstring; the mechanism, proven by the no-name-open test (every name-based open made to raise, the documents still read) and the race harness at 0 on the volume that produced 3"
+ },
+ {
+  "sentence": "**WHAT IS REFUSED, BY NAME.** A path that does not exist (``ENOENT``) reads *does not exist*; anything that opens but is not a regular file -- a directory, a device (``/dev/null`` reads empty; ``/dev/zero`` never ends), a pipe, a socket -- reads *is not a regular file*, decided by ``S_ISREG`` on the descriptor before a byte is read; every other ``OSError`` the open or the read raises carries the system's own text -- ``EACCES``, ``ELOOP``, ``ENOTDIR`` (a regular file named with a trailing slash is this: the kernel reads the slash as \"a directory\", where the path-based reader before this silently dropped it and read the file), ``ENAMETOOLONG``, a socket (``ENXIO`` on Linux, ``EOPNOTSUPP`` on a Mac -- it cannot be opened at all), a device with nothing behind it (``/dev/tty`` with no terminal, ``ENXIO``).",
+  "file": "src/garage_pass/cli.py",
+  "verdict": "NOT-PUBLISHED",
+  "why": "cli._document docstring; each shape measured old-vs-new (attack/wording_moved_old_vs_new.out): ENOENT -> 'does not exist'; a directory, /dev/null, /dev/zero, a FIFO -> 'is not a regular file' by S_ISREG; the system's text for EACCES, ELOOP, ENOTDIR (a regular file with a trailing slash included -- the one CODE that moved, covered -> refused), ENAMETOOLONG, a socket (EOPNOTSUPP on the Mac measured, ENXIO on Linux per the open(2) manual) and /dev/tty (ENXIO)"
+ },
+ {
+  "sentence": "Against the store (``GARAGE_PASS_DSN``, ``--tenant``): ``create-garage``, ``set-garage-timezone`` (the repair for a garage stored with a timezone the system does not carry -- the one write that takes an unreadable garage, and it records who, when and why like a state change does), ``create-pass``, ``register-vehicle``, ``end-registration``, ``set-state``, ``record-entry``, ``record-exit`` and ``access-in-store``.",
+  "file": "src/garage_pass/cli.py",
+  "verdict": "NOT-PUBLISHED",
+  "why": "cli.py module docstring; set-garage-timezone repairs a STORED garage -- true"
+ },
+ {
+  "sentence": "At an EXIT a document that is JSON but cannot be read is not refused but answered not-covered naming the field, exit 1 -- the module answers when it holds a record whose content it cannot read, and refuses when it holds no record at all (a file missing, not a regular file, or not JSON) or no instant (``_access_from_documents``).",
+  "file": "src/garage_pass/cli.py",
+  "verdict": "NOT-PUBLISHED",
+  "why": "cli.py module docstring; the line, and the refusing doors named"
+ },
+ {
+  "sentence": "So the instant (``--at``) and the files (missing, not JSON, or JSON the decoder cannot decode) refuse in both directions; a document that IS JSON but cannot be read as a garage, pass, registration or visit is refused at an ENTRY and ANSWERED at an EXIT -- degraded the way a stored row with the same content is (``documents.load_or_degrade``), so a pass or garage document becomes the unreadable carrier ``access`` already answers on, and a registration, a visit or a carrier that cannot be built is the not-covered answer ``exit_on_unreadable_records`` states.",
+  "file": "src/garage_pass/cli.py",
+  "verdict": "NOT-PUBLISHED",
+  "why": "_access_from_documents docstring; measured both directions"
+ },
+ {
+  "sentence": "What the libraries this boundary calls can raise is mapped here too: a document that cannot be read as JSON -- missing, not JSON, not UTF-8, or valid JSON nested deeper than the decoder reads (``_document``) -- an instant or a day that does not parse, a naive instant, a registrations or visits document that is not a list, a field of the wrong type (every document value is checked against the type its dataclass declares, in ``documents.py``, before anything is built from it).",
+  "file": "src/garage_pass/cli.py",
+  "verdict": "NOT-PUBLISHED",
+  "why": "cli.py module docstring; names the decode doors; the regular-file guard is described in _document's own docstring"
+ },
+ {
+  "sentence": "``O_NONBLOCK`` is what makes the single open safe on a pipe with no writer -- it returns instead of blocking -- and on a regular file it changes nothing about the read.",
+  "file": "src/garage_pass/cli.py",
+  "verdict": "NOT-PUBLISHED",
+  "why": "cli._document docstring; the FIFO with no writer refuses on all four options in both directions (bounded process test); regular files read unchanged (the suite)"
+ },
+ {
+  "sentence": "``os.open`` and ``os.fstat`` raise ``OSError``, and ``ValueError`` on a NUL byte in the path; the text read raises ``UnicodeDecodeError`` (a ``ValueError`` subclass) when the bytes are not text in the interpreter's locale encoding -- the SAME decoding ``Path.read_text`` performed before this, deliberately unchanged, so no document that was refused as undecodable is decoded now (``json.loads`` handed raw bytes would auto-detect UTF-16 and UTF-32, and would turn a boundary refusal into content); ``json.loads`` raises ``JSONDecodeError`` (not JSON; a ``ValueError`` subclass) and ``RecursionError`` -- a document that IS valid JSON but is nested deeper than the decoder can read (996 levels, 1,992 bytes, on Python 3.11).",
+  "file": "src/garage_pass/cli.py",
+  "verdict": "NOT-PUBLISHED",
+  "why": "cli._document docstring; the raise set of the calls, measured by the 976-call attack (0 tracebacks) and the NUL-byte pure-API case; the decoding is os.fdopen(fd, 'r') -- io.open on the descriptor with the same defaults Path.read_text used, so the UTF-16-with-BOM row stays a boundary refusal"
+ },
+ {
+  "sentence": "``os.open`` follows symlinks, so a symlink to a regular file still reads (tested).",
+  "file": "src/garage_pass/cli.py",
+  "verdict": "NOT-PUBLISHED",
+  "why": "cli._document docstring; the symlink control in the T3 test and the no-name-open test's symlinked fixture"
+ },
+ {
+  "sentence": "{…} {…} could not be read: it is not a regular file (a directory, a device, a pipe or a socket).",
+  "file": "src/garage_pass/cli.py",
+  "verdict": "TRUE",
+  "why": "a RENDERED refusal detail, now one whole sentence in the denominator (before this round the phrase was a fragment chosen into a frame): written only when os.fstat on the OPENED descriptor is not S_ISREG -- a directory, a device, a pipe are the shapes measured; a socket never reaches it (its open fails first, with the system's text)"
+ },
+ {
+  "sentence": "Returns the loaded value; or, for a pass or garage whose carrier fields read, the same UNREADABLE carrier a stored row with that content becomes (``Pass(unreadable=...)``, ``Garage(unreadable=...)``), so ``access`` answers PASS_UNREADABLE / GARAGE_UNREADABLE exactly as it does for the store; or the bare ``Unreadable`` naming the document and the field, for a registration, a visit, or a carrier that cannot be built.",
+  "file": "src/garage_pass/documents.py",
+  "verdict": "NOT-PUBLISHED",
+  "why": "load_or_degrade docstring; the carrier rule, derived not chosen (L5 R10)"
+ },
+ {
+  "sentence": "That is the store's line -- a stored row with bad content degrades to an UNREADABLE pass or garage and the exit is answered naming it (``records._pass_from_row``, ``garage.garage_from_stored``) -- and ``load_or_degrade`` is the same line at this door: a pass or garage document that refuses becomes the same carrier a stored row would, when its carrier fields can be read (``CARRIER_FIELDS``); a registration or visit document, or a pass or garage too malformed to carry the marker, becomes the bare ``Unreadable`` and the exit is answered not-covered naming the document and the field.",
+  "file": "src/garage_pass/documents.py",
+  "verdict": "NOT-PUBLISHED",
+  "why": "documents.py module docstring; the two doors, measured"
+ },
+ {
+  "sentence": "(At an entry the call refuses to answer, naming the field.) The store cannot produce this: it loads the passes its registrations name.",
+  "file": "src/garage_pass/findings.py",
+  "verdict": "TRUE",
+  "why": "PASS_NOT_HANDED_IN: vehicle_registrations.pass_id REFERENCES passes ON DELETE CASCADE (0001); a dangling registration is a constraint violation"
+ },
+ {
+  "sentence": "(At an entry the call refuses to answer, naming the id.) The store cannot produce this: one id, one pass, per garage.",
+  "file": "src/garage_pass/findings.py",
+  "verdict": "TRUE",
+  "why": "PASS_DUPLICATED: UNIQUE (tenant_id, garage_id, external_id) on passes (0001)"
+ },
+ {
+  "sentence": "A document named on the command line could not be read: the file is missing, not a regular file, unreadable, not JSON, or JSON the decoder cannot decode (nested deeper than it can read, or a number longer than it will convert).",
+  "file": "src/garage_pass/findings.py",
+  "verdict": "TRUE",
+  "why": "REFUSAL_DOCUMENT_UNREADABLE: every door cli._document refuses -- is_file False (missing / not regular), OSError, not UTF-8, JSONDecodeError, RecursionError, the int digit limit (ValueError) -- measured by the S2 attack and the T3 test"
+ },
+ {
+  "sentence": "A pass or garage document whose carrier fields read is not this: it degrades to the unreadable pass or garage a stored row becomes, and answers PASS_UNREADABLE or GARAGE_UNREADABLE only if the vehicle is on it.",
+  "file": "src/garage_pass/findings.py",
+  "verdict": "TRUE",
+  "why": "RECORD_UNREADABLE: the carrier rule, measured both ways"
+ },
+ {
+  "sentence": "A record handed in with the call at an EXIT cannot be read as what it claims to be -- a registration or a visit document with a field missing, of the wrong type or unknown, or a pass or garage document too malformed to carry the marker a stored row would (its id, garage, label or state unreadable).",
+  "file": "src/garage_pass/findings.py",
+  "verdict": "TRUE",
+  "why": "RECORD_UNREADABLE: the bare-marker cases, measured (state/label/id/transient_available unreadable -> RECORD_UNREADABLE)"
+ },
+ {
+  "sentence": "A refusal is an exception; it is raised at CREATION, never discovered at a gate.",
+  "file": "src/garage_pass/findings.py",
+  "verdict": "NOT-PUBLISHED",
+  "why": "findings module docstring; loose: no raise Refused in access(), every refusal is raised in a constructor, a loader or a store write, and at an exit it is CARRIED to the answer -- true in its own terms, would read wrong as prose; not published"
+ },
+ {
+  "sentence": "Reached by a stored row (a raw write, or a validator tightened after the pass was stored) and, at an EXIT, by a pass document handed to the command line whose id, garage, label and state read.",
+  "file": "src/garage_pass/findings.py",
+  "verdict": "TRUE",
+  "why": "PASS_UNREADABLE: the store door (G17) and the document door (V1, CARRIER_FIELDS), both measured"
+ },
+ {
+  "sentence": "Reached by a stored row (a raw write, or a validator tightened after the row was stored) and, at an EXIT, by a document handed to the command line (``documents.load_or_degrade``) -- the same carrier either way.",
+  "file": "src/garage_pass/findings.py",
+  "verdict": "TRUE",
+  "why": "Unreadable docstring (A1.4 put it in scope): both doors named, both measured"
+ },
+ {
+  "sentence": "That state cannot be produced through this module; it was handed in or written raw.",
+  "file": "src/garage_pass/findings.py",
+  "verdict": "TRUE",
+  "why": "REFUSED_TO_ANSWER registration.pass_id: names both doors"
+ },
+ {
+  "sentence": "The detail names the value; a garage already stored with one is repaired with set-garage-timezone.",
+  "file": "src/garage_pass/findings.py",
+  "verdict": "TRUE",
+  "why": "REFUSAL_TIMEZONE_UNKNOWN: the repair command exists and is the one write an unreadable garage takes (records.set_garage_timezone)"
+ },
+ {
+  "sentence": "The garage carries a value this module refuses to read -- a stored row whose timezone this system does not carry, or, at an EXIT, a garage document handed to the command line whose id, timezone and transient mode read but which is refused for any reason (an unknown zone, an unknown field).",
+  "file": "src/garage_pass/findings.py",
+  "verdict": "TRUE",
+  "why": "GARAGE_UNREADABLE: both doors; an unknown field and an unknown zone measured on the document door (L5 row 167, re-gate S3)"
+ },
+ {
+  "sentence": "The garage is stored with a timezone this system does not carry, and an ENTRY cannot be evaluated without a clock.",
+  "file": "src/garage_pass/findings.py",
+  "verdict": "TRUE",
+  "why": "REFUSED_TO_ANSWER garage.timezone: entry-only, and at an entry only the STORE reaches it -- a garage document with an unknown zone is refused by name before access() runs (measured: REFUSAL_TIMEZONE_UNKNOWN, never refused_to_answer)"
+ },
+ {
+  "sentence": "The module refuses only when it holds no record at all -- a file that is missing, not a regular file, or cannot be read as JSON -- or no instant to read it at.)",
+  "file": "src/garage_pass/findings.py",
+  "verdict": "TRUE",
+  "why": "RECORD_UNREADABLE: the refusing doors at an exit are exactly _document's (missing / not a regular file / undecodable) and _at's; measured by the 223-census (20/20 file cases refuse both ways) and the S2 attack"
+ },
+ {
+  "sentence": "The pass this vehicle is registered to carries a value this module refuses to read -- terms or a holder that would be refused at creation, a holder or terms field that is missing or of the wrong type, or a field this module does not know.",
+  "file": "src/garage_pass/findings.py",
+  "verdict": "TRUE",
+  "why": "PASS_UNREADABLE: the set that can set Pass.unreadable with the carrier readable -- validators (creation), a missing / wrong-typed holder or terms field, an unknown field -- each measured by test_pass_unreadable_names_every_door_the_load_can_open"
+ },
+ {
+  "sentence": "The pass this vehicle is registered to is stored with terms or a holder this module refuses to read, and an ENTRY on it is not guessed.",
+  "file": "src/garage_pass/findings.py",
+  "verdict": "TRUE",
+  "why": "REFUSED_TO_ANSWER pass.terms: entry-only; the store is the only door at an entry (a pass document that refuses is refused by name first; measured)"
+ },
+ {
+  "sentence": "**THE NAME IS CHECKED AGAINST THE TZ DATABASE'S OWN NAME SET, CASE-EXACT, BEFORE A FILE IS OPENED.** Measured before this: the check was ``ZoneInfo(name)`` alone, whose lookup is a file open on ``TZPATH`` -- so on a case-insensitive filesystem (a Mac) ``america/denver`` was ACCEPTED and stored as typed, and the same stored row was refused on a case-sensitive one (a Linux server, CI): a garage created from a laptop, unreadable in production.",
+  "file": "src/garage_pass/localday.py",
+  "verdict": "NOT-PUBLISHED",
+  "why": "localday.zone docstring; the fold case, measured by the L3 R4 probe on both filesystems"
+ },
+ {
+  "sentence": "Append-only wherever it is stored.",
+  "file": "src/garage_pass/passes.py",
+  "verdict": "NOT-PUBLISHED",
+  "why": "passes.py StateChange docstring; the append-only grant is G12, measured"
+ },
+ {
+  "sentence": "**TERMS ARE RE-VALIDATED ON EVERY LOAD** -- ``Terms`` and ``Holder`` run their validators when built -- so a row that passes every CHECK in the schema but fails the validator (a raw write; or a validator TIGHTENED after the row was stored, which strands every pass it no longer accepts) is met here, not at creation.",
+  "file": "src/garage_pass/store/records.py",
+  "verdict": "NOT-PUBLISHED",
+  "why": "records._pass_from_row docstring; G17, measured"
+ },
+ {
+  "sentence": "Its terms were validated when the ``Pass`` value was built, so a contradiction never reaches this function; the CHECKs in the schema are the backstop for a raw write.",
+  "file": "src/garage_pass/store/records.py",
+  "verdict": "NOT-PUBLISHED",
+  "why": "records.store_pass docstring; G2's schema backstop"
+ },
+ {
+  "sentence": "Measured before this, a pass and a registration were created at a garage stored with ``Mars/Olympus`` while the access call about them degraded to not-covered.",
+  "file": "src/garage_pass/store/records.py",
+  "verdict": "NOT-PUBLISHED",
+  "why": "records.garage_for_write docstring; history, and it says so"
+ },
+ {
+  "sentence": "Now every open registration is a holder whatever its pass's state, so the by-name refusal fires with the survivor named and the EXCLUDE is the backstop it was designed as: reached only by a raw write, or by two registrations genuinely racing.",
+  "file": "src/garage_pass/store/records.py",
+  "verdict": "NOT-PUBLISHED",
+  "why": "records.py module docstring; G1's backstop, measured by the race probes"
+ },
+ {
+  "sentence": "The stored row as a ``Pass``.",
+  "file": "src/garage_pass/store/records.py",
+  "verdict": "NOT-PUBLISHED",
+  "why": "records._pass_from_row docstring"
+ },
+ {
+  "sentence": "garage {…} is stored unreadable: {…} Repair it with set-garage-timezone before writing against it.",
+  "file": "src/garage_pass/store/records.py",
+  "verdict": "TRUE",
+  "why": "a RENDERED detail on a store WRITE against an unreadable STORED garage (records.garage_for_write): the row is stored; the document door never reaches a write"
+ },
+ {
+  "sentence": "pass {…} is stored unreadable: {…}",
+  "file": "src/garage_pass/store/records.py",
+  "verdict": "TRUE",
+  "why": "a RENDERED detail on a store WRITE against an unreadable STORED pass (records): the row is stored"
+ },
+ {
+  "sentence": "**THE VALIDATOR REFUSES CONTRADICTIONS AT CREATION, NAMING THE FIELD.** The gate is never where a contradiction is discovered: a ``Terms`` value that fails ``check_terms`` cannot be constructed, so the access call never meets one.",
+  "file": "src/garage_pass/terms.py",
+  "verdict": "NOT-PUBLISHED",
+  "why": "terms.py module docstring; G2 -- a Terms value that fails check_terms cannot be constructed, so access() never meets a contradiction (an unreadable STORED pass carries the refusal without a Terms value)"
+ },
+ {
+  "sentence": "The terms of a pass, and the validator that refuses a contradiction at creation.",
+  "file": "src/garage_pass/terms.py",
+  "verdict": "NOT-PUBLISHED",
+  "why": "terms.py module docstring; G2"
+ },
+ {
+  "sentence": "A file that is missing or is not JSON, and an instant that does not parse, are refused in both directions: no record, or no instant.",
+  "file": "tests/_guarantees.py",
+  "verdict": "TRUE",
+  "why": "G4: a subset of the refusing doors, asserted with no 'only'; measured (20/20 file cases refuse both ways)"
+ },
+ {
+  "sentence": "A garage carrying a timezone this system does not carry cannot be constructed through the pure API, and neither can a registration or visit with a wrong-typed field.",
+  "file": "tests/_guarantees.py",
+  "verdict": "TRUE",
+  "why": "G4: Garage.__post_init__ and typed.require_typed raise; measured by the signature test"
+ },
+ {
+  "sentence": "Contradictory terms are refused AT CREATION, naming the field: a valid_to before valid_from, a window that no day in the valid range can satisfy, an empty window, a maximum stay of zero, a visit allowance of zero, a per-window allowance with no windows, no direction, an empty lane set -- and ONLY contradictions: a maximum stay longer than a window is slack, not a contradiction (windows bind instants, not stays), and such a pass is created and its maximum binds at the exit.",
+  "file": "tests/_guarantees.py",
+  "verdict": "TRUE",
+  "why": "G2: measured by G2's tests and controls"
+ },
+ {
+  "sentence": "Row-level security on every table from migration 0001: a tenant column, ENABLE, FORCE and a policy on each, read from the catalogue and never from a list; isolation proven ON EVERY TENANT-BEARING TABLE, from the catalogue, by a role that COULD bypass being shown it cannot read or write another tenant's rows -- and a stripped predicate on any one of the tables reddens it, every table of every migration having that control; and every garage and pass reference is half of a composite tenant key, so a row cannot name another tenant's garage or pass even by a raw insert.",
+  "file": "tests/_guarantees.py",
+  "verdict": "TRUE",
+  "why": "G10: read from the catalogue, measured by the isolation tests and the stripped-predicate probe"
+ },
+ {
+  "sentence": "THE MODULE ANSWERS WHEN IT HOLDS A RECORD WHOSE CONTENT IT CANNOT READ, AND REFUSES WHEN IT HOLDS NO RECORD AT ALL, OR NO INSTANT TO READ IT AT: a stored row it cannot read loads unreadable and answers, and a DOCUMENT it cannot read -- a field missing, of the wrong type or unknown, a contradiction, an unknown zone -- is answered at an exit the same way, a pass or garage document degrading to the unreadable pass or garage a stored row becomes and a registration or visit document to a not-covered answer naming the document and the field (RECORD_UNREADABLE); at an entry the same document is refused by name.",
+  "file": "tests/_guarantees.py",
+  "verdict": "TRUE",
+  "why": "G4: the line, measured by the 223x2 census (176/176 content cases answer at an exit and refuse at an entry) and store parity"
+ },
+ {
+  "sentence": "The database's EXCLUDE is the backstop for a raw insert and for two registrations genuinely racing -- in either shape the race takes, the constraint firing or the database rolling one writer back, the loser is refused by the constraint's name and never a traceback -- and is reached through the module by nothing else.",
+  "file": "tests/_guarantees.py",
+  "verdict": "TRUE",
+  "why": "G1: measured by the race probes (120/120 named refusals) and G1's controls"
+ },
+ {
+  "sentence": "The schema's CHECKs back the single-table rules for a raw write; the three that span two tables are named in the migration and backed by the load path (G17).",
+  "file": "tests/_guarantees.py",
+  "verdict": "TRUE",
+  "why": "G2: the CHECKs in 0001; the three cross-table rules backed by the load path (G17)"
+ }
+]

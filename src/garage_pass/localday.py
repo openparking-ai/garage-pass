@@ -36,7 +36,8 @@ default that reads as an accident.
 from __future__ import annotations
 
 from datetime import UTC, date, datetime, time, timedelta
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from functools import cache
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError, available_timezones
 
 from garage_pass.findings import REFUSAL_TIMEZONE_UNKNOWN, Refused
 
@@ -56,24 +57,81 @@ class UnknownTimezone(Refused, ValueError):
         Refused.__init__(self, REFUSAL_TIMEZONE_UNKNOWN, "garage.timezone", detail)
 
 
+class TimezoneDatabaseUnavailable(RuntimeError):
+    """The running machine carries NO timezone database at all.
+
+    Not a refusal of the caller's value -- ``America/Denver`` is a perfectly
+    good name, and blaming it would send an operator hunting for a typo that is
+    not there. ``zoneinfo.available_timezones()`` returned an empty set: neither
+    a system tz database on ``TZPATH`` nor the ``tzdata`` package is installed.
+    This module cannot read a single local day without one, so it fails loudly
+    and names what is missing rather than refusing every zone as unknown. The
+    package does NOT add ``tzdata`` as a dependency to make this disappear: the
+    install documentation says a tz database is required, and this error is the
+    machine saying it has none.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(
+            "this system carries no timezone database: zoneinfo.available_timezones() is "
+            "empty, so no IANA name can be validated and no local day can be read. Install "
+            "the system tz database (tzdata on Debian and Ubuntu, tzdata on Alpine and "
+            "the RPM family) or the Python package `tzdata`; then run this again. This is "
+            "the machine's configuration, not the value that was passed."
+        )
+
+
+@cache
+def _tz_names() -> frozenset[str]:
+    """Every IANA name the running system carries, as the tz DATABASE spells
+    it -- read once per process. This is the set the check below asks, and
+    deliberately not the filesystem: see ``zone``."""
+    return frozenset(available_timezones())
+
+
 def zone(name: str) -> ZoneInfo:
     """The garage's zone, or a refusal that names it.
 
     Refused rather than defaulted to UTC. A garage whose zone is unavailable
     would otherwise evaluate its windows on UTC clocks silently, which is wrong
     by hours at every window edge and invisible in every test written at noon.
+
+    **THE NAME IS CHECKED AGAINST THE TZ DATABASE'S OWN NAME SET, CASE-EXACT,
+    BEFORE A FILE IS OPENED.** Measured before this: the check was
+    ``ZoneInfo(name)`` alone, whose lookup is a file open on ``TZPATH`` -- so on
+    a case-insensitive filesystem (a Mac) ``america/denver`` was ACCEPTED and
+    stored as typed, and the same stored row was refused on a case-sensitive
+    one (a Linux server, CI): a garage created from a laptop, unreadable in
+    production. ``available_timezones()`` is a listing of names, so membership
+    in it gives the same answer on every filesystem.
+
+    An EMPTY name set is a different condition from an unknown name and gets
+    a different error: ``TimezoneDatabaseUnavailable``, never
+    ``REFUSAL_TIMEZONE_UNKNOWN`` -- a validator that asked "is the name in the
+    set" of a machine with no tz database would refuse EVERY zone, blaming each
+    caller's good input for the machine's missing data.
     """
     if not isinstance(name, str) or not name:
         raise UnknownTimezone(
             f"a timezone must be an IANA name such as 'America/Denver', not {name!r}."
         )
+    names = _tz_names()
+    if not names:
+        raise TimezoneDatabaseUnavailable()
+    if name not in names:
+        raise UnknownTimezone(
+            f"{name!r} is not a timezone this system carries (the check is case-exact "
+            "against the tz database's own names: 'America/Denver', not 'america/denver'). "
+            "It is refused rather than defaulted to UTC: a pass evaluated on UTC clocks "
+            "crosses its own window edges by hours, and nothing in the answer would say so."
+        )
     try:
         return ZoneInfo(name)
     except (ZoneInfoNotFoundError, ValueError) as exc:
+        # A name the database lists but whose file cannot be opened: a broken
+        # tz install. Still refused by name, never defaulted.
         raise UnknownTimezone(
-            f"{name!r} is not a timezone this system carries. It is refused rather "
-            "than defaulted to UTC: a pass evaluated on UTC clocks crosses its own "
-            "window edges by hours, and nothing in the answer would say so."
+            f"{name!r} is listed by this system's tz database but could not be loaded: {exc}"
         ) from exc
 
 
@@ -84,6 +142,8 @@ def require_aware(moment: datetime, what: str = "an instant") -> datetime:
     `astimezone`, which is right about half the time and silent about the rest
     -- and "about half the time" is how a 06:00 window opens at 05:00.
     """
+    if not isinstance(moment, datetime):
+        raise TypeError(f"{what} must be a datetime, not {moment!r}")
     if moment.tzinfo is None or moment.utcoffset() is None:
         raise ValueError(
             f"{what} must carry a timezone. A naive datetime would be read as the "

@@ -70,7 +70,7 @@ def test_a_registration_ended_by_revocation_reads_as_revoked_not_no_pass():
 
 
 @pytest.mark.guarantee("G8")
-@pytest.mark.parametrize("blank", ["", "   ", None, 12], ids=["empty", "spaces", "None", "int"])
+@pytest.mark.parametrize("blank", ["", "   ", "\t"], ids=["empty", "spaces", "tab"])
 def test_a_blank_identity_is_refused_an_answer_naming_the_field_at_entry(blank):
     answer = ask(blank)
     assert answer.outcome is Outcome.REFUSED_TO_ANSWER
@@ -98,10 +98,17 @@ def test_two_passes_holding_one_identity_is_refused_an_answer_not_picked_at_entr
 
 
 @pytest.mark.guarantee("G8")
-def test_a_registration_naming_a_pass_nobody_handed_in_is_a_refused_request():
-    with pytest.raises(f.Refused) as refused:
-        ask("CAR-1", [registered(a_pass(id="ghost"), "CAR-1")], [a_pass()])
-    assert refused.value.code == f.REFUSAL_PASS_NOT_FOUND
+def test_a_registration_naming_a_pass_nobody_handed_in_is_answered_not_raised():
+    """Was a raised ``Refused(REFUSAL_PASS_NOT_FOUND)`` in both directions --
+    an exception at an exit lane on inconsistent data, which an outside review
+    found against G4. Now refused-to-answer at entry naming the field, and
+    not-covered at exit naming the pass (G4 has the exit's tests)."""
+    entry = ask("CAR-1", [registered(a_pass(id="ghost"), "CAR-1")], [a_pass()])
+    assert entry.outcome is Outcome.REFUSED_TO_ANSWER
+    assert entry.missing == f.MISSING_PASS_HANDED_IN and "'ghost'" in entry.detail
+    exit_ = ask("CAR-1", [registered(a_pass(id="ghost"), "CAR-1")], [a_pass()],
+                direction=Direction.EXIT)
+    assert exit_.outcome is Outcome.NOT_COVERED and exit_.reason == f.PASS_NOT_HANDED_IN
 
 
 @pytest.mark.guarantee("G8")

@@ -4,42 +4,122 @@ Every key is known or refused. A key this module does not know is not ignored
 -- a term silently dropped is a term the owner believes is in force and is not
 -- and a reservation-shaped or money-shaped field invented in advance would be
 exactly such a key. The known sets are the source the contract prints.
+
+**THE KEYS AND THE CHECKS ARE DERIVED FROM THE DATACLASSES, NOT LISTED.**
+Measured before this: the loaders checked a hand-written set of fields, so
+twenty-odd malformed shapes were refused by name while a registration with no
+``vehicle_identity``, a ``pass_id`` that was an object, ``allowed_lanes: 5`` and
+an enormous ``max_stay_minutes`` were tracebacks at the command line -- and
+``allowed_lanes: "L1"`` was read as the lane set ``{'1', 'L'}``, a silently wrong
+pass. Now every document key is a field of the dataclass it loads into, every
+value is checked against that field's declared type (``typed.py``, the same
+source ``Registration`` and ``Visit`` check themselves against), and a field
+added to a dataclass tomorrow is a document key with a type check the same day,
+with nobody editing a list.
+
+**A STRING IS NEVER REINTERPRETED AS A COLLECTION.** Where the field is a set or
+a list the document must carry a JSON list; text there is refused by name.
+
+**THE TWO DECLARED EXCEPTIONS**, as data the derivation reads, so a third one is
+added at the same place and is visible there: ``DOCUMENT_KEY_OF`` (a field whose
+document key spells its unit -- ``Terms.max_stay`` is ``max_stay_minutes``) and
+``STORE_ONLY`` (a field the store's load path sets and a document never carries
+-- ``unreadable`` on a pass and a garage). There are exactly two.
+
+**Required, optional, absent.** A field with no default is required: absent or
+``null`` is refused naming it. A field with a default may be absent, and ``null``
+where the declared type admits it means what the dataclass says it means
+(``Garage.transient_available``: unstated).
+
+**AT AN EXIT, A RECORD WHOSE CONTENT CANNOT BE READ IS ANSWERED, NOT REFUSED.**
+The module answers when it holds a record whose content it cannot read; it
+refuses when it holds no record at all, or no instant to read it at. That is
+the store's line -- a stored row with bad content degrades to an UNREADABLE
+pass or garage and the exit is answered naming it (``records._pass_from_row``,
+``garage.garage_from_stored``) -- and ``load_or_degrade`` is the same line at
+this door: a pass or garage document that refuses becomes the same carrier a
+stored row would, when its carrier fields can be read (``CARRIER_FIELDS``); a
+registration or visit document, or a pass or garage too malformed to carry the
+marker, becomes the bare ``Unreadable`` and the exit is answered not-covered
+naming the document and the field. Measured before this: six malformed
+documents at an exit were six refusals, exit 3, no outcome -- the thing G4
+forbids -- while the identical content from the store answered. At an entry
+every one of them is still refused by name.
 """
 
 from __future__ import annotations
 
-import json
+import dataclasses
+import typing
 from datetime import date, datetime, timedelta
-from pathlib import Path
-from typing import Any
+from enum import Enum
+from typing import Any, NoReturn
 
-from garage_pass.findings import REFUSAL_FIELD_BLANK, REFUSAL_UNKNOWN_FIELD, Refused
+from garage_pass.findings import (
+    REFUSAL_FIELD_BLANK,
+    REFUSAL_FIELD_WRONG_TYPE,
+    REFUSAL_UNKNOWN_FIELD,
+    Refused,
+)
 from garage_pass.garage import Garage
 from garage_pass.localday import require_aware
-from garage_pass.passes import Holder, Pass, Registration, Visit
+from garage_pass.passes import Holder, Pass, Registration, State, Visit
 from garage_pass.states import parse_state
-from garage_pass.terms import AllowancePeriod, Direction, Terms, VisitAllowance, Window
+from garage_pass.terms import Terms, VisitAllowance, Window
+from garage_pass.typed import arms, describe, hints
 
-GARAGE_KEYS = frozenset({"id", "timezone", "transient_available"})
-PASS_KEYS = frozenset({"id", "garage_id", "label", "holder", "terms", "state"})
-HOLDER_KEYS = frozenset({"email", "name", "phone"})
-TERMS_KEYS = frozenset(
-    {
-        "valid_from",
-        "valid_to",
-        "windows",
-        "max_stay_minutes",
-        "visit_allowance",
-        "directions",
-        "allowed_lanes",
-    }
-)
-WINDOW_KEYS = frozenset({"days", "start_minute", "end_minute"})
-ALLOWANCE_KEYS = frozenset({"count", "per"})
-REGISTRATION_KEYS = frozenset({"pass_id", "vehicle_identity", "effective_day", "end_day"})
-VISIT_KEYS = frozenset(
-    {"pass_id", "vehicle_identity", "entry_lane", "entered_at", "exited_at", "exit_lane"}
-)
+#: A field whose DOCUMENT key differs from its name, because the key spells the
+#: unit the document carries: ``(class, field) -> (document key, timedelta unit)``.
+DOCUMENT_KEY_OF: dict[tuple[type, str], tuple[str, str]] = {
+    (Terms, "max_stay"): ("max_stay_minutes", "minutes"),
+}
+
+#: A field the STORE's load path sets and a document never carries.
+STORE_ONLY: dict[type, frozenset[str]] = {
+    Pass: frozenset({"unreadable"}),
+    Garage: frozenset({"unreadable"}),
+}
+
+
+@dataclasses.dataclass(frozen=True)
+class DocumentField:
+    """One field of a document-backed dataclass, as the loader sees it."""
+
+    name: str
+    key: str
+    hint: Any
+    required: bool
+    unit: str | None
+
+
+def document_fields(cls: type) -> tuple[DocumentField, ...]:
+    """The fields a document for ``cls`` may carry -- derived from the
+    dataclass, minus ``STORE_ONLY``, keys renamed per ``DOCUMENT_KEY_OF``."""
+    out = []
+    for f in dataclasses.fields(cls):
+        if f.name in STORE_ONLY.get(cls, frozenset()):
+            continue
+        key, unit = DOCUMENT_KEY_OF.get((cls, f.name), (f.name, None))
+        required = (
+            f.default is dataclasses.MISSING and f.default_factory is dataclasses.MISSING
+        )
+        out.append(DocumentField(f.name, key, hints(cls)[f.name], required, unit))
+    return tuple(out)
+
+
+def keys_of(cls: type) -> frozenset[str]:
+    return frozenset(f.key for f in document_fields(cls))
+
+
+#: The published key sets, by name -- read by the contract generator. Derived.
+GARAGE_KEYS = keys_of(Garage)
+PASS_KEYS = keys_of(Pass)
+HOLDER_KEYS = keys_of(Holder)
+TERMS_KEYS = keys_of(Terms)
+WINDOW_KEYS = keys_of(Window)
+ALLOWANCE_KEYS = keys_of(VisitAllowance)
+REGISTRATION_KEYS = keys_of(Registration)
+VISIT_KEYS = keys_of(Visit)
 
 
 def _only(document: Any, known: frozenset[str], what: str) -> dict:
@@ -55,120 +135,202 @@ def _only(document: Any, known: frozenset[str], what: str) -> dict:
     return document
 
 
-def _day(value: Any, field: str) -> date | None:
-    if value is None:
-        return None
+def _refuse_wrong_type(field: str, hint: Any, value: Any) -> NoReturn:
+    raise Refused(
+        REFUSAL_FIELD_WRONG_TYPE, field,
+        f"{field} must be {describe(hint)}, not {value!r}.",
+    )
+
+
+def _day(value: Any, field: str) -> date:
+    if not isinstance(value, str):
+        _refuse_wrong_type(field, date, value)
     try:
         return date.fromisoformat(value)
-    except (TypeError, ValueError):
+    except ValueError:
         raise Refused(
             REFUSAL_FIELD_BLANK, field, f"{field} must be YYYY-MM-DD, not {value!r}."
         ) from None
 
 
 def _instant(value: Any, field: str) -> datetime:
+    if not isinstance(value, str):
+        _refuse_wrong_type(field, datetime, value)
     try:
         return require_aware(datetime.fromisoformat(value), field)
-    except (TypeError, ValueError) as exc:
+    except ValueError as exc:
         raise Refused(
             REFUSAL_FIELD_BLANK, field, f"{field} must be an ISO instant with an offset: {exc}"
         ) from None
 
 
+def _duration(value: Any, field: str, unit: str) -> timedelta:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise Refused(
+            REFUSAL_FIELD_WRONG_TYPE, field,
+            f"{field} must be a whole number of {unit}, not {value!r}.",
+        )
+    try:
+        return timedelta(**{unit: value})
+    except OverflowError:
+        raise Refused(
+            REFUSAL_FIELD_WRONG_TYPE, field,
+            f"{field} is {value!r} {unit}, which is too large to be a duration.",
+        ) from None
+
+
+def _enum(value: Any, cls: type[Enum], field: str) -> Enum:
+    if cls is State:
+        return parse_state(value)  # 'expired' is refused by its own code
+    if not isinstance(value, str):
+        _refuse_wrong_type(field, cls, value)
+    try:
+        return cls(value)
+    except ValueError:
+        raise Refused(
+            REFUSAL_FIELD_BLANK, field,
+            f"{field} must be one of {[m.value for m in cls]}, not {value!r}.",
+        ) from None
+
+
+def _value(value: Any, hint: Any, field: str, unit: str | None = None) -> Any:
+    """A JSON value converted to the field's declared type, or a refusal
+    naming the field, the type and the value. ``None`` is handled by the
+    caller (required or defaulted); here the value is present."""
+    candidates = [a for a in arms(hint) if a is not type(None)]
+    arm = candidates[0]
+    origin = typing.get_origin(arm)
+    if origin in (frozenset, set, tuple, list):
+        # A STRING IS NEVER REINTERPRETED AS A COLLECTION: JSON lists only.
+        if not isinstance(value, list):
+            _refuse_wrong_type(field, hint, value)
+        (inner,) = [a for a in typing.get_args(arm) if a is not Ellipsis] or [Any]
+        items = [_value(v, inner, f"{field}[{i}]") for i, v in enumerate(value)]
+        return origin(items) if origin is not list else items
+    if arm is date:
+        return _day(value, field)
+    if arm is datetime:
+        return _instant(value, field)
+    if arm is timedelta:
+        assert unit is not None, f"{field}: a duration field needs its unit in DOCUMENT_KEY_OF"
+        return _duration(value, field, unit)
+    if isinstance(arm, type) and issubclass(arm, Enum):
+        return _enum(value, arm, field)
+    if isinstance(arm, type) and dataclasses.is_dataclass(arm):
+        return load(arm, value, field)
+    if arm is bool:
+        if not isinstance(value, bool):
+            _refuse_wrong_type(field, hint, value)
+        return value
+    if arm is int:
+        if isinstance(value, bool) or not isinstance(value, int):
+            _refuse_wrong_type(field, hint, value)
+        return value
+    if arm is str:
+        if not isinstance(value, str):
+            _refuse_wrong_type(field, hint, value)
+        return value
+    if isinstance(arm, type) and isinstance(value, arm):  # pragma: no cover - no such field today
+        return value
+    _refuse_wrong_type(field, hint, value)  # pragma: no cover
+
+
+_DEFAULT = object()
+
+
+def _field_value(f: DocumentField, d: dict, what: str) -> Any:
+    """One field's value from the document: converted and checked, or
+    ``_DEFAULT`` when absent and the dataclass has a default for it."""
+    value = d.get(f.key)
+    field = f"{what}.{f.key}"
+    if value is None:
+        if f.required:
+            raise Refused(REFUSAL_FIELD_BLANK, field, f"{field} is required.")
+        if f.key in d and type(None) not in arms(f.hint):
+            _refuse_wrong_type(field, f.hint, value)
+        return _DEFAULT  # the dataclass's own default
+    return _value(value, f.hint, field, f.unit)
+
+
+def load(cls: type, document: Any, what: str) -> Any:
+    """A document as an instance of ``cls`` -- every key known, every value of
+    its declared type, then the dataclass's own validation (contradictions,
+    an unknown zone, a blank identity) runs as it does for any caller."""
+    d = _only(document, keys_of(cls), what)
+    kwargs: dict[str, Any] = {}
+    for f in document_fields(cls):
+        value = _field_value(f, d, what)
+        if value is not _DEFAULT:
+            kwargs[f.name] = value
+    return cls(**kwargs)
+
+
+#: The fields a document must yield READABLE for a Pass or a Garage to carry
+#: its refusal the way a stored row does: without them there is no object to
+#: hold the marker, and the exit is answered on the bare marker instead.
+CARRIER_FIELDS: dict[type, tuple[str, ...]] = {
+    Pass: ("id", "garage_id", "label", "state"),
+    Garage: ("id", "timezone", "transient_available"),
+}
+
+
+def load_or_degrade(cls: type, document: Any, what: str) -> Any:
+    """``load``, and where it refuses, the refusal DEGRADED instead of raised
+    -- for an EXIT, which is answered on any record the module holds.
+
+    Returns the loaded value; or, for a pass or garage whose carrier fields
+    read, the same UNREADABLE carrier a stored row with that content becomes
+    (``Pass(unreadable=...)``, ``Garage(unreadable=...)``), so ``access``
+    answers PASS_UNREADABLE / GARAGE_UNREADABLE exactly as it does for the
+    store; or the bare ``Unreadable`` naming the document and the field, for a
+    registration, a visit, or a carrier that cannot be built. The set of
+    refusals this covers is not listed: it is every ``Refused`` the load
+    raises, from the type checks and from the dataclasses' own validators.
+    """
+    try:
+        return load(cls, document, what)
+    except Refused as refusal:
+        marker = refusal.as_unreadable()
+        names = CARRIER_FIELDS.get(cls)
+        if not names or not isinstance(document, dict):
+            return marker
+        kwargs: dict[str, Any] = {}
+        try:
+            for f in document_fields(cls):
+                if f.name in names:
+                    value = _field_value(f, document, what)
+                    if value is not _DEFAULT:
+                        kwargs[f.name] = value
+            # every other required field is the unreadable part, carried as None
+            # -- the shape the store builds (holder=None, terms=None)
+            for fld in dataclasses.fields(cls):
+                if fld.name not in kwargs and fld.name != "unreadable" and (
+                    fld.default is dataclasses.MISSING
+                    and fld.default_factory is dataclasses.MISSING
+                ):
+                    kwargs[fld.name] = None
+            carrier = cls(**kwargs, unreadable=marker)
+        except Refused:
+            return marker  # the carrier's own fields are what cannot be read
+        return carrier
+
+
 def load_garage(document: Any) -> Garage:
-    d = _only(document, GARAGE_KEYS, "garage")
-    return Garage(
-        id=d.get("id"), timezone=d.get("timezone"), transient_available=d.get("transient_available")
-    )
+    return load(Garage, document, "garage")
 
 
 def load_terms(document: Any) -> Terms:
-    d = _only(document, TERMS_KEYS, "terms")
-    windows = []
-    for index, w in enumerate(d.get("windows") or []):
-        w = _only(w, WINDOW_KEYS, f"terms.windows[{index}]")
-        windows.append(
-            Window(
-                days=frozenset(w.get("days") or []),
-                start_minute=w.get("start_minute"),
-                end_minute=w.get("end_minute"),
-            )
-        )
-    allowance = None
-    if d.get("visit_allowance") is not None:
-        a = _only(d["visit_allowance"], ALLOWANCE_KEYS, "terms.visit_allowance")
-        try:
-            per = AllowancePeriod(a.get("per"))
-        except ValueError:
-            raise Refused(
-                REFUSAL_FIELD_BLANK,
-                "terms.visit_allowance.per",
-                f"per must be one of {[p.value for p in AllowancePeriod]}, not {a.get('per')!r}.",
-            ) from None
-        allowance = VisitAllowance(count=a.get("count"), per=per)
-    try:
-        directions = frozenset(Direction(x) for x in (d.get("directions") or []))
-    except ValueError:
-        raise Refused(
-            REFUSAL_FIELD_BLANK,
-            "terms.directions",
-            f"directions must be among {[x.value for x in Direction]}, "
-            f"not {d.get('directions')!r}.",
-        ) from None
-    max_stay = d.get("max_stay_minutes")
-    if max_stay is not None and (isinstance(max_stay, bool) or not isinstance(max_stay, int)):
-        raise Refused(
-            REFUSAL_FIELD_BLANK, "terms.max_stay_minutes", f"must be an integer, not {max_stay!r}."
-        )
-    lanes = d.get("allowed_lanes")
-    return Terms(
-        valid_from=_day(d.get("valid_from"), "terms.valid_from"),
-        valid_to=_day(d.get("valid_to"), "terms.valid_to"),
-        windows=tuple(windows),
-        max_stay=timedelta(minutes=max_stay) if max_stay is not None else None,
-        visit_allowance=allowance,
-        directions=directions,
-        allowed_lanes=frozenset(lanes) if lanes is not None else None,
-    )
+    return load(Terms, document, "terms")
 
 
 def load_pass(document: Any) -> Pass:
-    d = _only(document, PASS_KEYS, "pass")
-    h = _only(d.get("holder"), HOLDER_KEYS, "pass.holder")
-    return Pass(
-        id=d.get("id"),
-        garage_id=d.get("garage_id"),
-        label=d.get("label"),
-        holder=Holder(email=h.get("email"), name=h.get("name"), phone=h.get("phone")),
-        terms=load_terms(d.get("terms") or {}),
-        state=parse_state(d.get("state", "draft")),
-    )
+    return load(Pass, document, "pass")
 
 
 def load_registration(document: Any) -> Registration:
-    d = _only(document, REGISTRATION_KEYS, "registration")
-    effective = _day(d.get("effective_day"), "registration.effective_day")
-    if effective is None:
-        raise Refused(REFUSAL_FIELD_BLANK, "registration.effective_day", "is required.")
-    return Registration(
-        pass_id=d.get("pass_id"),
-        vehicle_identity=d.get("vehicle_identity"),
-        effective_day=effective,
-        end_day=_day(d.get("end_day"), "registration.end_day"),
-    )
+    return load(Registration, document, "registration")
 
 
 def load_visit(document: Any) -> Visit:
-    d = _only(document, VISIT_KEYS, "visit")
-    return Visit(
-        pass_id=d.get("pass_id"),
-        vehicle_identity=d.get("vehicle_identity"),
-        entry_lane=d.get("entry_lane"),
-        entered_at=_instant(d.get("entered_at"), "visit.entered_at"),
-        exited_at=_instant(d["exited_at"], "visit.exited_at") if d.get("exited_at") else None,
-        exit_lane=d.get("exit_lane"),
-    )
+    return load(Visit, document, "visit")
 
-
-def read_json(path: str | Path) -> Any:
-    return json.loads(Path(path).read_text())

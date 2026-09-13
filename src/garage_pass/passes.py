@@ -19,6 +19,7 @@ from garage_pass.findings import REFUSAL_HOLDER_EMAIL_MALFORMED, Refused, Unread
 from garage_pass.garage import require_text
 from garage_pass.localday import require_aware
 from garage_pass.terms import Terms
+from garage_pass.typed import require_typed
 
 
 class State(Enum):
@@ -47,7 +48,8 @@ class Holder:
         local, at, domain = email.partition("@")
         if not (at and local and domain):
             raise Refused(
-                REFUSAL_HOLDER_EMAIL_MALFORMED, "holder.email", "needs one @ with text both sides."
+                REFUSAL_HOLDER_EMAIL_MALFORMED, "holder.email",
+                "needs an @ with text before it and text after it.",
             )
         object.__setattr__(self, "email", email)
 
@@ -96,6 +98,13 @@ class Registration:
     effective_day: date
     end_day: date | None = None
 
+    def __post_init__(self) -> None:
+        # Every field against its declared type, derived from the annotation
+        # (``typed.require_typed``). Measured before this: a registration whose
+        # identity was None, or whose day was the JSON string, was constructed
+        # without complaint and raised at an EXIT lane instead.
+        require_typed(self)
+
     def covers(self, day: date) -> bool:
         return self.effective_day <= day and (self.end_day is None or day < self.end_day)
 
@@ -112,6 +121,7 @@ class Visit:
     exit_lane: str | None = None
 
     def __post_init__(self) -> None:
+        require_typed(self)
         require_aware(self.entered_at, "entered_at")
         if self.exited_at is not None:
             require_aware(self.exited_at, "exited_at")

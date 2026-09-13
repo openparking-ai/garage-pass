@@ -52,6 +52,8 @@ from garage_pass.findings import (
     REFUSAL_REGISTRATION_ENDS_BEFORE_IT_STARTS,
     REFUSAL_REGISTRATION_NOT_FOUND,
     REFUSAL_REGISTRATION_OUTLIVES_THE_PASS,
+    REFUSAL_REPAIR_NEEDS_WHO_AND_WHY,
+    REFUSAL_TENANT_NOT_FOUND,
     REFUSAL_VEHICLE_ON_ANOTHER_PASS,
     REFUSAL_VISIT_ALREADY_OPEN,
     Refused,
@@ -86,8 +88,21 @@ def as_uuid(value: Any) -> UUID:
 def store_garage(cursor: Any, tenant_id: Any, garage: Garage) -> UUID:
     """Store a garage. Its timezone was refused where the ``Garage`` value was
     built if the system does not carry it. A second garage with the same id is
-    refused by name; the UNIQUE is the backstop for two writers racing."""
+    refused by name; the UNIQUE is the backstop for two writers racing.
+
+    THE TENANT ROW IS READ FIRST. This is the first write anything makes for a
+    tenant, so a ``--tenant`` nobody seeded arrives here before any garage
+    could be looked up -- measured before this it was the database's foreign
+    key, a traceback at the command line, while every other store command was
+    already refusing GARAGE_NOT_FOUND. The tenant policy lets the role read
+    exactly its own row, which is the row this asks for."""
     tenant_uuid = as_uuid(tenant_id)
+    cursor.execute("SELECT 1 FROM tenants WHERE id = %s", (tenant_uuid,))
+    if not cursor.fetchone():
+        raise Refused(
+            REFUSAL_TENANT_NOT_FOUND, "tenant",
+            f"no tenant row has id {tenant_uuid}; seed the tenant before its first garage.",
+        )
     cursor.execute(
         "SELECT 1 FROM garages WHERE tenant_id = %s AND external_id = %s",
         (tenant_uuid, garage.id),
@@ -149,22 +164,41 @@ def load_readable_garage(cursor: Any, tenant_id: Any, external_id: str) -> tuple
 
 
 def set_garage_timezone(
-    cursor: Any, tenant_id: Any, garage_external_id: str, timezone: str
+    cursor: Any, tenant_id: Any, garage_external_id: str, timezone: str,
+    *, by: str, at: datetime, reason: str,
 ) -> dict:
     """THE REPAIR. Correct a stored garage's timezone -- the one write that
     does not require the garage to be readable first, because it is how an
     unreadable garage becomes readable. The new value is refused by name if
     the system does not carry it, so the repair cannot store the defect it
-    repairs."""
+    repairs.
+
+    **AND IT IS RECORDED**: who, when, why, the old value and the new, into
+    ``garage_changes`` -- append-only, the shape of ``pass_state_changes``
+    (migration 0002). A blank who or why is refused before anything changes.
+    Measured before this: the repair moved every clock at the garage and left
+    no record but the row."""
     tenant_uuid = as_uuid(tenant_id)
-    zone(require_text(timezone, "garage.timezone"))  # refuses an unknown zone by name
+    new_value = require_text(timezone, "garage.timezone")
+    zone(new_value)  # refuses an unknown zone by name
+    require_aware(at, "at")
+    if not isinstance(by, str) or not by.strip():
+        raise Refused(REFUSAL_REPAIR_NEEDS_WHO_AND_WHY, "changed_by", f"who is {by!r}.")
+    if not isinstance(reason, str) or not reason.strip():
+        raise Refused(REFUSAL_REPAIR_NEEDS_WHO_AND_WHY, "reason", f"why is {reason!r}.")
     garage_uuid, garage = load_garage(cursor, tenant_uuid, garage_external_id)
     cursor.execute(
         "UPDATE garages SET timezone = %s WHERE tenant_id = %s AND id = %s",
-        (timezone.strip(), tenant_uuid, garage_uuid),
+        (new_value, tenant_uuid, garage_uuid),
     )
-    return {"garage": garage_external_id, "timezone": timezone.strip(), "was": garage.timezone,
-            "was_readable": garage.unreadable is None}
+    cursor.execute(
+        "INSERT INTO garage_changes (tenant_id, garage_id, field, old_value, new_value, "
+        "changed_by, changed_at, reason) VALUES (%s, %s, 'timezone', %s, %s, %s, %s, %s)",
+        (tenant_uuid, garage_uuid, garage.timezone, new_value, by.strip(), at, reason.strip()),
+    )
+    return {"garage": garage_external_id, "timezone": new_value, "was": garage.timezone,
+            "was_readable": garage.unreadable is None, "changed_by": by.strip(),
+            "changed_at": at, "reason": reason.strip()}
 
 
 # ---------------------------------------------------------------------------
@@ -486,15 +520,29 @@ def register_vehicle(
             f"{identity!r} landed first. Roll back and read again.",
         ) from violation
     except psycopg.errors.DeadlockDetected as deadlock:
-        # The other shape a genuine race takes at an EXCLUDE: each writer's
-        # INSERT waits on the other's in-progress row and the database rolls
-        # one of them back. Measured on the L3's 120-round probe: 0 in 120 on
-        # two clusters, 1-3 in 120 on a third -- a timing property, and it
-        # reached the caller as a traceback. The advice is the same.
+        # The other shape a race at the EXCLUDE takes: each writer's INSERT
+        # waits on the other's in-progress row and the database rolls one of
+        # them back. Measured on the L3's 120-round probe: 0 in 120 on two
+        # clusters, 1-3 in 120 on a third -- a timing property, and it reached
+        # the caller as a traceback. The advice is the same as the constraint's.
+        #
+        # WHAT THIS SENTENCE SAYS IS ONLY WHAT THIS MODULE OBSERVED: its INSERT
+        # was the writer the database rolled back. It does NOT say what the
+        # other side of the cycle was. Measured before this: it said "two
+        # registrations raced", and under a deadlock from a lock this module
+        # never takes (a raw SELECT ... FOR UPDATE on the pass's row, by
+        # another transaction) that sentence was false and PostgreSQL's own
+        # DETAIL -- the one line that names the cycle -- was thrown away. The
+        # DETAIL is carried now, verbatim, and no cause is asserted.
+        detail = (deadlock.diag.message_detail or "").strip()
         raise Refused(
             REFUSAL_CONSTRAINT, "vehicle_identity",
-            f"constraint {ONE_PASS_PER_GARAGE}: two registrations of {identity!r} raced and "
-            "the database rolled this one back (deadlock detected). Roll back and read again.",
+            f"constraint {ONE_PASS_PER_GARAGE}: the database detected a deadlock while this "
+            f"registration of {identity!r} waited on another transaction, and rolled this "
+            "write back. What the other transaction held is not something this module "
+            "observed; PostgreSQL's own account of the cycle: "
+            + (detail if detail else "(no DETAIL was supplied)")
+            + " Roll back and read again.",
         ) from deadlock
     return {
         "pass": pass_external_id, "vehicle_identity": identity,
