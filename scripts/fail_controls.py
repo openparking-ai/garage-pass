@@ -1135,7 +1135,7 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
         "pass, and the parity with the store is gone (an unreadable pass is an unreadable "
         "pass, A1.2)",
     ),
-    # --- the document that crashes the decoder (U1, the L5 gate's blocker) ------------
+    # --- the document that crashes the decoder (U1, the L5 gate's B1) ------------
     "G18/decoder-recursion": (
         G18, "cli.py",
         "    except (OSError, ValueError, RecursionError) as exc:",

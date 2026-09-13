@@ -290,7 +290,7 @@ def _document(path: str, option: str) -> Any:
     machine is the machine's resource, the same family as a machine with no
     timezone database, and is not blamed on the request. Measured before this:
     the nested document was a traceback in BOTH directions, exit 1 with no
-    answer -- the L5 gate's one blocker -- because ``RecursionError`` is a
+    answer -- the L5 gate's B1 -- because ``RecursionError`` is a
     ``RuntimeError``, not a ``ValueError``, and the catch did not name it."""
     try:
         return read_json(path)

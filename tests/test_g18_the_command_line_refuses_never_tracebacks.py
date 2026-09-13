@@ -273,7 +273,7 @@ def test_a_registrations_document_that_is_not_a_list_is_a_json_refusal(tmp_path,
 def test_a_document_nested_past_the_decoder_is_the_json_refusal_on_every_document_argument(
     tmp_path, capsys, option
 ):
-    """THE L5 GATE'S BLOCKER (B1). A file that is valid JSON nested deeper than
+    """THE L5 GATE'S B1. A file that is valid JSON nested deeper than
     ``json.loads`` decodes makes it raise ``RecursionError`` -- a ``RuntimeError``,
     not a ``ValueError`` -- and ``cli._document`` did not name it: a traceback in
     BOTH directions, exit 1 with no answer, the one shape G18 forbids. It is the
