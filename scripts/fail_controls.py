@@ -1172,8 +1172,8 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
     ),
     "G18/document-not-a-regular-file": (
         G18, "cli.py",
-        "    if not file.is_file():",
-        "    if False and not file.is_file():  # PLANTED: the guard is gone; open() blocks "
+        "        if not file.is_file():",
+        "        if False and not file.is_file():  # PLANTED: the guard is gone; open() blocks "
         "on a pipe",
         "a named pipe with no writer is opened again and the command line never returns; the "
         "bounded process test must fail as a HANG, not hang the suite",

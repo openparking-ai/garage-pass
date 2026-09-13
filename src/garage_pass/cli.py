@@ -305,16 +305,19 @@ def _document(path: str, option: str) -> Any:
     symlink to a regular file still reads (tested), and nothing here is a
     timeout: a timeout would be a number nobody set, and would make a slow
     filesystem read the same as a hostile one."""
-    file = Path(path)
-    if not file.is_file():
-        why = "does not exist" if not file.exists() else (
-            "is not a regular file (a directory, a device, a pipe or a socket)"
-        )
-        raise Refused(
-            REFUSAL_DOCUMENT_UNREADABLE, option,
-            f"{option} {path!r} could not be read: it {why}.",
-        )
     try:
+        # INSIDE the try: ``is_file`` and ``exists`` swallow ENOENT/ENOTDIR/ELOOP
+        # but not every OSError -- a path past NAME_MAX raises ENAMETOOLONG from
+        # the stat itself. Measured: 16 tracebacks of 432 with the guard outside.
+        file = Path(path)
+        if not file.is_file():
+            why = "does not exist" if not file.exists() else (
+                "is not a regular file (a directory, a device, a pipe or a socket)"
+            )
+            raise Refused(
+                REFUSAL_DOCUMENT_UNREADABLE, option,
+                f"{option} {path!r} could not be read: it {why}.",
+            )
         return read_json(path)
     except (OSError, ValueError, RecursionError) as exc:
         raise Refused(

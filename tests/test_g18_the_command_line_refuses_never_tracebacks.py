@@ -1328,6 +1328,13 @@ def test_the_regular_file_guard_keeps_a_symlink_and_refuses_a_device_a_socket_an
                            "--vehicle", "CAR-1", "--lane", "L1", "--direction", "exit",
                            "--at", "2026-06-01T12:00:00-06:00"], capsys)
     assert status == EXIT_REFUSED_REQUEST and "does not exist" in printed["detail"], printed
+    # a path past NAME_MAX: the stat inside is_file() raises ENAMETOOLONG -- measured as 16
+    # tracebacks of 432 when the guard stood outside the try; it is a refusal like the rest
+    too_long = tmp_path / ("x" * 300 + ".json")
+    status, printed = run([*_argv(garage, too_long, registrations=regs),
+                           "--vehicle", "CAR-1", "--lane", "L1", "--direction", "exit",
+                           "--at", "2026-06-01T12:00:00-06:00"], capsys)
+    assert status == EXIT_REFUSED_REQUEST and printed["refused"] == f.REFUSAL_DOCUMENT_UNREADABLE
 
 
 @pytest.mark.guarantee("G18")
