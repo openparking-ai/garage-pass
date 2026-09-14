@@ -28,15 +28,21 @@ marked as such rather than left looking measured.
 | **G9** | A visit allowance and a maximum stay are computed from the module's OWN recorded visits and from nothing else, and the answer names its denominator: how many entries were counted, on which pass, over its life or in which window on which day; and which entry a stay was measured from, both instants rendered as the garage's wall clock whatever offset each arrived with. A maximum stay with no open recorded entry to measure from is UNMEASURED and the answer says so by name while answering on the terms that can be evaluated -- never silently treated as satisfied, and never a refusal. |
 | **G10** | Row-level security on every table from migration 0001: a tenant column, ENABLE, FORCE and a policy on each, read from the catalogue and never from a list; isolation proven ON EVERY TENANT-BEARING TABLE, from the catalogue, by a role that COULD bypass being shown it cannot read or write another tenant's rows -- and a stripped predicate on any one of the tables reddens it, every table of every migration having that control; and every garage and pass reference is half of a composite tenant key, so a row cannot name another tenant's garage or pass even by a raw insert. |
 | **G11** | Nothing real in the tree: no email address that is not obviously invented, no card-shaped value, and no name from the maintainer's other software, in any file git tracks -- swept in Python over `git ls-files` with a positive control that fires before the result is read, and by CI guards that self-test the same way. |
-| **G12** | Every state change records WHO, WHEN and WHY, none blank, into an append-only history: the application role holds SELECT and INSERT on it and nothing else, read from the catalogue and proven by a refused UPDATE -- and holds no DELETE on any table whose deletion cascades into it, the set read from the catalogue and walked transitively, so the history cannot be erased by deleting what it belongs to. The allowed transitions are the published ones, `expired` is derived from valid_to and refused if typed, and revoked outranks expiry. THE ONE OPERATOR WRITE ON A GARAGE -- the timezone repair, which changes how every pass at the garage is read -- is recorded the same way: who, when, why, the old value and the new, into a second append-only history with the same grant and the same cascade rule; a repair with no who or no why is refused and changes nothing. The set of append-only histories is read from the catalogue (every table the application role may only SELECT and INSERT) and must be exactly the two published ones. |
+| **G12** | Every state change records WHO, WHEN and WHY, none blank, into an append-only history: the application role holds SELECT and INSERT on it and nothing else, read from the catalogue and proven by a refused UPDATE -- and HOLDS DELETE ON NO TABLE IN THE SCHEMA, every table read from the catalogue with no hand list and no walk to miss a leaf, so the history cannot be erased by deleting what it belongs to and no row anywhere can be erased by the application at all (the module issues no DELETE); where an offending table also cascades into a history, the failure says so, the walk kept beside the grant. The allowed transitions are the published ones, `expired` is derived from valid_to and refused if typed, and revoked outranks expiry. THE OPERATOR WRITES ON A GARAGE -- the timezone repair, which changes how every pass at the garage is read, and the enrols-at repair, which decides where a QR may be redeemed -- are recorded the same way: who, when, why, the old value and the new, into a second append-only history with the same grant and the same cascade rule; a repair with no who or no why is refused and changes nothing, and the enrols-at repair refuses the R1 contradiction (no transient, enrols at exit) by name exactly as creation does. The set of append-only histories is read from the catalogue (every table the application role may only SELECT and INSERT) and must be exactly the two published ones. |
 | **G13** | THE LABEL IS ONLY A LABEL. 'Monthly', 'employee', 'vendor' and the rest are free text the owner types, and no behaviour keys off them. THE PROOF IS THE MATRIX: two passes that differ only in label answer identically across every state, direction and term, and its power is measured -- twelve spellings of a label-keyed branch are planted as its controls, and it catches every one that changes an answer. An AST scan also reports the spellings it knows (a comparison, a string predicate, a match) and is a report, not the proof: a scan that must know every way to read a string is the wrong instrument. |
 | **G14** | The fixtures are capable of exercising what they claim: the shifting zone really shifts on the named transition days, the fixed zone really does not, and the terms matrix holds cases on both sides of every axis the access answer branches on. |
 | **G15** | docs/CONTRACT.md is DERIVED: the guarantees, the refusals, the not-covered reasons, the barrier meanings, the answer fields, the states and transitions, the document keys and the worked example are generated from the registries and by running the module -- and the derivation is proven by plants that contradict the prose and require it to change, never by comparing two copies of the same claim. |
 | **G16** | No test module sits outside the guarantee registry: every test module carries a registered guarantee mark or is named in an empty allowance, a module that plants a defect may not be excused, and a registered guarantee whose test did not run and pass fails the whole run unless its id is named in a written-down allowance that CI leaves empty. |
 | **G17** | A stored pass or garage this module cannot read degrades to a STATED answer, never an exception: at an entry refused-to-answer naming the field, at an exit not-covered naming the pass and the field (which at a transient garage means chargeable, and is said so). Terms are re-validated on every load, so a raw row no CHECK can reach, or a validator tightened after the row was stored, strands the pass -- and a stranded pass still answers. A timezone the system does not carry is refused where the garage is written -- checked CASE-EXACTLY against the tz database's own name set, so the answer is the same on a case-insensitive filesystem and a case-sensitive one, and a machine with no tz database at all is named as that, never as an unknown zone -- and an existing bad row answers first, naming the field. A WRITE against an unreadable pass or an unreadable garage is refused by name, naming the refusal that made it unreadable -- except the one write that repairs it: a garage's timezone can be corrected, so an unreadable garage is never permanently unfixable. |
 | **G18** | THE COMMAND LINE RENDERS A REFUSAL, NEVER A TRACEBACK. Every Refused the module raises -- an unknown timezone is one -- is printed as the JSON refusal naming the field and the value, with exit status 3; a document that cannot be read, an instant or a day that does not parse, a naive instant, and -- at an ENTRY -- a document field of the WRONG TYPE -- a missing identity, an object where an id belongs, a number where a list belongs, text where a list belongs (never reinterpreted as the list of its characters) -- are refused the same way, naming the field; at an EXIT a document whose content cannot be read is ANSWERED not-covered naming the field, because an exit is never refused (G4): every value a document carries is checked against the type the dataclass it loads into declares, derived from the annotation and not from a list, so a field added later is covered the day it is added. A database that does not connect is a sentence on stderr with exit 2 -- as is a machine with no timezone database at all, named as that and never as an unknown zone, and as is whatever the database driver raises that the store did not turn into a named refusal (an unmigrated database, a role without its grants, a DSN that is not one): one sentence with its SQLSTATE, mapped LAST, after every named refusal has had its chance, so a deadlock at the one-car-one-pass INSERT is still the refusal that carries PostgreSQL's DETAIL. A tenant nobody seeded is refused by name at its first write, not met at the foreign key. A value that starts with a dash (`--timezone -06:00`) reaches the module and is refused by name, not read by argparse as an option. Every raise in the package is enumerated by AST and classified as rendered at that boundary, as the machine's configuration, or as a programming error no command can reach -- a value of a type the signature does not accept is reachable only from the pure API and never from a command, because the document boundary refuses it first -- and the sweep names its denominator, the raise statements, since an exception born of an operator on a wrong-typed value is not one; an exception class in none of the three fails the suite until it is classified. |
+| **G19** | ONE QR, ONE CAR, ONCE. An enrolment is a one-time credential: it binds exactly one vehicle identity -- the one the lane measured and handed in -- and is then TERMINAL; a redeemed or cancelled enrolment can never be redeemed again, and neither can an expired one (derived from starts_on and days_valid against the garage's local day, never typed) or one not yet started. Several outstanding enrolments on one pass are allowed and intended -- a pass may carry several vehicles -- and each redeems to one car and dies. A redemption is ONE TRANSACTION: the registration, the pass's move to active where it was not already (recorded, with the enrolment as the actor), the enrolment marked redeemed and the access answer -- all or none, under a savepoint that is rolled back on EVERY exception: a refusal, the module's own or the database's backstop, writes nothing and is carried in the answer; anything else writes nothing and SURFACES, so a QR cannot half-land and be used twice and a defect is never swallowed. ONE CREDENTIAL, ONE SPEND UNDER CONCURRENCY: two lanes presenting one token at once get exactly one bind. The pass row is locked first, then the credential row (one lock order everywhere), and the state, the expiry and the pass's registrability are re-read under those locks -- the primary; the spend carries state = 'issued' and asserts one row -- the backstop; and the suite measures each with the other removed. Written for READ COMMITTED, the store's default; a caller at a stricter level meets the serialization failure as the named refusal a deadlock gets. ONLY A STRUCTURAL EXCLUSION REFUSES THE BIND: a pass whose terms allow no movement in the direction the garage enrols at is refused by name, beside the lane refusal and after it, and the credential stays issued; temporal non-coverage -- a weekday pass on a Sunday, a valid_from ahead, a movement outside the hours -- still binds. days_valid is STATED, refused by name when absent, never defaulted. The holder link is the same primitive, used once, under the same locks. Revoking a pass takes the same lock order -- the pass row, its credentials, its registrations -- so a revocation racing a redemption in either order leaves no live registration and no issued credential on the revoked pass; it cancels every outstanding enrolment and holder link in the same transaction, and the redemption's own state check refuses a revoked pass even with that cancellation planted away. |
+| **G20** | THE ENROLMENT OPENS NOTHING ON ITS OWN. The answer a redemption returns is the module's own access answer for that same movement, produced by calling the one access path on the rows as written -- never a second implementation and never a hand-built answer -- and it is identical to calling access with the same inputs after the bind. Where the garage enrols follows from whether it sells transient parking (R1): a garage with no transient enrols at entry, DERIVED, and need not state it; a transient garage states entry or exit, and unstated makes the redemption refuse to answer naming garage.enrols_at (garage.transient_available first, when that is unstated); no transient AND enrols at exit is a contradiction refused by name where the garage is created and where the field is repaired, with the schema's CHECK as the backstop for a raw write. A QR presented at the wrong end is refused by name, naming the end this garage enrols at. |
+| **G21** | A REDEMPTION REFUSAL IS NEVER AN EXIT REFUSAL, AND EVERY REDEMPTION IS ANSWERED. The redemption call always returns an access answer for the movement -- including when the redemption itself is refused, whatever the refusal: an unknown, used, cancelled, expired or not-yet-started credential, the wrong end, a pass that is not registrable, a lane outside the pass's terms, a direction outside the pass's terms, an identity on another pass, an unreadable garage. At an exit lane that answer is covered or not-covered with the exit note, never refused-to-answer (G4 holds through the enrolment path); at an entry it is whatever access says. The census of every refusal kind at every lane end is reported N/N with zero unanswered exits. Every refusal door is also driven through the command line in-process, so the rendered-sentence collector reads each refusal's detail, and a falsehood assembled at run time in any of them reddens the suite. |
+| **G22** | THE TYPED VEHICLE DESCRIPTION DECIDES NOTHING. It is the holder's own statement of the car they will bring, recorded on the enrolment; the identity that binds is what the lane measured. The module cannot compare an opaque identity to free text and does not pretend to: a mismatch is not a refusal, and enrolments that differ only in their description redeem identically -- the same outcome, the same refusal, the same answer -- across every description and every identity. THE PROOF IS THE MATRIX, and its power is measured: five spellings of a description-keyed branch are planted as its controls and each reddens it. |
+| **G23** | THE TOKEN IS NEVER STORED AND NEVER RENDERED. Only its SHA-256 goes in the row; the plaintext is returned exactly once, by the issue call, and by nothing else -- not by a read, not by a listing, not in a refusal detail, not in an answer. Proven by scanning every column of every table in the catalogue, and every detail the module rendered, for tokens it issued -- with the digest as the positive control that the scan reads the column that holds it, and a planted sentence as the positive control that the rendered scan can see one, because a zero from an unproven scan is UNMEASURED, not clean. secrets and hashlib from the standard library; no dependency; no QR image. |
+| **G24** | A HOLDER LINK WRITES holder_name AND holder_phone ON THE PASS, AND NOTHING ELSE. Not the email, not the label, not the terms, not the state, not the garage: every other column of the pass row is the same after the redemption as before, and a wider write reddens the test naming the column it should not have touched. Redeeming the link, once, writes those two, issues an enrolment for that pass with the link as the issuer, and spends the link -- one transaction. The vehicle description goes on the enrolment, not the pass. The owner-only path stands: an owner issues an enrolment without the holder ever using a link. No email is sent and no account or password exists: the module mints and records; delivering is the integrator's. The holder's text is text in any script; a control character in it is refused by name by the module's one text validator, never handed to the database driver, and the same rule holds for every id, lane, label and actor the module reads. |
 
-That is 18 guarantees. Every one of them has a fail control that has been proven to fire, and the count above is derived from the registry rather than typed here.
+That is 24 guarantees. Every one of them has a fail control that has been proven to fire, and the count above is derived from the registry rather than typed here.
 <!-- END:guarantees -->
 
 ## The answer
@@ -172,7 +178,19 @@ but an UNREADABLE pass, answered as G17 states.
 |---|---|
 | `REFUSAL_ALLOWANCE_PER_WINDOW_WITHOUT_WINDOWS` | The visit allowance is counted per window and the pass has no windows, so there is nothing to count it against. |
 | `REFUSAL_CONSTRAINT` | The database refused the write by a constraint the module did not catch first, or rolled it back to break a deadlock at that constraint's lock. Named by its constraint so it is a refusal and not a traceback; two writers racing end here. Under a deadlock the detail carries the database's own account of the cycle and asserts no cause the module did not observe. |
+| `REFUSAL_CREDENTIAL_ALREADY_EXISTS` | An enrolment or holder link with that id already exists in this tenant. |
+| `REFUSAL_CREDENTIAL_ALREADY_USED` | This credential was already redeemed. An enrolment is one QR, one car: it binds exactly one vehicle identity and is then terminal; a holder link is used once. The detail names the credential and when it was redeemed. Nothing is written. |
+| `REFUSAL_CREDENTIAL_CANCELLED` | This credential was cancelled -- the pass it opens was revoked, and a credential must not outlive the pass. The detail names when and why. Nothing is written. |
+| `REFUSAL_CREDENTIAL_EXPIRED` | This credential's window has passed: its last day, starts_on plus days_valid less one, is before today in the garage's local day. Derived; nobody typed it. Nothing is written; issue a new one. |
+| `REFUSAL_CREDENTIAL_NOT_STARTED` | This credential's starts_on is after today in the garage's local day. Nothing is written; present it from that day. |
+| `REFUSAL_CREDENTIAL_UNKNOWN` | No enrolment or holder link in this tenant matches the token presented. The token itself is never rendered and never stored: only its SHA-256 is compared. |
+| `REFUSAL_DAYS_VALID_NOT_POSITIVE` | The credential's days_valid is zero or negative, so there is no day on which it could be redeemed. State a positive whole number of days. |
+| `REFUSAL_DAYS_VALID_NOT_STATED` | The credential's days_valid is not stated. It is refused rather than defaulted: this module refuses guessed defaults, and how long a QR may wait to be redeemed is the owner's to state (the monthly-parker product uses three days from the starting day; that is its number, not this module's). |
+| `REFUSAL_DIRECTION_OUTSIDE_THE_PASS_TERMS` | The pass's terms allow no movement in the direction this garage enrols at, so the QR would be spent on a movement the pass can never cover. Refused by name, beside the lane refusal, before anything is written: the credential stays issued for a movement the pass can cover. ONLY a STRUCTURAL exclusion refuses -- the direction, or the lane outside the stated set. Temporal non-coverage (a weekend on a weekday pass, a valid_from still ahead, a movement outside the hours) still BINDS: enrolling at the weekend is the ordinary case. |
 | `REFUSAL_DOCUMENT_UNREADABLE` | A document named on the command line could not be read: the file is missing, not a regular file, unreadable, not JSON, or JSON the decoder cannot decode (nested deeper than it can read, or a number longer than it will convert). The detail names the path and what went wrong. |
+| `REFUSAL_ENROLMENT_AT_WRONG_END` | The QR was presented at the wrong end: this garage enrols at the end named in the detail, and this lane is the other. Nothing is written. The movement itself still gets its access answer -- and an exit is never refused. |
+| `REFUSAL_ENROLMENT_EXPIRED_IS_DERIVED` | A credential's 'expired' is derived from its starts_on and days_valid against the garage's local day and is never typed by anyone. To end one early, revoke the pass it belongs to; to end it on a day, that day is starts_on plus days_valid. |
+| `REFUSAL_ENROLS_AT_CONTRADICTS_TRANSIENT` | The garage sells no transient parking and is stated to enrol at its exit. At a garage with no transient an unregistered vehicle is not admitted, so the registration must happen at the entry; enrolling at the exit there is a contradiction. Refused where the garage is created and where the field is repaired; the schema's CHECK is the backstop for a raw write. |
 | `REFUSAL_EXIT_BEFORE_ENTRY` | The exit instant is earlier than the entry it would close. |
 | `REFUSAL_EXPIRED_IS_DERIVED` | Expired is derived from the pass's valid_to and is never typed by anyone. To end a pass early, revoke it; to end it on a day, that day is valid_to. |
 | `REFUSAL_FIELD_BLANK` | A required field is blank. The field is named beside this code. |
@@ -183,6 +201,7 @@ but an UNREADABLE pass, answered as G17 states.
 | `REFUSAL_HOLDER_EMAIL_MALFORMED` | The holder's email address does not look like one -- it needs an @ with something before it and something after it. The email is the holder's identity in this module, so a malformed one identifies nobody. |
 | `REFUSAL_LANES_STATED_BUT_EMPTY` | The allowed lanes are stated as an empty set. Absent means every lane; an empty set means no lane, which covers nothing. |
 | `REFUSAL_LANE_NAME_BLANK` | A lane name is blank. |
+| `REFUSAL_LANE_OUTSIDE_THE_PASS_TERMS` | The pass names the lanes it may use, and the lane this QR was presented at is not one of them. Nothing is implicit: the pass carries its own terms, and a redemption at a lane they do not name is refused naming the lane and the set. The owner's fix is to state the lane on the pass. Nothing is written. |
 | `REFUSAL_MAX_STAY_NOT_POSITIVE` | The maximum stay is zero or negative. A pass that allows no time inside covers nothing; state a positive duration, or no maximum. |
 | `REFUSAL_NO_DIRECTIONS` | The pass states no direction. Nothing is implicit: a privilege the terms do not state does not exist, so a pass that names neither entry nor exit covers nothing. |
 | `REFUSAL_NO_OPEN_VISIT` | No recorded entry of this vehicle on this pass is still open, so there is no visit for this exit to close. |
@@ -199,19 +218,21 @@ but an UNREADABLE pass, answered as G17 states.
 | `REFUSAL_STATE_TRANSITION_NOT_ALLOWED` | The pass cannot move from its current state to the one asked for. The allowed moves are published in the contract. |
 | `REFUSAL_STATE_UNKNOWN` | The state named is not one this module has. |
 | `REFUSAL_TENANT_NOT_FOUND` | No tenant row has the id given. The first write for a tenant -- create-garage -- reads the tenant row before it writes, so an id nobody seeded is refused by name rather than met at the database's foreign key. |
+| `REFUSAL_TEXT_HAS_CONTROL_CHARACTERS` | A text field carries a control character INSIDE it -- a NUL, a line break, a tab or another character whose Unicode category is Cc, between its first and last non-blank characters. Refused by name wherever the module reads text, so a driver never turns it into a configuration-class sentence. Whitespace at either edge was never part of the text and is removed before the check: the ten Cc code points Python counts as whitespace (TAB, LF, VT, FF, CR, U+001C to U+001F and U+0085) are stripped there, and NUL is never whitespace and never stripped. Letters in any script are text and are accepted. |
 | `REFUSAL_TIMEZONE_UNKNOWN` | The timezone named is not an IANA name this system carries. It is refused rather than defaulted to UTC: a pass evaluated on UTC clocks crosses its own window edges by hours, and nothing in the answer would say so. The detail names the value; a garage already stored with one is repaired with set-garage-timezone. |
 | `REFUSAL_UNKNOWN_FIELD` | A document carries a field this module does not know. It is refused rather than ignored: a field silently dropped is a term the owner believes is in force and is not. |
 | `REFUSAL_VALID_TO_BEFORE_VALID_FROM` | The pass ends before it starts: valid_to is earlier than valid_from. There is no day on which such a pass could cover anything, so it is not created. |
 | `REFUSAL_VEHICLE_ON_ANOTHER_PASS` | This vehicle identity is already registered to another pass at this garage for days that overlap. One car, one pass: the refusal names the pass that holds it and the day that registration ends. End that registration first, or register from the day it ends. |
 | `REFUSAL_VISIT_ALLOWANCE_NOT_POSITIVE` | The visit allowance is zero or negative. A pass allowing no visits covers nothing; state a positive count, or no allowance. |
 | `REFUSAL_VISIT_ALREADY_OPEN` | A recorded entry of this vehicle on this pass is still open. Record its exit before recording another entry, or the visit ledger would hold a car inside twice. |
+| `REFUSAL_WHERE_TO_ENROL_UNSTATED` | A redemption cannot tell whether this lane is the end this garage enrols at. The field named beside this code is the one that would say: garage.transient_available decides first (a garage with no transient enrols at entry, derived, and need state nothing more); a transient garage has a choice and states it in garage.enrols_at. There is no default and no inference. |
 | `REFUSAL_WINDOW_DAY_UNKNOWN` | A recurring window names a day that is not 1 (Monday) to 7 (Sunday). |
 | `REFUSAL_WINDOW_ENDS_BEFORE_IT_STARTS` | A recurring window ends at or before the minute it starts, so it is empty. A window that runs past midnight is two windows: one to 1440 on the first day and one from 0 on the next. |
 | `REFUSAL_WINDOW_HAS_NO_DAYS` | A recurring window names no day of the week. A window that occurs on no day can never be satisfied; state at least one day, or remove the window. |
 | `REFUSAL_WINDOW_MINUTE_OUT_OF_RANGE` | A window's start or end is outside 0 to 1440 minutes from local midnight. 1440 means the end of the day. |
 | `REFUSAL_WINDOW_NEVER_OCCURS` | None of the days a recurring window names falls inside the pass's valid range, so the window can never be satisfied. Widen the range or change the days. |
 
-40 refusals. Each is raised with the FIELD it is about, and none of them is raised by the access call about a term: a contradiction is refused when the pass is created.
+55 refusals. Each is raised with the FIELD it is about, and none of them is raised by the access call about a term: a contradiction is refused when the pass is created.
 <!-- END:refusals -->
 
 ### States
@@ -230,9 +251,85 @@ Typed states: `draft`, `awaiting_enrolment`, `active`, `suspended`, `revoked`. D
 
 *Design documentation.* Every state change records who, when and why, into a
 history the application role can only read and append to — it holds no UPDATE or
-DELETE on the history, and no DELETE on any table whose deletion would cascade
-into it (`passes`, `tenants`; the set is read from the catalogue). Revoking a pass
-ends its registrations on the revocation day in the garage's local calendar.
+DELETE on the history, and no DELETE on any table in the schema (every table,
+read from the catalogue: the module issues no DELETE anywhere). Revoking a pass
+ends its registrations on the revocation day in the garage's local calendar and
+cancels every outstanding enrolment and holder link on it, in the same
+transaction.
+
+## Enrolment — the QR, the lane bind, the holder's own details
+
+*Design documentation.* **The email is the identity, the QR is the credential,
+and there is no account and no password.** An **enrolment** is a one-time
+credential minted for a pass: a token returned exactly once by the call that
+issued it and known to the module afterwards only by its SHA-256 — no read, no
+listing, no refusal detail and no answer carries the plaintext, and the row does
+not hold it (G23). The module returns the token and the payload string the QR
+carries; rendering a bitmap is the client's job. Nothing is emailed: the module
+mints and records; delivering the credential — email, SMS, print — is the
+integrator's. `days_valid` is stated, never defaulted (the monthly-parker product
+uses three days from the starting day; that is its number, not this module's),
+and `expired` is derived from it in the garage's local day.
+
+<!-- GENERATED:credential-states -->
+Typed credential states: `issued`, `redeemed`, `cancelled`. Derived: `expired` -- from `starts_on` and `days_valid` against the garage's local day; nobody types it, and typing it is refused by its own code.
+
+A QR carries `openparking-garage-pass/1/<token>`; a lane may present the payload or the bare token. A garage enrols at `entry` or `exit`; a garage with no transient parking enrols at `entry`, derived, and need not state it.
+<!-- END:credential-states -->
+
+**Where a garage enrols follows from whether it sells transient parking** (R1).
+A garage with no transient parking does not admit an unregistered vehicle, so it
+enrols at entry — derived, and it need not state `enrols_at`. A transient garage
+states `entry` or `exit`; unstated, a redemption refuses to answer naming
+`garage.enrols_at` (`garage.transient_available` first, when that is unstated).
+No transient and enrols at exit is a contradiction, refused by name where the
+garage is created and where the field is repaired (`set-garage-enrols-at`,
+recorded like the timezone repair), with the schema's CHECK as the backstop for a
+raw write (G20).
+
+**The redemption** (`redeem-enrolment`): a lane presents the QR with the vehicle
+identity it measured — an opaque value; this module never identifies a car —
+and the lane and direction. In ONE transaction: the registration, effective on
+the garage's local day of that instant; the pass to `active` where it was `draft`
+or `awaiting_enrolment` (recorded, with the enrolment as the actor; a pass
+already active takes no transition — the ordinary case for a second car on a
+pooled pass); the enrolment marked redeemed with the identity, lane, direction
+and instant; and **the access answer for that same movement, produced by the
+module's own access path — never a second implementation** (G20). A refusal
+anywhere writes nothing (G19): an unknown, used, cancelled, expired or
+not-yet-started credential; the wrong end; a pass that is not registrable
+(suspended, revoked or expired, naming the state); a lane outside the pass's
+stated lane set, naming the lane and the set (R6); an identity already on
+another pass at this garage, by name, before the database's EXCLUDE. **The
+redemption always returns an access answer for the movement, including when the
+redemption is refused** — the response carries what happened to the enrolment
+and what the lane does now — and **a redemption refusal is never an exit
+refusal** (G21): at an exit lane the answer is covered or not-covered with the
+exit note, never refused-to-answer.
+
+**One QR, one car.** A redeemed enrolment is terminal and binds exactly one
+vehicle identity. Several outstanding enrolments on one pass are allowed and
+intended — a pass may carry several vehicles — and each redeems to one car and
+dies; there is no one-outstanding-per-pass rule and none should be built. **The
+swap** is the shipped `end-registration` followed by a new QR: no compound verb,
+because one verb doing both would hide which half failed. **Revoking a pass
+cancels every outstanding enrolment and holder link on it** in the same
+transaction, and the redemption's own state check refuses a revoked pass even
+with that cancellation planted away.
+
+**The typed vehicle description decides nothing** (G22). It lives on the
+enrolment as the holder's own statement of the car they will bring; the identity
+that binds is what the lane measured. The module cannot compare an opaque
+identity to free text and does not pretend to: a mismatch is not a refusal.
+
+**The holder link** (`issue-holder-link`, `redeem-holder-link`) is the same
+primitive scoped to one pass, whose `holder_email` is the identity — so the link
+carries no email of its own. Redeeming it, once, writes `holder_name` and
+`holder_phone` on the pass **and nothing else** (G24: every other column is the
+same after as before), issues an enrolment for that pass with the link as its
+issuer, and spends the link — one transaction. The owner-only path stands: an
+owner issues an enrolment without the holder ever using a link; the link exists
+for the holder's own self-service, not as a gate on enrolment.
 
 ### Registrations
 
@@ -257,7 +354,7 @@ registrations genuinely racing.
 <!-- GENERATED:document-keys -->
 | document | keys |
 |---|---|
-| garage | `id`, `timezone`, `transient_available` |
+| garage | `enrols_at`, `id`, `timezone`, `transient_available` |
 | pass | `garage_id`, `holder`, `id`, `label`, `state`, `terms` |
 | holder | `email`, `name`, `phone` |
 | terms | `allowed_lanes`, `directions`, `max_stay_minutes`, `valid_from`, `valid_to`, `visit_allowance`, `windows` |
@@ -291,10 +388,13 @@ creates the tables with row-level security from the first migration, an
 application role that cannot bypass it, a composite tenant key on every garage
 and pass reference, and the one-car-one-pass constraint as an `EXCLUDE` over the
 registration's day range; `0002_garage_changes_are_recorded.sql` adds the garage
-history in the same shape. Apply them, in order, as the database owner:
+history in the same shape; `0003_enrolments_holder_links_and_where_a_garage_enrols.sql`
+adds the two one-time credentials (the token's SHA-256, never the token), the
+garage's `enrols_at` with its R1 CHECK, and admits the enrols-at repair to the
+garage history. Apply them, in order, as the database owner:
 
 ```
-for m in migrations/*.sql; do psql "$DSN" -v ON_ERROR_STOP=1 -f "$m"; done   # 0001, then 0002
+for m in migrations/*.sql; do psql "$DSN" -v ON_ERROR_STOP=1 -f "$m"; done   # 0001, 0002, 0003
 GARAGE_PASS_APP_PASSWORD=... python scripts/ensure-app-role.py "$DSN"
 ```
 

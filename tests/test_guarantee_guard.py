@@ -290,6 +290,37 @@ def test_the_run_guard_fails_a_full_run_with_an_unrun_guarantee_unless_allowed(m
     monkeypatch.delenv(conftest.ALLOW_ENV, raising=False)
     conftest.pytest_sessionfinish(complete, 0)
     assert complete.exitstatus == 0
+    # THE SUMMARY NAMES THE FAILURE. A guard that only set the exit status
+    # printed its block and watched "N passed" go by underneath: the run exited
+    # 1 while its last line read green (measured at the L3 of the enrolment
+    # round). The failed session carries what the summary must say; the clean
+    # ones carry nothing; and the terminal summary hook writes it as a red
+    # separator AND as its own counted kind in the count line.
+    import _rendered_sentences as rendered
+
+    assert not hasattr(complete, rendered.SUMMARY_FAILURES)
+    assert not hasattr(allowed, rendered.SUMMARY_FAILURES)
+    (key, block), = getattr(session, rendered.SUMMARY_FAILURES)
+    assert key == "guarantee-guard failure" and missing in block
+
+    class Reporter:
+        _session = session
+        stats: dict = {"passed": [object()] * 3}
+        lines: list = []
+
+        def write_sep(self, sep, title, **markup):
+            self.lines.append((sep, title, markup))
+
+        def write_line(self, line, **markup):
+            self.lines.append(("", line, markup))
+
+    reporter = Reporter()
+    rendered.pytest_terminal_summary(reporter, 0, session.config)
+    assert reporter.lines[0][1] == "GUARANTEE-GUARD FAILURE -- this run exits 1"
+    assert reporter.lines[0][2].get("red") is True
+    assert missing in reporter.lines[1][1]
+    assert len(reporter.stats["guarantee-guard failure"]) == 1, "counted in the last line"
+    assert reporter.stats["guarantee-guard failure"][0].count_towards_summary is True
 
 
 @pytest.mark.guarantee("G16")
@@ -395,4 +426,77 @@ def test_the_controls_runner_refuses_a_control_whose_only_reds_are_exceptions(tm
         "AssertionError", "assert", "Failed", "AttributeError",
         "psycopg.errors.InFailedSqlTransaction",
     ]
-    assert len(fail_controls.assertion_reds(reasons)) == 3
+    planted = ROOT / "src" / "garage_pass" / "access.py"
+    assert len(fail_controls.assertion_reds(reasons, planted)) == 3
+
+
+@pytest.mark.guarantee("G16")
+@store_test
+def test_the_controls_runner_reads_an_assertion_by_what_it_is_about(tmp_path):
+    """THE FOURTH SHAPE. The merge gate handed the runner a plant that raised
+    at the first line of every redemption and it FIRED on three "assertions":
+    the race harness's own premise (`the premise: lane B waits on lane A's
+    lock`, raised in tests/enrolment_harness.py) twice, and a
+    `pytest.raises(match=)` whose regex did not match -- an unexpected
+    exception reaching the test. None is about the subject. The classifier
+    now counts an assertion only when it was raised in a test module or in
+    the very file the plant went into, and never a regex mismatch; the same
+    plant, driven through the runner, is EXCEPTION-ONLY, and the two set-aside
+    shapes are printed by name. And the G14 trap the gate pre-attributed: a
+    plant in tests/fixtures.py is judged by the fixture's own assertion,
+    because that file IS the subject."""
+    import io
+    import sys
+    from contextlib import redirect_stdout
+
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import fail_controls
+
+    raising = (
+        fail_controls.G19, "store/enrolments.py",
+        '    cursor.execute(f"SAVEPOINT {SAVEPOINT}")',
+        '    raise RuntimeError("PLANTED")  # the module raises before any assertion',
+        "the gate's raise-everything plant: premise and regex-mismatch reds only",
+    )
+    fail_controls.CONTROLS["G19/raise-everything"] = raising
+    try:
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            fired = fail_controls.run_control("G19/raise-everything")
+        out = buffer.getvalue()
+        print(out)
+        assert fired is False, "the gate's raise-everything plant fired again (output above)"
+        assert "EXCEPTION-ONLY" in out and "NOT A CONTROL" in out
+        assert "set aside: PREMISE" in out
+    finally:
+        del fail_controls.CONTROLS["G19/raise-everything"]
+    # the shipped G14 control -- a plant in tests/fixtures.py, judged by the fixture's own
+    # assertion in that same file -- still fires: the file the plant went into is the subject
+    buffer = io.StringIO()
+    with redirect_stdout(buffer):
+        fired = fail_controls.run_control("G14")
+    assert fired is True and "1 assertion red(s)" in buffer.getvalue(), buffer.getvalue()
+    # the classifier on the four shapes, with the planted file named
+    planted = ROOT / "src" / "garage_pass" / "store" / "enrolments.py"
+    reasons = fail_controls.failure_reasons(
+        f"{ROOT}/tests/test_g19_one_qr_one_car_once.py:10: AssertionError: assert 1 == 2\n"
+        f"{ROOT}/tests/enrolment_harness.py:165: AssertionError: the premise: lane B waits\n"
+        f"{ROOT}/tests/test_g19_one_qr_one_car_once.py:762: AssertionError: Regex pattern "
+        "did not match.\n"
+        f"{ROOT}/tests/test_g19_one_qr_one_car_once.py:30: Failed: DID NOT RAISE Refused\n"
+        f"{ROOT}/src/garage_pass/store/enrolments.py:467: RuntimeError: PLANTED\n"
+    )
+    assert [fail_controls.about_the_subject(r, planted) for r in reasons] == [
+        None, "PREMISE", "UNEXPECTED EXCEPTION", None, "not an assertion",
+    ]
+    assert len(fail_controls.assertion_reds(reasons, planted)) == 2
+    assert [why for why, _w, _r in fail_controls.set_aside(reasons, planted)] == [
+        "PREMISE", "UNEXPECTED EXCEPTION",
+    ]
+    # a plant INTO a harness file is judged by that file's own assertion
+    fixtures = ROOT / "tests" / "fixtures.py"
+    premise = fail_controls.failure_reasons(
+        f"{ROOT}/tests/fixtures.py:132: AssertionError: America/Phoenix was chosen because\n"
+    )
+    assert fail_controls.about_the_subject(premise[0], fixtures) is None
+    assert fail_controls.about_the_subject(premise[0], planted) == "PREMISE"

@@ -82,6 +82,41 @@ def pytest_sessionstart(session):
     _install_collector()
 
 
+#: What a guard that failed at sessionfinish wants the SUMMARY to say. pytest's
+#: last line is built from its own counts, so a guard that only set the exit
+#: status printed its block and then watched "787 passed" go by underneath --
+#: the run exited 1 while its summary read green (measured at the L3, and the
+#: family this pass has paid for five times). Each guard records its failure
+#: on the SESSION (the guard's own tests call it with a stand-in session, and
+#: those must not reach the real run's summary); ``pytest_terminal_summary``
+#: below writes it into the summary AND into the count line, as its own
+#: counted kind, so the last line names it.
+SUMMARY_FAILURES = "_garage_pass_summary_failures"
+
+
+class _CountedFailure:
+    """One entry in the terminal reporter's stats under the guard's own key: the
+    count line then reads "..., 1 <key>" and its colour is no longer green."""
+
+    count_towards_summary = True
+
+
+def name_the_failure_in_the_summary(session, key: str, block: str) -> None:
+    failures = getattr(session, SUMMARY_FAILURES, None)
+    if failures is None:
+        failures = []
+        setattr(session, SUMMARY_FAILURES, failures)
+    failures.append((key, block))
+
+
+def pytest_terminal_summary(terminalreporter, exitstatus, config):
+    session = getattr(terminalreporter, "_session", None)
+    for key, block in getattr(session, SUMMARY_FAILURES, ()):
+        terminalreporter.write_sep("=", f"{key.upper()} -- this run exits 1", red=True, bold=True)
+        terminalreporter.write_line(block, red=True)
+        terminalreporter.stats.setdefault(key, []).append(_CountedFailure())
+
+
 def pytest_sessionfinish(session, exitstatus):
     """The rendered half of the route sweep, over everything this run rendered --
     on a FULL run only, like the guarantee guard: a developer running one file
@@ -96,6 +131,11 @@ def pytest_sessionfinish(session, exitstatus):
           "in this denominator)")
     if status != 0:
         session.exitstatus = 1
+        name_the_failure_in_the_summary(
+            session, "rendered-half failure",
+            f"the rendered half of the route sweep is NOT CLEAN: UNJUDGED "
+            f"{len(result['unjudged'])}, FALSE {len(result['false'])} (see RENDERED above)",
+        )
 
 
 def rendered_so_far() -> list[tuple[str, frozenset[str]]]:

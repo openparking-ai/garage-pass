@@ -19,11 +19,20 @@ JSON, and there is no money in it.
 Against the store (``GARAGE_PASS_DSN``, ``--tenant``): ``create-garage``,
 ``set-garage-timezone`` (the repair for a garage stored with a timezone the
 system does not carry -- the one write that takes an unreadable garage, and it
-records who, when and why like a state change does),
+records who, when and why like a state change does), ``set-garage-enrols-at``
+(where a garage enrols -- entry or exit -- recorded the same way),
 ``create-pass``, ``register-vehicle``, ``end-registration``, ``set-state``,
-``record-entry``, ``record-exit`` and ``access-in-store``. A store command with
-no ``GARAGE_PASS_DSN``, or one the database refuses to connect, prints a
-sentence to stderr and exits 2.
+``record-entry``, ``record-exit``, ``access-in-store``, and the enrolment:
+``issue-enrolment`` (mint the QR for a pass: the token is printed ONCE, here,
+and by nothing else), ``redeem-enrolment`` (the lane presents the QR with the
+vehicle identity it measured: the bind, and the access answer for that same
+movement -- always, refused or not; exit status follows the answer's outcome,
+and the enrolment half is in the JSON), ``issue-holder-link`` and
+``redeem-holder-link`` (the holder writes their own name and phone onto the
+pass and gets their QR). ``--days-valid`` is stated, never defaulted: the
+monthly-parker product uses 3 -- that is its number, not this module's. A
+store command with no ``GARAGE_PASS_DSN``, or one the database refuses to
+connect, prints a sentence to stderr and exits 2.
 
 **A REFUSAL IS RENDERED, NEVER A TRACEBACK.** Every ``Refused`` the module
 raises -- and ``UnknownTimezone`` is one -- reaches this boundary and is printed
@@ -140,6 +149,17 @@ def _parser() -> argparse.ArgumentParser:
     s.add_argument("--by", required=True, help="who repaired it, for the garage's history")
     s.add_argument("--at", required=True, help="when, as an ISO instant with an offset")
     s.add_argument("--reason", required=True, help="why, for the garage's history")
+    s = sub.add_parser(
+        "set-garage-enrols-at",
+        help="state or correct where a garage enrols (entry or exit); recorded like the "
+             "timezone repair",
+    )
+    s.add_argument("--tenant", required=True, type=UUID, help="the tenant's uuid")
+    s.add_argument("--garage", required=True, help="the garage's external id")
+    s.add_argument("--enrols-at", required=True, help="entry or exit")
+    s.add_argument("--by", required=True, help="who set it, for the garage's history")
+    s.add_argument("--at", required=True, help="when, as an ISO instant with an offset")
+    s.add_argument("--reason", required=True, help="why, for the garage's history")
 
     def store(name: str, help_: str) -> argparse.ArgumentParser:
         s = sub.add_parser(name, help=help_)
@@ -178,7 +198,49 @@ def _parser() -> argparse.ArgumentParser:
     s.add_argument("--at", required=True)
     s = store("access-in-store", "the access answer, from the store")
     _movement(s)
+
+    def credential(name: str, help_: str, id_option: str) -> argparse.ArgumentParser:
+        s = store(name, help_)
+        s.add_argument("--pass-id", required=True)
+        s.add_argument(id_option, required=True, help="the credential's own id, for a human")
+        s.add_argument("--starts-on", required=True, help="the first local day it may be used, "
+                       "YYYY-MM-DD")
+        _days_valid(s)
+        s.add_argument("--by", required=True, help="who issued it")
+        s.add_argument("--at", required=True, help="when, as an ISO instant with an offset")
+        return s
+
+    s = credential("issue-enrolment", "mint the QR for a pass; the token is printed once, here",
+                   "--enrolment-id")
+    s.add_argument("--vehicle-description", help="the holder's own words for the car; decides "
+                   "nothing")
+    s = store("redeem-enrolment", "the lane presents the QR with the identity it measured: "
+              "the bind, and the access answer for the movement")
+    s.add_argument("--token", required=True, help="what the QR carried, or the bare token")
+    _movement(s)
+    credential("issue-holder-link", "mint the one-time link for a pass's holder; the token is "
+               "printed once, here", "--link-id")
+    s = store("redeem-holder-link", "the holder writes their own name and phone onto the pass "
+              "and gets their QR")
+    s.add_argument("--token", required=True, help="what the link carried, or the bare token")
+    s.add_argument("--name", required=True, help="the holder's name")
+    s.add_argument("--phone", required=True, help="the holder's phone")
+    s.add_argument("--enrolment-id", required=True, help="the id of the QR to issue")
+    s.add_argument("--starts-on", required=True, help="the QR's first local day, YYYY-MM-DD")
+    _days_valid(s)
+    s.add_argument("--vehicle-description", help="the holder's own words for the car; decides "
+                   "nothing")
+    s.add_argument("--at", required=True, help="when, as an ISO instant with an offset")
     return p
+
+
+def _days_valid(s: argparse.ArgumentParser) -> None:
+    """NOT ``required``: an absent value reaches the module, which refuses it
+    BY NAME (REFUSAL_DAYS_VALID_NOT_STATED) rather than argparse's usage error
+    -- and never defaults it. Three is the monthly-parker product's number,
+    documented here and stated by whoever runs this."""
+    s.add_argument("--days-valid", help="how many local days from --starts-on the credential may "
+                   "be used; stated, never defaulted (the monthly-parker product uses 3)")
 
 
 def _movement(s: argparse.ArgumentParser) -> None:
@@ -268,6 +330,19 @@ def _day(text: str, option: str) -> date:
     except (TypeError, ValueError):
         raise Refused(
             REFUSAL_FIELD_BLANK, option, f"{option} must be YYYY-MM-DD, not {text!r}."
+        ) from None
+
+
+def _whole_number(text: str | None, option: str) -> int | None:
+    """A whole number, or ``None`` when the option was not given (the module
+    refuses an absent days_valid by name), or a refusal naming the option."""
+    if text is None:
+        return None
+    try:
+        return int(text)
+    except (TypeError, ValueError):
+        raise Refused(
+            REFUSAL_FIELD_BLANK, option, f"{option} must be a whole number, not {text!r}."
         ) from None
 
 
@@ -463,6 +538,22 @@ def _refusal(refused: Refused) -> dict[str, Any]:
     return {"refused": refused.code, "field": refused.field, "detail": refused.detail}
 
 
+def _redemption(redemption: Any) -> dict[str, Any]:
+    """The lane's two answers as one JSON: what happened to the enrolment --
+    ``redeemed`` with what was written, or ``refused`` through ``_refusal``,
+    THE ONE PLACE a ``Refused`` becomes output, so the rendered-sentence
+    collector reads it -- and the access answer for the movement. The token is
+    not in it: a redemption never renders the credential."""
+    enrolment: dict[str, Any] = {"enrolment": redemption.enrolment,
+                                 "redeemed": redemption.redeemed}
+    if redemption.refusal is not None:
+        enrolment.update(_refusal(redemption.refusal))
+    else:
+        enrolment["registration"] = redemption.registration
+        enrolment["pass_state_change"] = redemption.pass_state_change
+    return {"enrolment": enrolment, "answer": _plain(redemption.answer)}
+
+
 def _driver_sentence(exc: Exception) -> str:
     """One line for a database error the store did not name: what class of
     problem it is, the driver's class and SQLSTATE, the first line of its
@@ -486,7 +577,7 @@ def _run(args: argparse.Namespace) -> int:
         return EXIT_BY_OUTCOME[answer.outcome]
 
     # ---- the store --------------------------------------------------------
-    from garage_pass.store import records
+    from garage_pass.store import enrolments, records
     from garage_pass.store.access import access_from_store
     from garage_pass.store.postgres import connect, tenant
 
@@ -522,6 +613,41 @@ def _run(args: argparse.Namespace) -> int:
                 out = records.set_garage_timezone(
                     cursor, args.tenant, args.garage, args.timezone,
                     by=args.by, at=_at(args.at), reason=args.reason,
+                )
+            elif args.command == "set-garage-enrols-at":
+                out = records.set_garage_enrols_at(
+                    cursor, args.tenant, args.garage, args.enrols_at,
+                    by=args.by, at=_at(args.at), reason=args.reason,
+                )
+            elif args.command == "issue-enrolment":
+                out = enrolments.issue_enrolment(
+                    cursor, args.tenant, args.garage, args.pass_id, args.enrolment_id,
+                    _day(args.starts_on, "--starts-on"),
+                    _whole_number(args.days_valid, "--days-valid"),
+                    by=args.by, at=_at(args.at), vehicle_description=args.vehicle_description,
+                )
+            elif args.command == "redeem-enrolment":
+                redemption = enrolments.redeem_enrolment(
+                    cursor, args.tenant, args.garage, args.token, args.vehicle, args.lane,
+                    Direction(args.direction), _at(args.at),
+                )
+                connection.commit()
+                _print(_redemption(redemption))
+                return EXIT_BY_OUTCOME[redemption.answer.outcome]
+            elif args.command == "issue-holder-link":
+                out = enrolments.issue_holder_link(
+                    cursor, args.tenant, args.garage, args.pass_id, args.link_id,
+                    _day(args.starts_on, "--starts-on"),
+                    _whole_number(args.days_valid, "--days-valid"),
+                    by=args.by, at=_at(args.at),
+                )
+            elif args.command == "redeem-holder-link":
+                out = enrolments.redeem_holder_link(
+                    cursor, args.tenant, args.garage, args.token, name=args.name,
+                    phone=args.phone, enrolment_external_id=args.enrolment_id,
+                    starts_on=_day(args.starts_on, "--starts-on"),
+                    days_valid=_whole_number(args.days_valid, "--days-valid"),
+                    at=_at(args.at), vehicle_description=args.vehicle_description,
                 )
             elif args.command == "create-pass":
                 pass_ = load_pass(_document(args.pass_, "--pass"))

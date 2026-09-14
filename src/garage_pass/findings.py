@@ -126,6 +126,22 @@ REFUSAL_EXIT_BEFORE_ENTRY = "REFUSAL_EXIT_BEFORE_ENTRY"
 REFUSAL_CONSTRAINT = "REFUSAL_CONSTRAINT"
 REFUSAL_FIELD_WRONG_TYPE = "REFUSAL_FIELD_WRONG_TYPE"
 REFUSAL_TENANT_NOT_FOUND = "REFUSAL_TENANT_NOT_FOUND"
+# --- enrolment (G2): the credential, where it may be redeemed, its refusals ---
+REFUSAL_ENROLS_AT_CONTRADICTS_TRANSIENT = "REFUSAL_ENROLS_AT_CONTRADICTS_TRANSIENT"
+REFUSAL_WHERE_TO_ENROL_UNSTATED = "REFUSAL_WHERE_TO_ENROL_UNSTATED"
+REFUSAL_ENROLMENT_AT_WRONG_END = "REFUSAL_ENROLMENT_AT_WRONG_END"
+REFUSAL_DAYS_VALID_NOT_STATED = "REFUSAL_DAYS_VALID_NOT_STATED"
+REFUSAL_DAYS_VALID_NOT_POSITIVE = "REFUSAL_DAYS_VALID_NOT_POSITIVE"
+REFUSAL_ENROLMENT_EXPIRED_IS_DERIVED = "REFUSAL_ENROLMENT_EXPIRED_IS_DERIVED"
+REFUSAL_CREDENTIAL_UNKNOWN = "REFUSAL_CREDENTIAL_UNKNOWN"
+REFUSAL_CREDENTIAL_ALREADY_USED = "REFUSAL_CREDENTIAL_ALREADY_USED"
+REFUSAL_CREDENTIAL_CANCELLED = "REFUSAL_CREDENTIAL_CANCELLED"
+REFUSAL_CREDENTIAL_EXPIRED = "REFUSAL_CREDENTIAL_EXPIRED"
+REFUSAL_CREDENTIAL_NOT_STARTED = "REFUSAL_CREDENTIAL_NOT_STARTED"
+REFUSAL_CREDENTIAL_ALREADY_EXISTS = "REFUSAL_CREDENTIAL_ALREADY_EXISTS"
+REFUSAL_LANE_OUTSIDE_THE_PASS_TERMS = "REFUSAL_LANE_OUTSIDE_THE_PASS_TERMS"
+REFUSAL_DIRECTION_OUTSIDE_THE_PASS_TERMS = "REFUSAL_DIRECTION_OUTSIDE_THE_PASS_TERMS"
+REFUSAL_TEXT_HAS_CONTROL_CHARACTERS = "REFUSAL_TEXT_HAS_CONTROL_CHARACTERS"
 
 REFUSALS: dict[str, str] = {
     REFUSAL_VALID_TO_BEFORE_VALID_FROM: (
@@ -295,6 +311,90 @@ REFUSALS: dict[str, str] = {
         "No tenant row has the id given. The first write for a tenant -- create-garage "
         "-- reads the tenant row before it writes, so an id nobody seeded is refused by "
         "name rather than met at the database's foreign key."
+    ),
+    REFUSAL_ENROLS_AT_CONTRADICTS_TRANSIENT: (
+        "The garage sells no transient parking and is stated to enrol at its exit. At a "
+        "garage with no transient an unregistered vehicle is not admitted, so the "
+        "registration must happen at the entry; enrolling at the exit there is a "
+        "contradiction. Refused where the garage is created and where the field is "
+        "repaired; the schema's CHECK is the backstop for a raw write."
+    ),
+    REFUSAL_WHERE_TO_ENROL_UNSTATED: (
+        "A redemption cannot tell whether this lane is the end this garage enrols at. "
+        "The field named beside this code is the one that would say: "
+        "garage.transient_available decides first (a garage with no transient enrols at "
+        "entry, derived, and need state nothing more); a transient garage has a choice "
+        "and states it in garage.enrols_at. There is no default and no inference."
+    ),
+    REFUSAL_ENROLMENT_AT_WRONG_END: (
+        "The QR was presented at the wrong end: this garage enrols at the end named in "
+        "the detail, and this lane is the other. Nothing is written. The movement itself "
+        "still gets its access answer -- and an exit is never refused."
+    ),
+    REFUSAL_DAYS_VALID_NOT_STATED: (
+        "The credential's days_valid is not stated. It is refused rather than defaulted: "
+        "this module refuses guessed defaults, and how long a QR may wait to be redeemed "
+        "is the owner's to state (the monthly-parker product uses three days from the "
+        "starting day; that is its number, not this module's)."
+    ),
+    REFUSAL_DAYS_VALID_NOT_POSITIVE: (
+        "The credential's days_valid is zero or negative, so there is no day on which it "
+        "could be redeemed. State a positive whole number of days."
+    ),
+    REFUSAL_ENROLMENT_EXPIRED_IS_DERIVED: (
+        "A credential's 'expired' is derived from its starts_on and days_valid against "
+        "the garage's local day and is never typed by anyone. To end one early, revoke "
+        "the pass it belongs to; to end it on a day, that day is starts_on plus days_valid."
+    ),
+    REFUSAL_CREDENTIAL_UNKNOWN: (
+        "No enrolment or holder link in this tenant matches the token presented. The "
+        "token itself is never rendered and never stored: only its SHA-256 is compared."
+    ),
+    REFUSAL_CREDENTIAL_ALREADY_USED: (
+        "This credential was already redeemed. An enrolment is one QR, one car: it binds "
+        "exactly one vehicle identity and is then terminal; a holder link is used once. "
+        "The detail names the credential and when it was redeemed. Nothing is written."
+    ),
+    REFUSAL_CREDENTIAL_CANCELLED: (
+        "This credential was cancelled -- the pass it opens was revoked, and a credential "
+        "must not outlive the pass. The detail names when and why. Nothing is written."
+    ),
+    REFUSAL_CREDENTIAL_EXPIRED: (
+        "This credential's window has passed: its last day, starts_on plus days_valid "
+        "less one, is before today in the garage's local day. Derived; nobody typed it. "
+        "Nothing is written; issue a new one."
+    ),
+    REFUSAL_CREDENTIAL_NOT_STARTED: (
+        "This credential's starts_on is after today in the garage's local day. Nothing "
+        "is written; present it from that day."
+    ),
+    REFUSAL_CREDENTIAL_ALREADY_EXISTS: (
+        "An enrolment or holder link with that id already exists in this tenant."
+    ),
+    REFUSAL_LANE_OUTSIDE_THE_PASS_TERMS: (
+        "The pass names the lanes it may use, and the lane this QR was presented at is "
+        "not one of them. Nothing is implicit: the pass carries its own terms, and a "
+        "redemption at a lane they do not name is refused naming the lane and the set. "
+        "The owner's fix is to state the lane on the pass. Nothing is written."
+    ),
+    REFUSAL_DIRECTION_OUTSIDE_THE_PASS_TERMS: (
+        "The pass's terms allow no movement in the direction this garage enrols at, so "
+        "the QR would be spent on a movement the pass can never cover. Refused by name, "
+        "beside the lane refusal, before anything is written: the credential stays "
+        "issued for a movement the pass can cover. ONLY a STRUCTURAL exclusion refuses "
+        "-- the direction, or the lane outside the stated set. Temporal non-coverage "
+        "(a weekend on a weekday pass, a valid_from still ahead, a movement outside the "
+        "hours) still BINDS: enrolling at the weekend is the ordinary case."
+    ),
+    REFUSAL_TEXT_HAS_CONTROL_CHARACTERS: (
+        "A text field carries a control character INSIDE it -- a NUL, a line break, a tab "
+        "or another character whose Unicode category is Cc, between its first and last "
+        "non-blank characters. Refused by name wherever the module reads text, so a driver "
+        "never turns it into a configuration-class sentence. Whitespace at either edge was "
+        "never part of the text and is removed before the check: the ten Cc code points "
+        "Python counts as whitespace (TAB, LF, VT, FF, CR, U+001C to U+001F and U+0085) are "
+        "stripped there, and NUL is never whitespace and never stripped. Letters in any "
+        "script are text and are accepted."
     ),
 }
 

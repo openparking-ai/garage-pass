@@ -5,26 +5,40 @@ And the store half of G5: revoking a pass ends its registrations on the
 revocation day in the garage's local calendar.
 
 **AND NO ROUTE AROUND THE GRANT.** The history cascades from ``passes`` and
-``tenants``; a DELETE on either would erase it. The application role holds no
-DELETE on any table whose deletion cascades into the history -- the set is read
-from the catalogue and walked transitively, never typed -- and the module
-issues no DELETE at all. Measured before the fix: ``DELETE FROM passes`` as the
+``tenants``; a DELETE on either would erase it. The module issues no DELETE at
+all, on any table -- a measured property of the code -- so the assertion is
+the strong one: **the application role holds DELETE on NO table in the
+schema**, every table read from the catalogue, with no hand list and no walk
+to miss a leaf. The first cut asserted it only of the tables that cascade
+into a history, walked transitively; that walk cannot see a leaf child of
+``passes`` (``enrolments``, ``holder_links`` -- measured, G2's brief
+correction 1), so a DELETE granted there would have passed. The walk is KEPT,
+inside the same test, for what the red says: DELETE on ``passes`` erases the
+history and the failure names it; DELETE on ``enrolments`` is a leaf and the
+failure names the leaf. Measured before the fix: ``DELETE FROM passes`` as the
 application role took the history from one row to none.
 
-**AND THE GARAGE REPAIR IS RECORDED THE SAME WAY** (migration 0002).
-``set_garage_timezone`` changes how every pass at the garage is read, and it
-left no record but the row -- measured at the re-gate. Now who, when, why, the
-old value and the new go into ``garage_changes``, append-only by the same
-grant, cascading from ``garages`` and ``tenants`` on which the application
-role holds no DELETE. The set of histories is DERIVED: every table the role
-may only SELECT and INSERT on, read from the catalogue, must be exactly the
-two published ones, and each is walked for cascade parents.
+**AND THE GARAGE REPAIRS ARE RECORDED THE SAME WAY** (migrations 0002 and
+0003). ``set_garage_timezone`` changes how every pass at the garage is read,
+and it left no record but the row -- measured at the re-gate. Now who, when,
+why, the old value and the new go into ``garage_changes``, append-only by the
+same grant, cascading from ``garages`` and ``tenants`` on which the application
+role holds no DELETE. ``set_garage_enrols_at`` -- where a QR may be redeemed
+-- is the second repair, recorded into the same history with ``field =
+'enrols_at'`` (0003 widens the CHECK that 0002 wrote so a second repair would
+be a migration), refusing the R1 contradiction by name as creation does. The
+set of histories is DERIVED: every table the role may only SELECT and INSERT
+on, read from the catalogue, must be exactly the two published ones, and each
+is walked for cascade parents.
 
 Controls: the INSERT of the history row planted away; the grant on the
 history widened to UPDATE in the migration; the who/why check planted away;
 the revocation's registration update planted away; DELETE on ``passes`` granted
-back to the application role; the garage history's INSERT planted away; its
-grant widened; the repair's who/why check planted away.
+back to the application role (the red names the history it erases); DELETE on
+``enrolments`` granted (the red names the leaf); the garage history's INSERT
+planted away; its grant widened; the repair's who/why check planted away; the
+enrols-at repair's contradiction check planted away; its history row planted
+away.
 """
 
 from __future__ import annotations
@@ -174,25 +188,45 @@ def test_the_append_only_histories_are_exactly_the_published_two(app):
 
 @pytest.mark.guarantee("G12")
 @store_test
-@pytest.mark.parametrize("history", sorted(HISTORIES))
-def test_no_table_whose_deletion_cascades_into_a_history_grants_the_app_role_delete(
-    app, tenant_id, history
-):
-    """Derived, not listed: every ancestor by ON DELETE CASCADE, transitively."""
-    cascading = tables_cascading_into(app, history)
-    assert HISTORIES[history] <= cascading, (
-        f"the walk did not find the known parents of {history}; found {sorted(cascading)}"
+def test_the_application_role_holds_delete_on_no_table_in_the_schema(app, tenant_id):
+    """THE STRONG ASSERTION, over every table in the catalogue: no hand list,
+    no walk to miss a leaf. The cascade walk is kept beside it for what the
+    red SAYS -- a DELETE grant on a table that cascades into an append-only
+    history is named as erasing that history; one on a leaf is named as the
+    leaf -- and for its own control that the known parents are found."""
+    from garage_pass.store.postgres import all_tables
+
+    tables = all_tables(app)
+    assert len(tables) >= 11, f"the catalogue scan found only {tables}"
+    assert {"passes", "enrolments", "holder_links", *HISTORIES} <= set(tables)
+    erases = {}
+    for history in HISTORIES:
+        cascading = tables_cascading_into(app, history)
+        assert HISTORIES[history] <= cascading, (
+            f"the walk did not find the known parents of {history}; found {sorted(cascading)}"
+        )
+        for table in cascading:
+            erases.setdefault(table, []).append(history)
+    assert "garages" not in erases.get("pass_state_changes", []), (
+        "garages -> passes is RESTRICT; the walk over-reached"
     )
-    if history == "pass_state_changes":
-        assert "garages" not in cascading, "garages -> passes is RESTRICT; the walk over-reached"
-    offenders = sorted(t for t in cascading if "DELETE" in grants_on(app, t))
-    assert offenders == [], f"the application role can erase {history} through {offenders}"
-    # and it really cannot: the way the code would make the call, at its role
+    offenders = []
+    for table in tables:
+        if "DELETE" in grants_on(app, table):
+            offenders.append(
+                f"{table} (a DELETE there erases {', '.join(sorted(erases[table]))})"
+                if table in erases else f"{table} (a leaf: the walk into a history would not "
+                "have seen it)"
+            )
+    assert offenders == [], f"the application role holds DELETE on: {offenders}"
+    # and it really cannot: the way the code would make the call, at its role --
+    # an ancestor of a history, and a leaf
     seed(app, tenant_id, GARAGE, (a_pass(),))
-    with pytest.raises(psycopg.errors.InsufficientPrivilege):
-        with tenant(app, tenant_id) as cursor:
-            cursor.execute("DELETE FROM passes")
-    app.rollback()
+    for statement in ("DELETE FROM passes", "DELETE FROM enrolments"):
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            with tenant(app, tenant_id) as cursor:
+                cursor.execute(statement)
+        app.rollback()
     assert query(app, tenant_id, "SELECT count(*) FROM pass_state_changes") == [(1,)]
 
 
@@ -325,3 +359,91 @@ def test_the_garage_history_is_append_only_by_grant_and_by_a_refused_update(app,
             with tenant(app, tenant_id) as cursor:
                 cursor.execute(statement)
         app.rollback()
+
+
+# ---------------------------------------------------------------------------
+# the second garage repair -- where it enrols -- is recorded (migration 0003)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.guarantee("G12")
+@store_test
+def test_the_enrols_at_repair_records_who_when_why_the_old_value_and_the_new(app, tenant_id):
+    from garage_pass.store.records import set_garage_enrols_at
+
+    seed(app, tenant_id, GARAGE, ())  # transient, enrols_at unstated
+    assert query(app, tenant_id, "SELECT enrols_at FROM garages") == [(None,)]
+    with tenant(app, tenant_id) as cursor:
+        set_garage_enrols_at(cursor, tenant_id, GARAGE.id, "exit", by="owner",
+                             at=at(date(2026, 6, 2), 9), reason="stated at go-live")
+        set_garage_enrols_at(cursor, tenant_id, GARAGE.id, "entry", by="operator",
+                             at=at(date(2026, 6, 3), 9), reason="the exit readers were removed")
+    app.commit()
+    assert garage_history(app, tenant_id) == [
+        ("enrols_at", None, "exit", "owner", at(date(2026, 6, 2), 9), "stated at go-live"),
+        ("enrols_at", "exit", "entry", "operator", at(date(2026, 6, 3), 9),
+         "the exit readers were removed"),
+    ]
+    assert query(app, tenant_id, "SELECT enrols_at FROM garages") == [("entry",)]
+
+
+@pytest.mark.guarantee("G12")
+@store_test
+@pytest.mark.parametrize("by,reason,field", [("", "r", "changed_by"), ("owner", " ", "reason"),
+                                             (None, "r", "changed_by")])
+def test_an_enrols_at_repair_without_who_or_why_is_refused_and_changes_nothing(
+    app, tenant_id, by, reason, field
+):
+    from garage_pass.store.records import set_garage_enrols_at
+
+    seed(app, tenant_id, GARAGE, ())
+    with pytest.raises(f.Refused) as refused:
+        with tenant(app, tenant_id) as cursor:
+            set_garage_enrols_at(cursor, tenant_id, GARAGE.id, "exit", by=by, at=NOON_MONDAY,
+                                 reason=reason)
+    app.rollback()
+    assert refused.value.code == f.REFUSAL_REPAIR_NEEDS_WHO_AND_WHY
+    assert refused.value.field == field
+    assert query(app, tenant_id, "SELECT enrols_at FROM garages") == [(None,)]
+    assert garage_history(app, tenant_id) == []
+
+
+@pytest.mark.guarantee("G12")
+@store_test
+def test_the_enrols_at_repair_refuses_the_r1_contradiction_by_name_and_changes_nothing(
+    app, tenant_id
+):
+    """No transient, enrols at exit: refused on the repair as on creation,
+    naming garage.enrols_at; the row and the history are untouched. And a
+    value that is neither end is refused naming the field."""
+    from fixtures import no_transient_garage
+    from garage_pass.store.records import set_garage_enrols_at
+
+    garage = no_transient_garage()
+    seed(app, tenant_id, garage, ())
+    for value, code in (("exit", f.REFUSAL_ENROLS_AT_CONTRADICTS_TRANSIENT),
+                        ("middle", f.REFUSAL_FIELD_BLANK), ("", f.REFUSAL_FIELD_BLANK)):
+        try:
+            with tenant(app, tenant_id) as cursor:
+                set_garage_enrols_at(cursor, tenant_id, garage.id, value, by="owner",
+                                     at=NOON_MONDAY, reason="trying")
+        except f.Refused as refused:
+            app.rollback()
+            assert refused.code == code, value
+            assert refused.field == "garage.enrols_at", value
+        except Exception as exc:  # noqa: BLE001 -- the subject is "by name, not the CHECK"
+            app.rollback()
+            pytest.fail(f"the repair reached the database instead of refusing by name: {exc!r}")
+        else:
+            app.rollback()
+            pytest.fail(f"the repair accepted {value!r}")
+    assert query(app, tenant_id, "SELECT enrols_at FROM garages") == [(None,)]
+    assert garage_history(app, tenant_id) == []
+    # the control: 'entry' at the same garage is accepted and recorded
+    with tenant(app, tenant_id) as cursor:
+        out = set_garage_enrols_at(cursor, tenant_id, garage.id, "entry", by="owner",
+                                   at=NOON_MONDAY, reason="stated")
+    app.commit()
+    assert out == {"garage": garage.id, "enrols_at": "entry", "was": None, "changed_by": "owner",
+                   "changed_at": NOON_MONDAY, "reason": "stated"}
+    assert [r[:3] for r in garage_history(app, tenant_id)] == [("enrols_at", None, "entry")]

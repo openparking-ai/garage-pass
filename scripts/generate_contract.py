@@ -38,6 +38,11 @@ sys.path.insert(0, str(ROOT / "tests"))
 from _guarantees import GUARANTEES, guarantee_ids  # noqa: E402
 from garage_pass import documents as docs  # noqa: E402
 from garage_pass.access import Answer, Outcome, access  # noqa: E402
+from garage_pass.enrolment import (  # noqa: E402
+    EXPIRED_CREDENTIAL,
+    PAYLOAD_PREFIX,
+    CredentialState,
+)
 from garage_pass.findings import (  # noqa: E402
     BARRIER_MEANINGS,
     EXIT_IS_NEVER_REFUSED,
@@ -45,6 +50,7 @@ from garage_pass.findings import (  # noqa: E402
     REFUSALS,
     REFUSED_TO_ANSWER,
 )
+from garage_pass.garage import ENROLS_AT  # noqa: E402
 from garage_pass.passes import EXPIRED, State  # noqa: E402
 from garage_pass.states import ALLOWED_TRANSITIONS  # noqa: E402
 from garage_pass.terms import Direction  # noqa: E402
@@ -128,6 +134,22 @@ def block_states() -> str:
     return "\n".join(rows)
 
 
+def block_credential_states() -> str:
+    """The one-time credentials' typed states and the derived one, and what a
+    QR carries -- read from ``enrolment.py``, never typed here."""
+    typed = ", ".join("`" + s.value + "`" for s in CredentialState)
+    ends = " or ".join("`" + e + "`" for e in ENROLS_AT)
+    return "\n".join([
+        f"Typed credential states: {typed}. Derived: `{EXPIRED_CREDENTIAL}` -- from `starts_on` "
+        "and `days_valid` against the garage's local day; nobody types it, and typing it is "
+        "refused by its own code.",
+        "",
+        f"A QR carries `{PAYLOAD_PREFIX}<token>`; a lane may present the payload or the bare "
+        f"token. A garage enrols at {ends}; a garage with no transient parking enrols at "
+        f"`{ENROLS_AT[0]}`, derived, and need not state it.",
+    ])
+
+
 def block_document_keys() -> str:
     rows = ["| document | keys |", "|---|---|"]
     for name in ("GARAGE", "PASS", "HOLDER", "TERMS", "WINDOW", "ALLOWANCE", "REGISTRATION",
@@ -201,6 +223,7 @@ BLOCKS = {
     "refused-to-answer": block_refused_to_answer,
     "answer-fields": block_answer_fields,
     "states": block_states,
+    "credential-states": block_credential_states,
     "document-keys": block_document_keys,
     "worked-example": block_worked_example,
 }

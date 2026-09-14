@@ -57,6 +57,7 @@ from garage_pass.access import Outcome, access
 from garage_pass.garage import Garage, garage_from_stored
 from garage_pass.localday import UnknownTimezone
 from garage_pass.passes import Pass, State, Visit
+from garage_pass.store import enrolments
 from garage_pass.terms import Direction
 
 GARAGE = transient_garage()
@@ -379,19 +380,25 @@ WHO_WHEN_WHY = dict(by="operator", at=NOON_MONDAY, reason="stored from a laptop,
 
 
 def writes_against_a_garage() -> list[str]:
-    """Every public function in the store whose third parameter is the
-    garage's external id -- the writes a garage takes -- read from the
-    signatures, not typed. ``load_garage``/``registrations_of`` take a uuid or
-    are named differently, and are reads."""
+    """Every public function in the store -- both its modules, ``records`` and
+    ``enrolments`` -- whose third parameter is the garage's external id: the
+    writes a garage takes, read from the signatures, not typed.
+    ``load_garage``/``registrations_of`` take a uuid or are named differently,
+    and are reads."""
     import inspect
 
+    from garage_pass.store import enrolments
+
     found = []
-    for name, function in vars(records).items():
-        if name.startswith("_") or not inspect.isfunction(function):
-            continue
-        parameters = list(inspect.signature(function).parameters)
-        if len(parameters) >= 3 and parameters[2] == "garage_external_id":
-            found.append(name)
+    for module in (records, enrolments):
+        for name, function in vars(module).items():
+            if name.startswith("_") or not inspect.isfunction(function):
+                continue
+            if function.__module__ != module.__name__:
+                continue  # imported from the other module: counted once, there
+            parameters = list(inspect.signature(function).parameters)
+            if len(parameters) >= 3 and parameters[2] == "garage_external_id":
+                found.append(name)
     return sorted(found)
 
 
@@ -427,8 +434,24 @@ def test_every_write_against_an_unreadable_garage_is_refused_by_name_and_the_rep
                                                        "CAR-1", "L1", TWO_HOURS_BEFORE),
         "record_exit": lambda c: record_exit(c, tenant_id, "g-badtz", pass_.id, "CAR-1", "L1",
                                              NOON_MONDAY),
+        # 0003: the second garage repair, and the credentials (their garage is
+        # read through the pass, but each names the garage it is asked at)
+        "set_garage_enrols_at": lambda c: records.set_garage_enrols_at(
+            c, tenant_id, "g-badtz", "entry", **WHO_WHEN_WHY),
+        "issue_enrolment": lambda c: enrolments.issue_enrolment(
+            c, tenant_id, "g-badtz", pass_.id, "e-1", date(2026, 6, 1), 3, by="owner",
+            at=NOON_MONDAY),
+        "issue_holder_link": lambda c: enrolments.issue_holder_link(
+            c, tenant_id, "g-badtz", pass_.id, "l-1", date(2026, 6, 1), 3, by="owner",
+            at=NOON_MONDAY),
+        "redeem_holder_link": lambda c: enrolments.redeem_holder_link(
+            c, tenant_id, "g-badtz", "no-such-token", name="A", phone="1",
+            enrolment_external_id="e-1", starts_on=date(2026, 6, 1), days_valid=3,
+            at=NOON_MONDAY),
     }
-    assert sorted([*calls, REPAIR]) == writes_against_a_garage(), (
+    # the redemption is the one write that CARRIES its refusal instead of raising
+    # it, because the lane must still be answered: exercised below on its own
+    assert sorted([*calls, REPAIR, "redeem_enrolment"]) == writes_against_a_garage(), (
         "a write against a garage exists that this test does not exercise"
     )
     for name, call in calls.items():
@@ -442,7 +465,26 @@ def test_every_write_against_an_unreadable_garage_is_refused_by_name_and_the_rep
         assert "Mars/Olympus" in refused.value.detail and "set-garage-timezone" in (
             refused.value.detail
         ), name
+    for direction in Direction:
+        with tenant(app, tenant_id) as cursor:
+            redemption = enrolments.redeem_enrolment(
+                cursor, tenant_id, "g-badtz", "no-such-token", "CAR-1", "L1", direction,
+                NOON_MONDAY,
+            )
+        app.rollback()
+        assert not redemption.redeemed and redemption.refusal is not None
+        assert redemption.refusal.code == f.REFUSAL_TIMEZONE_UNKNOWN
+        assert "'g-badtz' is stored unreadable" in redemption.refusal.detail
+        assert "set-garage-timezone" in redemption.refusal.detail
+        # and the movement is still answered -- at an exit, never refused
+        if direction is Direction.EXIT:
+            assert redemption.answer.outcome is Outcome.NOT_COVERED
+            assert redemption.answer.reason == f.GARAGE_UNREADABLE
+        else:
+            assert redemption.answer.outcome is Outcome.REFUSED_TO_ANSWER
+            assert redemption.answer.missing == f.MISSING_TIMEZONE
     assert query(app, tenant_id, "SELECT count(*) FROM passes") == [(0,)], "a write landed"
+    assert query(app, tenant_id, "SELECT count(*) FROM enrolments") == [(0,)], "a write landed"
     # the exit still answers about it, as before
     exit_ = answered(access_from_store, app, tenant_id, "g-badtz", "CAR-1", "L1", Direction.EXIT,
                               NOON_MONDAY)

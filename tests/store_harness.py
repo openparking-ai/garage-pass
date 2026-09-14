@@ -153,11 +153,13 @@ def store_test(function):
 def seed_full_graph(app: Any, tenant_id: UUID) -> None:
     """A row in EVERY table, as one tenant, through the module: a garage, a
     pass with a window and a lane (and its creation in the history), a
-    registration, a recorded entry, and a garage repair (and its row in the
-    garage history). The isolation test's denominator."""
+    registration, a recorded entry, a garage repair (and its row in the
+    garage history), an enrolment and a holder link (0003). The isolation
+    test's denominator."""
     from datetime import date
 
     from fixtures import TWO_HOURS_BEFORE, a_pass, everything_terms, transient_garage
+    from garage_pass.store.enrolments import issue_enrolment, issue_holder_link
     from garage_pass.store.records import record_entry, register_vehicle, set_garage_timezone
 
     garage = transient_garage()
@@ -169,4 +171,9 @@ def seed_full_graph(app: Any, tenant_id: UUID) -> None:
         # the one operator write on a garage, and its history row (0002)
         set_garage_timezone(cursor, tenant_id, garage.id, garage.timezone, by="seed",
                             at=CREATED_AT, reason="seeded")
+        # the two one-time credentials (0003)
+        issue_enrolment(cursor, tenant_id, garage.id, pass_.id, "enrol-1", date(2026, 6, 1), 3,
+                        by="seed", at=CREATED_AT)
+        issue_holder_link(cursor, tenant_id, garage.id, pass_.id, "link-1", date(2026, 6, 1), 3,
+                          by="seed", at=CREATED_AT)
     app.commit()
