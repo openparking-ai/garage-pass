@@ -1343,8 +1343,16 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
     ),
     "G19/atomic": (
         G19, "store/enrolments.py",
-        '        cursor.execute(f"ROLLBACK TO SAVEPOINT {SAVEPOINT}")',
-        '        cursor.execute(f"RELEASE SAVEPOINT {SAVEPOINT}")  # PLANTED: the writes stand',
+        source(
+            "    except Refused as refused:",
+            "        # Nothing written -- the module's own refusal or the database's backstop",
+            "        # alike: the savepoint takes every write back and the transaction goes on.",
+            '        cursor.execute(f"ROLLBACK TO SAVEPOINT {SAVEPOINT}")',
+        ),
+        source(
+            "    except Refused as refused:",
+            '        cursor.execute(f"RELEASE SAVEPOINT {SAVEPOINT}")  # PLANTED: the writes stand',
+        ),
         "a refusal after the registration was written leaves the registration standing: a "
         "half-landed redemption, the QR still issued -- usable twice",
     ),
@@ -1377,6 +1385,127 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
         "with the cancellation put back by a raw write, a revoked pass's QR binds a car: the "
         "state check the brief requires to be load-bearing is gone from both layers at once "
         "(both read this set)",
+    ),
+    # --- the fix round: one credential, one spend; the savepoint on every
+    #     exception; the direction; the revoke races; the rendered doors ---
+    "G19/lock-order": (
+        G19, "store/records.py",
+        '    return f"FOR UPDATE OF {alias}" if alias else "FOR UPDATE"',
+        '    return ""  # PLANTED: no row lock anywhere -- every lock reads through this seam',
+        "the PRIMARY removed at its one seam (both locks at once, since either alone serialises "
+        "a same-credential race): with the spend's backstop monkeypatched away in the test, two "
+        "lanes both redeem one token; two QRs on a draft pass write draft->active twice; the "
+        "revocation racing a redemption records draft->revoked",
+    ),
+    "G19/spend-predicate": (
+        G19, "store/enrolments.py",
+        source(
+            '        "WHERE tenant_id = %s AND id = %s AND state = %s",',
+            "        (CredentialState.REDEEMED.value, *values, tenant_uuid, uuid,",
+            "         CredentialState.ISSUED.value),",
+            "    )",
+            "    if cursor.rowcount != 1:",
+        ),
+        source(
+            '        "WHERE tenant_id = %s AND id = %s",  # PLANTED: no state predicate',
+            "        (CredentialState.REDEEMED.value, *values, tenant_uuid, uuid),",
+            "    )",
+            "    if False:  # PLANTED: no rowcount",
+        ),
+        "the BACKSTOP removed: with the locks monkeypatched away in the test, the second lane's "
+        "spend overwrites the first -- two registrations, the row records the last writer",
+    ),
+    "G19/rollback-on-every-exception": (
+        G19, "store/enrolments.py",
+        source(
+            "    except BaseException:",
+            "        # A defect, a driver error the store did not name, an interrupt: the",
+            "        # savepoint takes every write back FIRST, then it surfaces unchanged.",
+            "        # Nothing persists, and nothing is swallowed.",
+            '        cursor.execute(f"ROLLBACK TO SAVEPOINT {SAVEPOINT}")',
+        ),
+        source(
+            "    except BaseException:",
+            "        pass  # PLANTED: only Refused rolls the savepoint back",
+        ),
+        "a planted programming error after the registration surfaces but leaves the registration "
+        "live in the caller's transaction: committed, a QR that works twice",
+    ),
+    "G19/direction": (
+        G19, "store/enrolments.py",
+        "        if direction not in pass_.terms.directions:",
+        "        if False:  # PLANTED: an exit-only pass binds at an entry-enrolling garage",
+        "a pass whose terms exclude the enrolling direction binds and burns the QR on a "
+        "movement it can never cover",
+    ),
+    "G19/direction-over-reach": (
+        G19, "store/enrolments.py",
+        "        if direction not in pass_.terms.directions:",
+        "        if direction not in pass_.terms.directions or pass_.terms.windows or "
+        "pass_.terms.valid_from:  # PLANTED: temporal non-coverage refused too",
+        "the direction refusal over-reaches into temporal non-coverage: a weekday pass on a "
+        "Sunday, a valid_from ahead, office hours at 23:00 are all REFUSED instead of bound -- "
+        "the control that matters more than the fix",
+    ),
+    "G19/revocation-lock": (
+        G19, "store/records.py",
+        source(
+            "    lock_pass_row(cursor, tenant_uuid, pass_uuid)",
+            "    # re-read under the lock: a check made before the lock is a check on a stale row",
+            "    pass_uuid, pass_ = load_pass(cursor, tenant_uuid, garage_uuid, pass_external_id)",
+            "    moved, change = transition(pass_, to, by=by, at=at, reason=reason)",
+        ),
+        source(
+            "    pass_ = _stale  # PLANTED: the revocation judges the row it read before any lock",
+            "    moved, change = transition(pass_, to, by=by, at=at, reason=reason)",
+        ),
+        "a revocation racing a first redemption records draft->revoked: a transition from a "
+        "state the pass had already left",
+    ),
+    "G19/issue-lock": (
+        G19, "store/enrolments.py",
+        source(
+            "    pass_uuid, _stale = load_pass(cursor, tenant_uuid, garage_uuid, pass_external_id)",
+            "    lock_pass_row(cursor, tenant_uuid, pass_uuid)",
+            "    pass_uuid, pass_ = load_pass(cursor, tenant_uuid, garage_uuid, pass_external_id)",
+        ),
+        source(
+            "    pass_uuid, pass_ = load_pass(cursor, tenant_uuid, garage_uuid, pass_external_id)",
+            "    # PLANTED: the issue judges the row it read before any lock",
+        ),
+        "an issue racing a revocation, revoke first, leaves an ISSUED credential on the "
+        "revoked pass: the credential outlives the pass",
+    ),
+    "G21/rendered-garage-mismatch": (
+        G21, "store/enrolments.py",
+        '                f"not at garage {garage_external_id!r}.",',
+        '                f"not at garage {garage_external_id!r}. " + "The pass is " + "stored"'
+        ' + " raw.",  # PLANTED: a run-time spelling of a route falsehood',
+        "a falsehood assembled at run time in the GARAGE_MISMATCH refusal detail -- the door the "
+        "rendered collector was blind to at the L3 -- must read UNJUDGED in the test that drives "
+        "that door through the command line in-process",
+    ),
+    "G21/rendered-lane-outside": (
+        G21, "store/enrolments.py",
+        '                f"not {lane_name!r}.",',
+        '                f"not {lane_name!r}. " + "The lane is " + "stored" + " raw.",'
+        "  # PLANTED: a run-time spelling of a route falsehood",
+        "the same, in the LANE_OUTSIDE refusal detail",
+    ),
+    "G24/control-characters": (
+        G24, "garage.py",
+        '    control = [ch for ch in text if unicodedata.category(ch) == "Cc"]',
+        "    control = []  # PLANTED: a NUL in the holder's name reaches the driver",
+        "a control character in the holder's text is not refused by name: it reaches the "
+        "database driver and comes back as a configuration-class sentence",
+    ),
+    "G24/ascii-rule": (
+        G24, "garage.py",
+        '    control = [ch for ch in text if unicodedata.category(ch) == "Cc"]',
+        '    control = [ch for ch in text if unicodedata.category(ch) == "Cc" or ord(ch) > 127]'
+        "  # PLANTED: the fix became an ASCII rule",
+        "a name with accented letters or in a non-Latin script is refused: a worse defect than "
+        "the one being fixed",
     ),
     "G20/divergence": (
         G20, "store/enrolments.py",
@@ -1554,15 +1683,8 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
     ),
     "G24/spend": (
         G24, "store/enrolments.py",
-        source(
-            '        "UPDATE holder_links SET state = %s, redeemed_at = %s WHERE tenant_id = %s'
-            ' AND id = %s",',
-            "        (CredentialState.REDEEMED.value, at, tenant_uuid, uuid),",
-        ),
-        source(
-            '        "SELECT 1",  # PLANTED: the link is never spent',
-            "        (),",
-        ),
+        '    _spend(cursor, HOLDER_LINK, tenant_uuid, uuid, "redeemed_at = %s", (at,))',
+        '    pass  # PLANTED: the link is never spent',
         "a holder link is redeemed and stays issued: usable again",
     ),
 }

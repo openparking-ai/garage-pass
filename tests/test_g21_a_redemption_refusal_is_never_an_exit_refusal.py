@@ -23,6 +23,7 @@ import pytest
 from enrolment_harness import (
     GARAGES,
     NO_TRANSIENT,
+    TRANSIENT_ENTRY,
     TRANSIENT_EXIT,
     issue,
     other_end,
@@ -132,6 +133,16 @@ def lane_outside_the_terms(app, owner, tenant_id, garage):
     return token, "CAR-1", "L9", NOON_MONDAY, f.REFUSAL_LANE_OUTSIDE_THE_PASS_TERMS
 
 
+def direction_outside_the_terms(app, owner, tenant_id, garage):
+    """The fix round's refusal: the pass allows only the OTHER end. At the
+    enrolling end it is refused by name; at the wrong end, the wrong end."""
+    end = Direction(where_enrolment_happens(garage))
+    pass_ = seeded(app, tenant_id, garage,
+                   terms=simple_terms(directions=frozenset({other_end(end)})))
+    token = issue(app, tenant_id, garage, pass_)["token"]
+    return token, "CAR-1", "L1", NOON_MONDAY, f.REFUSAL_DIRECTION_OUTSIDE_THE_PASS_TERMS
+
+
 def identity_on_another_pass(app, owner, tenant_id, garage):
     from fixtures import a_pass
     from garage_pass.store.records import create_pass
@@ -163,7 +174,8 @@ def unreadable_garage(app, owner, tenant_id, garage):
 
 SITUATIONS = [unknown_token, already_used, cancelled, expired, not_started, pass_suspended,
               pass_revoked_with_the_cancellation_put_back, pass_expired, lane_outside_the_terms,
-              identity_on_another_pass, blank_identity, unreadable_garage]
+              direction_outside_the_terms, identity_on_another_pass, blank_identity,
+              unreadable_garage]
 
 
 def answered(app, tenant_id, garage, token, identity, lane, direction, when) -> Redemption:
@@ -240,3 +252,75 @@ def test_a_wrong_end_refusal_at_an_exit_still_lets_the_car_out_covered(app, tena
     out = redeem(app, tenant_id, TRANSIENT_EXIT, token, "CAR-2", "L1")
     assert out.redeemed and out.answer.direction is Direction.EXIT
     assert out.answer.outcome is Outcome.COVERED and out.answer.exit_note == f.EXIT_IS_NEVER_REFUSED
+
+
+# ---------------------------------------------------------------------------
+# EVERY REFUSAL DOOR, RENDERED THROUGH THE COMMAND LINE IN-PROCESS -- so the
+# rendered-sentence collector SEES each one. Measured at the L3: a falsehood
+# planted in the GARAGE_MISMATCH or LANE_OUTSIDE detail stayed green, because
+# no test drove those doors through main() in this process and the collector,
+# which reads what the command line prints, never saw them. A guard blind
+# exactly where a falsehood would live is the class of hole that hid the last
+# blocker. This test drives every situation above through main() and judges
+# ITS OWN rendered slice with the sweep's judge, so a fail-control plant of a
+# run-time spelling in any of those details reddens HERE, in one target file.
+# ---------------------------------------------------------------------------
+
+
+def garage_mismatch(app, owner, tenant_id, garage):
+    """A QR of a pass at ANOTHER garage, presented here. Not in SITUATIONS
+    above (its refusal comes before the end is asked, like the unreadable
+    garage's), so it is driven through the command line here by name."""
+    from fixtures import a_pass
+    from garage_pass.garage import Garage
+    from store_harness import seed
+
+    seeded(app, tenant_id, garage)
+    elsewhere = Garage(id="garage-elsewhere", timezone=garage.timezone, transient_available=True,
+                       enrols_at="entry")
+    other = a_pass(id="pass-elsewhere", garage_id=elsewhere.id)
+    seed(app, tenant_id, elsewhere, (other,))
+    token = issue(app, tenant_id, elsewhere, other, "qr-elsewhere")["token"]
+    return token, "CAR-1", "L1", NOON_MONDAY, f.REFUSAL_GARAGE_MISMATCH
+
+
+@pytest.mark.guarantee("G21")
+def test_every_refusal_door_is_rendered_through_the_command_line_and_the_collector_sees_it(
+    app, owner, tenant_id, capsys, monkeypatch
+):
+    import json
+
+    import sweep_route_sentences as sweep
+
+    from _rendered_sentences import rendered_so_far
+    from enrolment_harness import app_dsn_into_the_environment
+    from garage_pass.cli import main
+    from store_harness import new_tenant
+
+    app_dsn_into_the_environment(monkeypatch)
+    started = len(rendered_so_far())
+    garage = TRANSIENT_ENTRY
+    doors = [*SITUATIONS, garage_mismatch]
+    seen: dict[str, str] = {}
+    for situation in doors:
+        tenant_id = new_tenant(owner)  # fresh rows per door: each seeds its own garage
+        token, identity, lane, when, code = situation(app, owner, tenant_id, garage)
+        status = main(["redeem-enrolment", "--tenant", str(tenant_id), "--garage", garage.id,
+                       "--token", token, "--vehicle", identity, "--lane", lane, "--direction",
+                       "entry", "--at", when.isoformat()])
+        printed = capsys.readouterr().out
+        assert status in (0, 1, 2), (situation.__name__, status, printed)
+        out = json.loads(printed)
+        assert out["enrolment"]["redeemed"] is False and out["enrolment"]["refused"] == code, (
+            situation.__name__, out["enrolment"])
+        assert "answer" in out, "the movement is answered beside the refusal"
+        seen[situation.__name__] = out["enrolment"]["detail"]
+    assert len(seen) == len(doors) == 14, "every refusal kind, and the garage mismatch"
+    rendered = rendered_so_far()[started:]
+    assert len(rendered) >= len(doors), "the collector saw a detail for every door"
+    for name, detail in seen.items():
+        assert any(detail == d for d, _stack in rendered), f"{name}'s detail was not collected"
+    status, result = sweep.judge_rendered(list(rendered))
+    assert result["collected"] >= len(doors)
+    assert result["unjudged"] == [] and result["false"] == [], sweep.report_rendered(result)
+    assert status == 0

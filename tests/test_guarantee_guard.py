@@ -290,6 +290,37 @@ def test_the_run_guard_fails_a_full_run_with_an_unrun_guarantee_unless_allowed(m
     monkeypatch.delenv(conftest.ALLOW_ENV, raising=False)
     conftest.pytest_sessionfinish(complete, 0)
     assert complete.exitstatus == 0
+    # THE SUMMARY NAMES THE FAILURE. A guard that only set the exit status
+    # printed its block and watched "N passed" go by underneath: the run exited
+    # 1 while its last line read green (measured at the L3 of the enrolment
+    # round). The failed session carries what the summary must say; the clean
+    # ones carry nothing; and the terminal summary hook writes it as a red
+    # separator AND as its own counted kind in the count line.
+    import _rendered_sentences as rendered
+
+    assert not hasattr(complete, rendered.SUMMARY_FAILURES)
+    assert not hasattr(allowed, rendered.SUMMARY_FAILURES)
+    (key, block), = getattr(session, rendered.SUMMARY_FAILURES)
+    assert key == "guarantee-guard failure" and missing in block
+
+    class Reporter:
+        _session = session
+        stats: dict = {"passed": [object()] * 3}
+        lines: list = []
+
+        def write_sep(self, sep, title, **markup):
+            self.lines.append((sep, title, markup))
+
+        def write_line(self, line, **markup):
+            self.lines.append(("", line, markup))
+
+    reporter = Reporter()
+    rendered.pytest_terminal_summary(reporter, 0, session.config)
+    assert reporter.lines[0][1] == "GUARANTEE-GUARD FAILURE -- this run exits 1"
+    assert reporter.lines[0][2].get("red") is True
+    assert missing in reporter.lines[1][1]
+    assert len(reporter.stats["guarantee-guard failure"]) == 1, "counted in the last line"
+    assert reporter.stats["guarantee-guard failure"][0].count_towards_summary is True
 
 
 @pytest.mark.guarantee("G16")

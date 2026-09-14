@@ -140,6 +140,8 @@ REFUSAL_CREDENTIAL_EXPIRED = "REFUSAL_CREDENTIAL_EXPIRED"
 REFUSAL_CREDENTIAL_NOT_STARTED = "REFUSAL_CREDENTIAL_NOT_STARTED"
 REFUSAL_CREDENTIAL_ALREADY_EXISTS = "REFUSAL_CREDENTIAL_ALREADY_EXISTS"
 REFUSAL_LANE_OUTSIDE_THE_PASS_TERMS = "REFUSAL_LANE_OUTSIDE_THE_PASS_TERMS"
+REFUSAL_DIRECTION_OUTSIDE_THE_PASS_TERMS = "REFUSAL_DIRECTION_OUTSIDE_THE_PASS_TERMS"
+REFUSAL_TEXT_HAS_CONTROL_CHARACTERS = "REFUSAL_TEXT_HAS_CONTROL_CHARACTERS"
 
 REFUSALS: dict[str, str] = {
     REFUSAL_VALID_TO_BEFORE_VALID_FROM: (
@@ -374,6 +376,21 @@ REFUSALS: dict[str, str] = {
         "not one of them. Nothing is implicit: the pass carries its own terms, and a "
         "redemption at a lane they do not name is refused naming the lane and the set. "
         "The owner's fix is to state the lane on the pass. Nothing is written."
+    ),
+    REFUSAL_DIRECTION_OUTSIDE_THE_PASS_TERMS: (
+        "The pass's terms allow no movement in the direction this garage enrols at, so "
+        "the QR would be spent on a movement the pass can never cover. Refused by name, "
+        "beside the lane refusal, before anything is written: the credential stays "
+        "issued for a movement the pass can cover. ONLY a STRUCTURAL exclusion refuses "
+        "-- the direction, or the lane outside the stated set. Temporal non-coverage "
+        "(a weekend on a weekday pass, a valid_from still ahead, a movement outside the "
+        "hours) still BINDS: enrolling at the weekend is the ordinary case."
+    ),
+    REFUSAL_TEXT_HAS_CONTROL_CHARACTERS: (
+        "A text field carries a control character -- a NUL, a line break, a tab or "
+        "another character whose Unicode category is Cc. Refused by name wherever the "
+        "module reads text, so a driver never turns it into a configuration-class "
+        "sentence. Letters in any script are text and are accepted."
     ),
 }
 

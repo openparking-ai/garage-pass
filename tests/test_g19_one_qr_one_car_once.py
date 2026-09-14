@@ -49,13 +49,14 @@ from enrolment_harness import (
     issue_link,
     link_row,
     pass_state,
+    race,
     redeem,
     redeem_link,
     registrations,
     seeded,
     state_changes,
 )
-from fixtures import NOON_MONDAY, at, simple_terms
+from fixtures import NOON_MONDAY, WEEKDAYS, at, simple_terms
 from garage_pass import findings as f
 from garage_pass.access import Outcome
 from garage_pass.enrolment import (
@@ -479,3 +480,450 @@ def test_the_swap_is_end_registration_then_a_new_qr_and_the_half_open_range_hold
     early = redeem(app, tenant_id, TRANSIENT_ENTRY, before_d, "CAR-OLD",
                    at=at(date(2026, 6, 2), 9))
     assert not early.redeemed and early.refusal.code == f.REFUSAL_VEHICLE_ON_ANOTHER_PASS
+
+
+# ---------------------------------------------------------------------------
+# ONE CREDENTIAL, ONE SPEND -- the fix round. Measured before it: two lanes
+# presenting one token BOTH redeemed, 120/120 rounds, silently. The lock order
+# (pass row, then credential row, re-validated under the locks) is the PRIMARY;
+# the spend's predicate and rowcount is the BACKSTOP; and each is measured
+# WITH THE OTHER REMOVED, because each would mask the removal of the other.
+# ---------------------------------------------------------------------------
+
+
+def _lane(tenant_id, garage, token, identity, lane="L1", at_=NOON_MONDAY):
+    """A redemption on the cursor a race hands it -- never committing itself."""
+    from garage_pass.enrolment import where_enrolment_happens
+    from garage_pass.store.enrolments import redeem_enrolment
+
+    end = Direction(where_enrolment_happens(garage))
+
+    def run(cursor):
+        return redeem_enrolment(cursor, tenant_id, garage.id, token, identity, lane, end, at_)
+    return run
+
+
+def _moves_to_active(app, tenant_id) -> list:
+    """The draft -> active transitions in the history (the seed's creation row
+    is None -> active and is not one)."""
+    return [c for c in state_changes(app, tenant_id) if c[0] == "draft" and c[1] == "active"]
+
+
+@pytest.fixture
+def two_lanes(app, owner, tenant_id):
+    """One pass, one QR, and the race: A binds CAR-A and holds; B presents the
+    SAME token for CAR-B and must wait on A; A commits; B continues."""
+    def run(garage=TRANSIENT_ENTRY, state=State.DRAFT, isolation=None):
+        pass_ = seeded(app, tenant_id, garage, state=state)
+        token = issue(app, tenant_id, garage, pass_)["token"]
+        got_a, got_b = race(owner, tenant_id, _lane(tenant_id, garage, token, "CAR-A"),
+                            _lane(tenant_id, garage, token, "CAR-B", "L2"), isolation=isolation)
+        return pass_, token, got_a, got_b
+    return run
+
+
+@pytest.mark.guarantee("G19")
+@pytest.mark.parametrize("state", [State.DRAFT, State.ACTIVE], ids=["draft", "active"])
+def test_two_lanes_one_token_exactly_one_redeems_and_the_loser_is_refused_by_name(
+    app, tenant_id, two_lanes, state
+):
+    """THE BLOCKER, the other way: exactly one registration, exactly one
+    redeemed row recording the lane that won, the loser refused by name --
+    ALREADY USED, with the instant the winner redeemed at -- and no traceback
+    at either lane. A draft pass (the first car) and an active one (a second
+    car on a pooled pass) both."""
+    pass_, token, a, b = two_lanes(state=state)
+    assert not isinstance(a, BaseException) and not isinstance(b, BaseException), (a, b)
+    assert a.redeemed and a.refusal is None
+    assert not b.redeemed and b.refusal.code == f.REFUSAL_CREDENTIAL_ALREADY_USED, b.refusal
+    assert "was redeemed at 2026-06-01T" in b.refusal.detail, "the winner's instant, by name"
+    assert [r[1] for r in registrations(app, tenant_id)] == ["CAR-A"], "exactly one registration"
+    row = enrolment_row(app, tenant_id)
+    assert row[0] == "redeemed" and row[1] == "CAR-A" and row[2] == "L1", row
+    assert pass_state(app, tenant_id, pass_) == "active"
+    assert len(_moves_to_active(app, tenant_id)) == (1 if state is State.DRAFT else 0), (
+        "a pass moves to active ONCE; the loser's transition was taken back with the rest"
+    )
+    # and the loser still hears an answer for its own movement
+    assert b.answer.direction is Direction.ENTRY and b.answer.vehicle_identity == "CAR-B"
+
+
+@pytest.mark.guarantee("G19")
+@pytest.mark.parametrize("state", [State.DRAFT, State.ACTIVE], ids=["draft", "active"])
+def test_the_backstop_holds_one_spend_with_the_lock_removed(
+    app, tenant_id, two_lanes, monkeypatch, state
+):
+    """THE BACKSTOP, MEASURED ALONE: the pass lock and the credential lock are
+    monkeypatched away (the credential is re-read unlocked, as before the fix),
+    so lane B reads an issued credential and writes everything -- and its spend
+    matches 0 rows, because the predicate carries state = 'issued'. That 0 is
+    the named refusal, the savepoint takes B's writes back, exactly one
+    registration stands. A control run with the lock in place would prove
+    nothing about the predicate."""
+    from garage_pass.store import enrolments as e
+    from garage_pass.store import records
+
+    monkeypatch.setattr(e, "lock_pass_row", lambda cursor, tenant, pass_uuid: None)
+    monkeypatch.setattr(records, "lock_pass_row", lambda cursor, tenant, pass_uuid: None)
+
+    def unlocked_re_read(cursor, kind, tenant_uuid, uuid):
+        cursor.execute(e._select(kind, "c.id = %s"), (tenant_uuid, uuid))
+        return e._credential_from_row(kind, cursor.fetchone())
+
+    monkeypatch.setattr(e, "_lock_credential", unlocked_re_read)
+    pass_, token, a, b = two_lanes(state=state)
+    assert not isinstance(b, BaseException), b
+    assert a.redeemed
+    assert not b.redeemed and b.refusal.code == f.REFUSAL_CREDENTIAL_ALREADY_USED, b.refusal
+    assert "0 row(s) matched state 'issued'" in b.refusal.detail, "the backstop's own sentence"
+    assert [r[1] for r in registrations(app, tenant_id)] == ["CAR-A"]
+    assert enrolment_row(app, tenant_id)[1] == "CAR-A"
+    assert len(_moves_to_active(app, tenant_id)) == (1 if state is State.DRAFT else 0)
+
+
+@pytest.mark.guarantee("G19")
+def test_the_lock_holds_one_spend_with_the_predicate_removed(app, tenant_id, two_lanes,
+                                                            monkeypatch):
+    """THE PRIMARY, MEASURED ALONE: the spend is monkeypatched to the shape it
+    had before the fix -- no state predicate, no rowcount -- so nothing at the
+    write would stop a second spend. Lane B waits on the pass row, re-reads
+    the credential under the lock after A commits, and is refused by the
+    state check with the right sentence. A control run with the predicate in
+    place would prove nothing about the lock."""
+    from garage_pass.store import enrolments as e
+
+    def spend_without_the_backstop(cursor, kind, tenant_uuid, uuid, assignments, values):
+        cursor.execute(
+            f"UPDATE {e._TABLE[kind]} SET state = %s, {assignments} "
+            "WHERE tenant_id = %s AND id = %s",
+            (CredentialState.REDEEMED.value, *values, tenant_uuid, uuid),
+        )
+
+    monkeypatch.setattr(e, "_spend", spend_without_the_backstop)
+    pass_, token, a, b = two_lanes()
+    assert not isinstance(b, BaseException), b
+    assert a.redeemed
+    assert not b.redeemed and b.refusal.code == f.REFUSAL_CREDENTIAL_ALREADY_USED, b.refusal
+    assert "was redeemed at" in b.refusal.detail, "the state check's sentence, not the backstop's"
+    assert [r[1] for r in registrations(app, tenant_id)] == ["CAR-A"]
+    assert enrolment_row(app, tenant_id)[1] == "CAR-A"
+
+
+@pytest.mark.guarantee("G19")
+@pytest.mark.parametrize("level", ["REPEATABLE_READ", "SERIALIZABLE"])
+def test_a_caller_at_a_stricter_isolation_level_meets_a_named_refusal_not_a_traceback(
+    app, tenant_id, two_lanes, level
+):
+    """The store is written for READ COMMITTED, its default (verified by the
+    suite, not assumed: see below). An integrator driving it at REPEATABLE
+    READ or SERIALIZABLE meets the database's serialization failure at the
+    lock when the row moved under it -- measured before the fix as a raw
+    SerializationFailure. It is the named refusal in the deadlock's own shape:
+    the constraint code, the database's account carried, no cause asserted,
+    'Roll back and read again'."""
+    import psycopg
+
+    with app.cursor() as cursor:
+        cursor.execute("SHOW default_transaction_isolation")
+        assert cursor.fetchone()[0] == "read committed", "the level the store is written for"
+    app.rollback()
+    pass_, token, a, b = two_lanes(state=State.ACTIVE, isolation=psycopg.IsolationLevel[level])
+    assert a.redeemed
+    assert not isinstance(b, BaseException), f"lane B got a traceback: {b!r}"
+    assert not b.redeemed and b.refusal.code == f.REFUSAL_CONSTRAINT, b.refusal
+    assert "could not serialize" in b.refusal.detail
+    assert "Roll back and read again" in b.refusal.detail
+    assert "PostgreSQL's own account" in b.refusal.detail
+    assert [r[1] for r in registrations(app, tenant_id)] == ["CAR-A"]
+
+
+@pytest.mark.guarantee("G19")
+def test_two_holders_one_link_exactly_one_enrolment_is_issued(app, owner, tenant_id):
+    """The holder link is the same primitive and had the same gap: one link,
+    two concurrent redemptions, two QRs -- 40/40 measured. Now the second
+    waits on the pass row, re-reads the link under the lock, and is refused
+    ALREADY USED; one enrolment exists, and the pass carries the first
+    holder's details."""
+    from garage_pass.store.enrolments import redeem_holder_link
+
+    pass_ = seeded(app, tenant_id, TRANSIENT_ENTRY)
+    link = issue_link(app, tenant_id, TRANSIENT_ENTRY, pass_)["token"]
+
+    def holder(name, enrolment_id):
+        def run(cursor):
+            return redeem_holder_link(
+                cursor, tenant_id, TRANSIENT_ENTRY.id, link, name=name, phone="+1 555 0100",
+                enrolment_external_id=enrolment_id, starts_on=STARTS_ON, days_valid=DAYS,
+                at=NOON_MONDAY,
+            )
+        return run
+
+    a, b = race(owner, tenant_id, holder("First Holder", "qr-a"), holder("Second Holder", "qr-b"))
+    assert isinstance(a, dict) and a["enrolment"]["enrolment"] == "qr-a"
+    assert isinstance(b, f.Refused), f"the second holder got {b!r}"
+    assert b.code == f.REFUSAL_CREDENTIAL_ALREADY_USED
+    assert query(app, tenant_id, "SELECT external_id FROM enrolments ORDER BY 1") == [("qr-a",)]
+    assert link_row(app, tenant_id)[0] == "redeemed"
+    assert query(app, tenant_id, "SELECT holder_name FROM passes") == [("First Holder",)]
+
+
+@pytest.mark.guarantee("G19")
+def test_two_qrs_on_one_draft_pass_move_it_to_active_once(app, owner, tenant_id):
+    """THE PASS LOCK'S OWN CONSEQUENCE, the first in LOCK_ORDER: two different
+    QRs on one DRAFT pass, redeemed at the same instant. The second waits on
+    the pass row and re-reads it ACTIVE, so it takes no transition; without
+    the lock it judged a stale draft row and wrote a second draft -> active
+    row into the history -- a change that never happened."""
+    pass_ = seeded(app, tenant_id, TRANSIENT_ENTRY)
+    one = issue(app, tenant_id, TRANSIENT_ENTRY, pass_, "qr-1")["token"]
+    two = issue(app, tenant_id, TRANSIENT_ENTRY, pass_, "qr-2")["token"]
+    a, b = race(owner, tenant_id, _lane(tenant_id, TRANSIENT_ENTRY, one, "CAR-A"),
+                _lane(tenant_id, TRANSIENT_ENTRY, two, "CAR-B", "L2"))
+    assert a.redeemed and b.redeemed, (a, b)
+    assert a.pass_state_change is not None and b.pass_state_change is None
+    assert sorted(r[1] for r in registrations(app, tenant_id)) == ["CAR-A", "CAR-B"]
+    assert [c[2] for c in _moves_to_active(app, tenant_id)] == ["qr-1"], "once, by the first QR"
+
+
+@pytest.mark.guarantee("G19")
+@pytest.mark.parametrize("kind", [ENROLMENT, HOLDER_LINK])
+@pytest.mark.parametrize("first", ["issue", "revoke"])
+def test_an_issue_racing_a_revocation_leaves_no_issued_credential_on_the_revoked_pass(
+    app, owner, tenant_id, first, kind
+):
+    """The same lock order at the ISSUE calls (found while building the fix
+    round, measured: revoke-first left an ISSUED credential on the revoked
+    pass -- the issue read a registrable row before the revocation committed
+    and the revocation cancelled nothing, since the row was not yet there).
+    Issue first: the revocation waits, then cancels it. Revoke first: the
+    issue waits, re-reads REVOKED under the lock and refuses by name."""
+    from garage_pass.store.enrolments import issue_enrolment, issue_holder_link
+
+    pass_ = seeded(app, tenant_id, TRANSIENT_ENTRY, state=State.ACTIVE)
+    issue_call = issue_enrolment if kind == ENROLMENT else issue_holder_link
+    table = "enrolments" if kind == ENROLMENT else "holder_links"
+
+    def issue_(cursor):
+        return issue_call(cursor, tenant_id, TRANSIENT_ENTRY.id, pass_.id, "cred-1", STARTS_ON,
+                          DAYS, by="owner", at=NOON_MONDAY)
+
+    def revoke(cursor):
+        return change_state(cursor, tenant_id, TRANSIENT_ENTRY.id, pass_.id, State.REVOKED,
+                            by="owner", at=NOON_MONDAY, reason="race")
+
+    a, b = race(owner, tenant_id, *((issue_, revoke) if first == "issue" else (revoke, issue_)))
+    issued, revoked = (a, b) if first == "issue" else (b, a)
+    assert not isinstance(revoked, BaseException), revoked
+    assert pass_state(app, tenant_id, pass_) == "revoked"
+    live = query(app, tenant_id, f"SELECT external_id FROM {table} WHERE state = 'issued'")
+    assert live == [], f"an issued credential on a revoked pass: {live}"
+    if first == "issue":
+        assert isinstance(issued, dict) and issued["state"] == "issued"
+        assert revoked[f"{table}_cancelled"] == 1
+        assert query(app, tenant_id, f"SELECT state FROM {table}") == [("cancelled",)]
+    else:
+        assert isinstance(issued, f.Refused), f"the issue got {issued!r}"
+        assert issued.code == f.REFUSAL_PASS_NOT_REGISTRABLE and "revoked" in issued.detail
+        assert query(app, tenant_id, f"SELECT count(*) FROM {table}") == [(0,)]
+
+
+# ---------------------------------------------------------------------------
+# THE SAVEPOINT IS ROLLED BACK ON EVERY EXCEPTION -- both halves at once
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.guarantee("G19")
+@pytest.mark.parametrize("planted", [TypeError, RuntimeError, KeyError],
+                         ids=lambda e: e.__name__)
+def test_a_defect_after_the_registration_surfaces_and_nothing_persists_even_if_the_caller_commits(
+    app, tenant_id, monkeypatch, planted
+):
+    """A planted programming error after step 1. TWO things, held at once
+    because each can pass while the other fails: it SURFACES unchanged (a
+    rollback that also swallowed it would be never-wrong-silently in a new
+    costume), and NOTHING PERSISTS -- the caller then COMMITS, deliberately,
+    the way a caller that catches broadly would, and the registration is not
+    there and the QR still works exactly once. Measured before the fix: only
+    Refused rolled the savepoint back, and this exact sequence committed a
+    registration beside an issued credential."""
+    from garage_pass.store import enrolments as e
+    from garage_pass.store.enrolments import redeem_enrolment
+
+    pass_ = seeded(app, tenant_id, TRANSIENT_ENTRY)
+    token = issue(app, tenant_id, TRANSIENT_ENTRY, pass_)["token"]
+
+    def defect_after_the_registration(cursor, *args, **kwargs):
+        cursor.execute("SELECT count(*) FROM vehicle_registrations")
+        assert cursor.fetchone()[0] == 1, "the registration was written before this step"
+        raise planted("planted after step 1")
+
+    monkeypatch.setattr(e, "change_state", defect_after_the_registration)
+    with tenant(app, tenant_id) as cursor:
+        with pytest.raises(planted, match="planted after step 1"):  # it SURFACES
+            redeem_enrolment(cursor, tenant_id, TRANSIENT_ENTRY.id, token, "CAR-1", "L1",
+                             Direction.ENTRY, NOON_MONDAY)
+        # the transaction is still usable -- the savepoint took the error back too
+        cursor.execute("SELECT 1")
+    app.commit()  # the caller commits anyway
+    monkeypatch.undo()
+    assert registrations(app, tenant_id) == [], "nothing persisted"
+    assert pass_state(app, tenant_id, pass_) == "draft"
+    assert enrolment_row(app, tenant_id)[0] == "issued"
+    assert redeem(app, tenant_id, TRANSIENT_ENTRY, token, "CAR-1").redeemed
+    assert not redeem(app, tenant_id, TRANSIENT_ENTRY, token, "CAR-1").redeemed
+
+
+# ---------------------------------------------------------------------------
+# THE DIRECTION: only a STRUCTURAL exclusion refuses the bind
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.guarantee("G19")
+@pytest.mark.parametrize("garage", GARAGES, ids=[g.id for g in GARAGES])
+def test_a_pass_whose_terms_exclude_the_enrolling_direction_is_refused_and_the_qr_survives(
+    app, tenant_id, garage
+):
+    """An exit-only pass at a garage that enrols at entry (and the mirror):
+    the QR would be spent on a movement the pass can never cover. Refused by
+    name, before any write; the credential stays ISSUED; the lane still hears
+    an answer. Measured before the fix: it bound, burned the QR, and the lane
+    heard DIRECTION_NOT_ALLOWED."""
+    from enrolment_harness import other_end
+    from garage_pass.enrolment import where_enrolment_happens
+
+    end = Direction(where_enrolment_happens(garage))
+    pass_ = seeded(app, tenant_id, garage,
+                   terms=simple_terms(directions=frozenset({other_end(end)})))
+    token = issue(app, tenant_id, garage, pass_)["token"]
+    out = redeem(app, tenant_id, garage, token, "CAR-1")
+    assert not out.redeemed and out.refusal.code == f.REFUSAL_DIRECTION_OUTSIDE_THE_PASS_TERMS
+    assert out.refusal.field == "direction"
+    assert f"allows directions ['{other_end(end).value}']" in out.refusal.detail
+    assert f"enrols at {end.value}" in out.refusal.detail
+    assert registrations(app, tenant_id) == [] and pass_state(app, tenant_id, pass_) == "draft"
+    assert enrolment_row(app, tenant_id)[0] == "issued", "the credential survives"
+    assert out.answer.direction is end and out.answer.outcome is Outcome.NOT_COVERED
+    assert out.answer.reason == f.NO_PASS
+
+
+@pytest.mark.guarantee("G19")
+def test_wrong_lane_and_wrong_direction_keeps_the_lane_refusal(app, tenant_id):
+    """The order does not move: a movement that is both is refused for the
+    LANE, as it was measured before the direction refusal existed."""
+    pass_ = seeded(app, tenant_id, TRANSIENT_ENTRY, terms=simple_terms(
+        directions=frozenset({Direction.EXIT}), allowed_lanes=frozenset({"L9"})))
+    token = issue(app, tenant_id, TRANSIENT_ENTRY, pass_)["token"]
+    out = redeem(app, tenant_id, TRANSIENT_ENTRY, token, "CAR-1", "L1")
+    assert out.refusal.code == f.REFUSAL_LANE_OUTSIDE_THE_PASS_TERMS
+    assert enrolment_row(app, tenant_id)[0] == "issued"
+
+
+def _weekdays_only():
+    from garage_pass.terms import Window
+
+    return simple_terms(windows=(Window(days=WEEKDAYS, start_minute=0, end_minute=1440),))
+
+
+def _office_hours():
+    from garage_pass.terms import Window
+
+    return simple_terms(windows=(Window(days=WEEKDAYS, start_minute=6 * 60, end_minute=20 * 60),))
+
+
+TEMPORAL = [
+    ("a Mon-Fri window, presented on a Sunday", _weekdays_only, date(2026, 6, 7),
+     at(date(2026, 6, 7), 12), f.OUTSIDE_WINDOW),
+    ("a valid_from still ahead", lambda: simple_terms(valid_from=date(2026, 7, 1),
+                                                       valid_to=date(2026, 12, 31)),
+     STARTS_ON, NOON_MONDAY, f.NOT_STARTED),
+    ("office hours, presented at 23:00", _office_hours, STARTS_ON, at(date(2026, 6, 1), 23),
+     f.OUTSIDE_WINDOW),
+]
+
+
+@pytest.mark.guarantee("G19")
+@pytest.mark.parametrize("label,terms,starts_on,when,reason", TEMPORAL,
+                         ids=[t[0] for t in TEMPORAL])
+def test_temporal_non_coverage_still_binds(app, tenant_id, label, terms, starts_on, when, reason):
+    """THE CONTROL THAT STOPS THE DIRECTION REFUSAL OVER-REACHING, and it
+    matters more than the refusal: an employee enrolling at the weekend is
+    the ordinary case. The bind lands, the credential is spent, and the lane
+    hears the temporal answer -- not-covered, by the access call's reason."""
+    pass_ = seeded(app, tenant_id, TRANSIENT_ENTRY, terms=terms())
+    token = issue(app, tenant_id, TRANSIENT_ENTRY, pass_, starts_on=starts_on)["token"]
+    out = redeem(app, tenant_id, TRANSIENT_ENTRY, token, "CAR-1", at=when)
+    assert out.redeemed and out.refusal is None, (label, out.refusal)
+    assert enrolment_row(app, tenant_id)[0] == "redeemed"
+    assert [r[1] for r in registrations(app, tenant_id)] == ["CAR-1"]
+    assert out.answer.outcome is Outcome.NOT_COVERED and out.answer.reason == reason
+
+
+# ---------------------------------------------------------------------------
+# THE TWO REVOKE RACES: no live registration on a revoked pass, either order
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.guarantee("G19")
+@pytest.mark.parametrize("state", [State.DRAFT, State.ACTIVE], ids=["draft", "active"])
+@pytest.mark.parametrize("first", ["redeem", "revoke"])
+def test_a_revocation_racing_a_redemption_leaves_no_live_registration_on_the_revoked_pass(
+    app, owner, tenant_id, first, state
+):
+    """Both orders, both pass states. Revoke first: the redemption waits on the
+    pass row, re-reads a CANCELLED credential under the lock and is refused by
+    name -- WITH an answer for the movement (measured before the fix: a raw
+    CheckViolation, and no answer). Redeem first: the revocation waits on the
+    pass row and then reads the COMMITTED registration and ends it (measured
+    before the fix: an open registration survived on the revoked pass -- and
+    under one-car-one-pass that car could never be enrolled anywhere else in
+    the garage)."""
+    from garage_pass.store.enrolments import redeem_enrolment
+
+    pass_ = seeded(app, tenant_id, TRANSIENT_ENTRY, state=state)
+    token = issue(app, tenant_id, TRANSIENT_ENTRY, pass_)["token"]
+
+    def redeem_(cursor):
+        return redeem_enrolment(cursor, tenant_id, TRANSIENT_ENTRY.id, token, "CAR-1", "L1",
+                                Direction.ENTRY, NOON_MONDAY)
+
+    def revoke(cursor):
+        return change_state(cursor, tenant_id, TRANSIENT_ENTRY.id, pass_.id, State.REVOKED,
+                            by="owner", at=NOON_MONDAY, reason="race")
+
+    a, b = race(owner, tenant_id, *((redeem_, revoke) if first == "redeem" else (revoke, redeem_)))
+    redeemed, revoked = (a, b) if first == "redeem" else (b, a)
+    assert not isinstance(redeemed, BaseException), f"the lane got a traceback: {redeemed!r}"
+    assert not isinstance(revoked, BaseException), f"the revoker got a traceback: {revoked!r}"
+    assert pass_state(app, tenant_id, pass_) == "revoked"
+    live = query(app, tenant_id, "SELECT vehicle_identity FROM vehicle_registrations "
+                                 "WHERE end_day IS NULL")
+    assert live == [], f"a live registration on a revoked pass: {live}"
+    if first == "redeem":
+        assert redeemed.redeemed
+        assert registrations(app, tenant_id) == [
+            (pass_.id, "CAR-1", date(2026, 6, 1), date(2026, 6, 1), "pass revoked")]
+        assert revoked["registrations_ended"] == 1 and revoked["enrolments_cancelled"] == 0
+        assert enrolment_row(app, tenant_id)[0] == "redeemed"
+        # the revocation judged the pass AS IT STOOD after the redemption: from
+        # active, never from the draft row it may have read before the lock
+        assert revoked["from"] == "active"
+        assert state_changes(app, tenant_id)[-1][:2] == ("active", "revoked")
+    else:
+        assert not redeemed.redeemed
+        assert redeemed.refusal.code == f.REFUSAL_CREDENTIAL_CANCELLED, redeemed.refusal
+        assert redeemed.answer.outcome is Outcome.NOT_COVERED, "and the movement is answered"
+        assert registrations(app, tenant_id) == []
+        assert revoked["enrolments_cancelled"] == 1
+        assert enrolment_row(app, tenant_id)[0] == "cancelled"
+    # and CAR-1 is free to be enrolled on another pass at this garage
+    from fixtures import a_pass
+    from garage_pass.store.records import create_pass
+
+    other = a_pass(id="pass-other", garage_id=TRANSIENT_ENTRY.id)
+    with tenant(app, tenant_id) as cursor:
+        create_pass(cursor, tenant_id, TRANSIENT_ENTRY.id, other, by="seed", at=NOON_MONDAY)
+    app.commit()
+    fresh = issue(app, tenant_id, TRANSIENT_ENTRY, other, "qr-other",
+                  starts_on=date(2026, 6, 2))["token"]
+    again = redeem(app, tenant_id, TRANSIENT_ENTRY, fresh, "CAR-1", at=at(date(2026, 6, 2), 9))
+    assert again.redeemed

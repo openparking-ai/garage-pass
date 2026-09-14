@@ -19,11 +19,13 @@ on the table.
 
 from __future__ import annotations
 
+import unicodedata
 from dataclasses import dataclass
 
 from garage_pass.findings import (
     REFUSAL_ENROLS_AT_CONTRADICTS_TRANSIENT,
     REFUSAL_FIELD_BLANK,
+    REFUSAL_TEXT_HAS_CONTROL_CHARACTERS,
     Refused,
     Unreadable,
 )
@@ -36,9 +38,28 @@ ENROLS_AT = (ENROLS_AT_ENTRY, ENROLS_AT_EXIT)
 
 
 def require_text(value: object, field: str) -> str:
+    """Non-blank text with no control character, stripped -- THE ONE text
+    validator, used for every id, lane, label, actor, description and the
+    holder's own fields alike. Whitespace around the text was never part of
+    it (a scanner's trailing line break after a QR payload is the measured
+    case), so the check is made on the stripped value: a control character
+    INSIDE it (Unicode category Cc: NUL -- which is not whitespace and is
+    never stripped -- a line break, a tab, U+0080..U+009F) is refused by name
+    here rather than reaching the driver, which would render it as a
+    configuration-class sentence and not a refusal. Letters in any script are
+    text: an accented name and a name in a non-Latin script are accepted --
+    this is not an ASCII rule."""
     if not isinstance(value, str) or not value.strip():
         raise Refused(REFUSAL_FIELD_BLANK, field, f"{field} must be non-blank text, not {value!r}.")
-    return value.strip()
+    text = value.strip()
+    control = [ch for ch in text if unicodedata.category(ch) == "Cc"]
+    if control:
+        names = ", ".join(f"U+{ord(ch):04X}" for ch in control[:5])
+        raise Refused(
+            REFUSAL_TEXT_HAS_CONTROL_CHARACTERS, field,
+            f"{field} carries {len(control)} control character(s): {names}.",
+        )
+    return text
 
 
 def require_enrols_at(value: object) -> str | None:

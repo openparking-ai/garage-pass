@@ -408,14 +408,84 @@ def _readable_pass_from_row(
     )
 
 
+#: THE ONE LOCK ORDER, everywhere a pass or its credentials are written: THE
+#: PASS ROW FIRST, then the credential row, then the registrations. A redemption
+#: takes it, a state change takes it, so two writers on one pass serialise on
+#: the pass row and never meet the other's lock in the other order -- two lock
+#: targets in two orders is an ABBA deadlock waiting for its first concurrent
+#: day. Written for READ COMMITTED, the store's default (verified, not assumed:
+#: SHOW default_transaction_isolation): under it a row read before the lock is a
+#: STALE row, so everything the write depends on is re-read AFTER the lock.
+LOCK_ORDER = ("passes", "enrolments/holder_links", "vehicle_registrations")
+
+
+def lock_clause(alias: str | None = None) -> str:
+    """The clause that takes a row lock in ``LOCK_ORDER``: ``FOR UPDATE``, or
+    ``FOR UPDATE OF alias`` inside a join. ONE place on purpose: the pass lock
+    and the credential lock each serialise a same-credential race on their own,
+    so a control that removed one would stay green on the other -- the suite
+    removes every lock at once through this seam and proves what the locks
+    alone hold (G19), with the spend's backstop monkeypatched away."""
+    return f"FOR UPDATE OF {alias}" if alias else "FOR UPDATE"
+
+
+def lock_pass_row(cursor: Any, tenant_id: Any, pass_uuid: UUID) -> None:
+    """``SELECT ... FOR UPDATE`` on the pass row: the first lock in
+    ``LOCK_ORDER``. Re-entrant within one transaction. A caller that drives
+    the store at REPEATABLE READ or SERIALIZABLE meets the database's
+    serialization failure here when the row moved under it; that is a named
+    refusal in the deadlock's own shape -- the database's DETAIL carried,
+    no cause asserted -- never a traceback."""
+    refuse_on_lock_failure(
+        cursor, f"SELECT 1 FROM passes WHERE tenant_id = %s AND id = %s {lock_clause()}",
+        (as_uuid(tenant_id), pass_uuid), "pass", f"pass row {pass_uuid}",
+    )
+
+
+def refuse_on_lock_failure(
+    cursor: Any, statement: str, parameters: tuple, field: str, what: str
+) -> None:
+    """Run a locking statement; a serialization failure or a deadlock the
+    database reports while taking the lock is a REFUSAL by name, carrying the
+    database's own account verbatim and asserting no cause -- the one shape
+    this module already uses for a deadlock at the registration constraint."""
+    import psycopg
+
+    try:
+        cursor.execute(statement, parameters)
+    except (psycopg.errors.SerializationFailure, psycopg.errors.DeadlockDetected) as failure:
+        detail = (failure.diag.message_detail or "").strip()
+        primary = (failure.diag.message_primary or "").strip()
+        raise Refused(
+            REFUSAL_CONSTRAINT, field,
+            f"the database would not grant this transaction the lock on {what}: {primary}. "
+            "What the other transaction held is not something this module observed; "
+            "PostgreSQL's own account: "
+            + (detail if detail else "(no DETAIL was supplied)")
+            + " Roll back and read again.",
+        ) from failure
+
+
 def change_state(
     cursor: Any, tenant_id: Any, garage_external_id: str, pass_external_id: str, to: State,
     *, by: str, at: datetime, reason: str,
 ) -> dict:
     """Move a pass, record who/when/why, and -- on revocation -- end its
-    registrations on the revocation day in the garage's local calendar."""
+    registrations on the revocation day in the garage's local calendar.
+
+    Takes ``LOCK_ORDER``: the pass row is locked FIRST and the pass re-read
+    under that lock, so the transition is judged on the row as it stands, not
+    on a read a concurrent redemption may have moved past; then the
+    credentials, then the registrations. A revocation racing a redemption in
+    either order therefore leaves no live registration and no issued
+    credential on the revoked pass: revoke-first, the redemption re-reads a
+    cancelled credential under the lock and refuses by name; redeem-first,
+    this write reads the committed registration and ends it."""
     tenant_uuid = as_uuid(tenant_id)
     garage_uuid, garage = load_readable_garage(cursor, tenant_uuid, garage_external_id)
+    pass_uuid, _stale = load_pass(cursor, tenant_uuid, garage_uuid, pass_external_id)
+    lock_pass_row(cursor, tenant_uuid, pass_uuid)
+    # re-read under the lock: a check made before the lock is a check on a stale row
     pass_uuid, pass_ = load_pass(cursor, tenant_uuid, garage_uuid, pass_external_id)
     moved, change = transition(pass_, to, by=by, at=at, reason=reason)
     cursor.execute(
@@ -432,13 +502,10 @@ def change_state(
     cancelled = {"enrolments": 0, "holder_links": 0}
     if to is State.REVOKED:
         today = day_of(at, zone(garage.timezone))
-        cursor.execute(
-            "UPDATE vehicle_registrations SET end_day = GREATEST(%s, effective_day), "
-            "ended_reason = %s WHERE tenant_id = %s AND pass_id = %s "
-            "AND (end_day IS NULL OR end_day > GREATEST(%s, effective_day))",
-            (today, ENDED_BY_REVOCATION, tenant_uuid, pass_uuid, today),
-        )
-        ended = cursor.rowcount
+        # LOCK_ORDER, second and third: the credentials, then the registrations
+        # -- the pass row is already held above, so no redemption is mid-flight
+        # on this pass and a committed one is visible to the statements below.
+        #
         # A credential must not outlive the pass it opens (R5): every
         # OUTSTANDING enrolment and holder link on the pass is cancelled here,
         # in the same transaction as the revocation -- by the revoker, at the
@@ -453,6 +520,13 @@ def change_state(
                  CANCELLED_BY_REVOCATION, tenant_uuid, pass_uuid, CredentialState.ISSUED.value),
             )
             cancelled[table] = cursor.rowcount
+        cursor.execute(
+            "UPDATE vehicle_registrations SET end_day = GREATEST(%s, effective_day), "
+            "ended_reason = %s WHERE tenant_id = %s AND pass_id = %s "
+            "AND (end_day IS NULL OR end_day > GREATEST(%s, effective_day))",
+            (today, ENDED_BY_REVOCATION, tenant_uuid, pass_uuid, today),
+        )
+        ended = cursor.rowcount
     return {
         "pass": pass_external_id, "from": change.from_state.value, "to": change.to_state.value,
         "changed_by": change.changed_by, "changed_at": change.changed_at,

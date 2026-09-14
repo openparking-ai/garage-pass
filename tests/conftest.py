@@ -126,6 +126,13 @@ def pytest_sessionfinish(session, exitstatus):
         f"{ALLOW_ENV} -- which is a decision somebody writes down, not a default.\n"
     )
     session.exitstatus = 1
+    from _rendered_sentences import name_the_failure_in_the_summary
+
+    unrun = [line.split()[0] for line in report.splitlines() if line.strip()]
+    name_the_failure_in_the_summary(
+        session, "guarantee-guard failure",
+        f"registered guarantees that did not run and pass in full: {', '.join(unrun)}",
+    )
 
 
 def unrun_report(allowed: set[str]) -> str:

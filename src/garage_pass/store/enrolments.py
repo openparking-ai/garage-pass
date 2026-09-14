@@ -11,18 +11,46 @@ read, no listing and no refusal detail carries it. A test issues tokens and
 scans every column of every table in the catalogue for the plaintext, with the
 digest as the positive control.
 
+**ONE CREDENTIAL, ONE SPEND, AND THE LOCK ORDER THAT MAKES IT SO.** Two
+lanes presenting one token at the same instant were measured, before this was
+written, BOTH redeeming: two registrations for two cars, the row recording the
+last writer, no refusal and no traceback -- a silent wrong answer on the whole
+security property of the QR. The read and the write had nothing between them.
+Now the credential is read unlocked ONLY to learn which pass it belongs to;
+then the PASS ROW is locked, then the CREDENTIAL ROW (``records.LOCK_ORDER``:
+one order everywhere, because two lock targets in two orders is an ABBA
+deadlock waiting for its first concurrent day), and EVERYTHING the write
+depends on is re-read and re-validated UNDER those locks -- the credential's
+state and expiry, the pass's registrability -- because at READ COMMITTED (the
+store's default, verified and not assumed) a check made before the lock is a
+check made on a stale row. That is the PRIMARY: it is what makes the loser
+refuse by name with the right sentence. The BACKSTOP is the spend itself:
+``UPDATE ... WHERE ... AND state = 'issued'`` asserting ROWCOUNT 1 -- 0 rows
+means another lane spent it, and that is the named refusal, never a silent
+success. It catches a future caller that skips the lock. The two overlap, and
+each would mask the removal of the other, so THE SUITE MEASURES EACH WITH THE
+OTHER REMOVED (G19): the backstop's test runs with the lock monkeypatched
+away, the lock's test with the predicate monkeypatched away. A caller driving
+the store at REPEATABLE READ or SERIALIZABLE meets the database's
+serialization failure at the lock; it is rendered as the named refusal the
+deadlock already has (``records.refuse_on_lock_failure``), one shape, not two.
+
 **A REDEMPTION IS ONE TRANSACTION -- ALL FOUR WRITES OR NONE**: the
 registration (effective on the garage's local day of the instant), the pass's
 move to ``active`` where it was not already (recorded, with the enrolment as
 the actor), the enrolment marked redeemed with the identity, lane, direction
 and instant, and the access answer for that same movement -- produced by
 calling ``store.access.answer_in_transaction``, the module's own access path,
-never a second implementation. The writes sit under a SAVEPOINT: a refusal
-anywhere -- the module's own by name, or the database's constraint as the
-backstop for a race -- rolls back to it and nothing is written, and the answer
-is then read from the rows as they stood. A redemption that half-landed would
-be a QR that can be used twice, which is the thing this shape exists to
-forbid.
+never a second implementation. The writes sit under a SAVEPOINT that is
+rolled back on EVERY exception -- a refusal, the module's own by name or the
+database's constraint as the backstop for a race, is then carried in the
+answer; anything else is re-raised AFTER the rollback, so a defect SURFACES
+and still writes nothing. Measured before this was written: only ``Refused``
+rolled it back, and a planted programming error after the registration left
+the registration live and the credential issued in the caller's transaction --
+committed, a QR that worked twice. A rollback that also swallowed the defect
+would be the same wrong answer in a new costume, so both halves are held at
+once: it surfaces, and nothing persists.
 
 **THE REDEMPTION CALL ALWAYS RETURNS AN ACCESS ANSWER FOR THE MOVEMENT,
 INCLUDING WHEN THE REDEMPTION ITSELF IS REFUSED.** A lane asked a question and
@@ -35,12 +63,24 @@ to LEAVE.
 **THE ORDER OF THE REFUSALS IS PART OF THE CONTRACT**, and every one writes
 nothing: the garage (unreadable; then where it enrols, ``transient_available``
 before ``enrols_at``; then the wrong end); the credential (unknown; at another
-garage; already used; cancelled; not yet started; expired -- derived in the
-garage's local day); the pass (not registrable: suspended, revoked or expired,
-naming the state; unreadable, naming the field); the lane outside the pass's
-stated lane set, naming the lane and the set; the identity (blank; already on
-another pass at this garage, by name, before the EXCLUDE). The first thing
-that fails is the refusal; nothing after it is evaluated.
+garage; then, under the locks, already used; cancelled; not yet started;
+expired -- derived in the garage's local day); the pass (not registrable:
+suspended, revoked or expired, naming the state; unreadable, naming the
+field); the lane outside the pass's stated lane set, naming the lane and the
+set; then the DIRECTION outside the pass's terms -- the lane check stays
+first, so a movement that is both wrong-lane and wrong-direction keeps the
+answer that was measured before the direction refusal existed; the identity
+(blank; already on another pass at this garage, by name, before the EXCLUDE).
+The first thing that fails is the refusal; nothing after it is evaluated.
+
+**ONLY A STRUCTURAL EXCLUSION REFUSES THE BIND.** A pass whose terms allow no
+movement in the direction this garage enrols at would spend the QR on a
+movement it can never cover, so that is refused by name and the credential
+stays issued (nothing was written; it expires by derivation like any other).
+Temporal non-coverage BINDS: a weekend on a Mon-Fri pass, a ``valid_from``
+still ahead, a movement outside the hours -- an employee enrolling at the
+weekend is the ordinary case, and a refusal there would be worse than the
+defect. The suite holds both sides (G19).
 
 **THE HOLDER LINK WRITES ``holder_name`` AND ``holder_phone`` ON THE PASS AND
 NOTHING ELSE** -- not the email, not the label, not the terms, not the state,
@@ -85,6 +125,7 @@ from garage_pass.findings import (
     REFUSAL_CREDENTIAL_EXPIRED,
     REFUSAL_CREDENTIAL_NOT_STARTED,
     REFUSAL_CREDENTIAL_UNKNOWN,
+    REFUSAL_DIRECTION_OUTSIDE_THE_PASS_TERMS,
     REFUSAL_ENROLMENT_AT_WRONG_END,
     REFUSAL_FIELD_BLANK,
     REFUSAL_GARAGE_MISMATCH,
@@ -104,6 +145,9 @@ from garage_pass.store.records import (
     load_garage,
     load_pass,
     load_readable_garage,
+    lock_clause,
+    lock_pass_row,
+    refuse_on_lock_failure,
     register_vehicle,
 )
 from garage_pass.terms import Direction
@@ -150,7 +194,14 @@ def _issuable_pass(
 ) -> tuple[UUID, Pass]:
     """The pass a credential is issued onto, or a refusal by name: revoked and
     suspended by their state, unreadable by the field, expired -- derived from
-    its valid_to against the day the credential starts -- by name."""
+    its valid_to against the day the credential starts -- by name. Judged on
+    the pass row LOCKED and re-read (``LOCK_ORDER``, first): measured without
+    it, an issue racing a revocation read a registrable pass, the revocation
+    cancelled nothing (the row was not yet there), and an ISSUED credential
+    stood on a revoked pass -- the credential that outlives the pass R5
+    forbids. Under the lock the issue waits, re-reads REVOKED and refuses."""
+    pass_uuid, _stale = load_pass(cursor, tenant_uuid, garage_uuid, pass_external_id)
+    lock_pass_row(cursor, tenant_uuid, pass_uuid)
     pass_uuid, pass_ = load_pass(cursor, tenant_uuid, garage_uuid, pass_external_id)
     _refuse_unless_registrable(pass_, pass_external_id, on, what)
     return pass_uuid, pass_
@@ -319,6 +370,45 @@ def _by_token(
     return _credential_from_row(kind, row)
 
 
+def _lock_credential(
+    cursor: Any, kind: str, tenant_uuid: UUID, uuid: UUID
+) -> tuple[UUID, UUID, UUID, Credential]:
+    """THE PRIMARY, second half of ``LOCK_ORDER``: the credential row locked
+    (``FOR UPDATE OF c``: the pass row is already held) and RE-READ under
+    that lock. What the caller read before the lock was only the pass to
+    lock; the state the write depends on is this row."""
+    refuse_on_lock_failure(
+        cursor, f"{_select(kind, 'c.id = %s')} {lock_clause('c')}", (tenant_uuid, uuid), kind,
+        f"{kind} row {uuid}",
+    )
+    row = cursor.fetchone()
+    if row is None:  # pragma: no cover - the row was read an instant ago and rows are never deleted
+        raise Refused(REFUSAL_CREDENTIAL_UNKNOWN, kind, f"no {kind} row {uuid} any more.")
+    return _credential_from_row(kind, row)
+
+
+def _spend(cursor: Any, kind: str, tenant_uuid: UUID, uuid: UUID, assignments: str,
+           values: tuple) -> None:
+    """THE BACKSTOP: the spend carries ``AND state = 'issued'`` and asserts
+    ROWCOUNT 1. Zero rows means the credential was no longer issued when this
+    lane wrote -- another lane spent it, or a revocation cancelled it -- and
+    that is the named refusal, never a silent success. It is what catches a
+    caller that reaches this write without the lock above."""
+    cursor.execute(
+        f"UPDATE {_TABLE[kind]} SET state = %s, {assignments} "
+        "WHERE tenant_id = %s AND id = %s AND state = %s",
+        (CredentialState.REDEEMED.value, *values, tenant_uuid, uuid,
+         CredentialState.ISSUED.value),
+    )
+    if cursor.rowcount != 1:
+        raise Refused(
+            REFUSAL_CREDENTIAL_ALREADY_USED, kind,
+            f"the {kind} was no longer issued when this lane wrote it: {cursor.rowcount} row(s) "
+            "matched state 'issued'. Another lane spent it, or it was cancelled, between this "
+            "lane's read and its write. Roll back and read again.",
+        )
+
+
 def load_credential(cursor: Any, tenant_id: Any, kind: str, external_id: str) -> Credential:
     """A credential by its id, as recorded -- never the token. A read yields
     no working QR."""
@@ -361,9 +451,10 @@ def redeem_enrolment(
     cursor: Any, tenant_id: Any, garage_external_id: str, presented: str,
     vehicle_identity: str, lane: str, direction: Direction, at: datetime,
 ) -> Redemption:
-    """THE LANE BIND. See the module docstring for the order, the atomicity
-    and the answer that is always returned. A garage that does not exist is
-    the one refusal raised rather than carried: there is no lane to answer."""
+    """THE LANE BIND. See the module docstring for the lock order, the
+    atomicity and the answer that is always returned. A garage that does not
+    exist is the one refusal raised rather than carried: there is no lane to
+    answer."""
     tenant_uuid = as_uuid(tenant_id)
     require_aware(at, "at")
     if not isinstance(direction, Direction):
@@ -375,6 +466,9 @@ def redeem_enrolment(
     refusal: Refused | None = None
     cursor.execute(f"SAVEPOINT {SAVEPOINT}")
     try:
+        # everything below the savepoint is taken back on EVERY exception (X2):
+        # a Refused is carried in the answer; anything else is re-raised after
+        # the rollback, so a defect surfaces AND nothing persists
         if garage.unreadable is not None:
             u = garage.unreadable
             raise Refused(
@@ -389,16 +483,23 @@ def redeem_enrolment(
                 f"garage {garage_external_id!r} enrols at {end}; this lane ({lane!r}) is an "
                 f"{direction.value}.",
             )
-        uuid, pass_uuid, pass_garage_uuid, enrolment = _by_token(
+        # read UNLOCKED, only to learn which pass this credential belongs to
+        uuid, pass_uuid, pass_garage_uuid, glimpse = _by_token(
             cursor, ENROLMENT, tenant_uuid, presented,
         )
-        enrolment_id = enrolment.id
+        enrolment_id = glimpse.id
         if pass_garage_uuid != garage_uuid:
             raise Refused(
                 REFUSAL_GARAGE_MISMATCH, "garage",
-                f"enrolment {enrolment.id!r} belongs to pass {enrolment.pass_id!r}, which is "
+                f"enrolment {glimpse.id!r} belongs to pass {glimpse.pass_id!r}, which is "
                 f"not at garage {garage_external_id!r}.",
             )
+        # LOCK_ORDER: the pass row first, then the credential row -- then every
+        # check below is made on rows re-read UNDER the locks, never on the glimpse
+        lock_pass_row(cursor, tenant_uuid, pass_uuid)
+        uuid, pass_uuid, _same_garage, enrolment = _lock_credential(
+            cursor, ENROLMENT, tenant_uuid, uuid,
+        )
         today = day_of(at, zone(garage.timezone))
         _refuse_unless_redeemable(ENROLMENT, enrolment, today)
         _pass_uuid, pass_ = load_pass(cursor, tenant_uuid, garage_uuid, enrolment.pass_id)
@@ -410,6 +511,18 @@ def redeem_enrolment(
                 REFUSAL_LANE_OUTSIDE_THE_PASS_TERMS, "lane",
                 f"pass {enrolment.pass_id!r} allows lanes {sorted(pass_.terms.allowed_lanes)}, "
                 f"not {lane_name!r}.",
+            )
+        # the direction AFTER the lane, deliberately: the lane check was measured
+        # first before this refusal existed, and a movement that is both keeps
+        # that answer. STRUCTURAL only -- a window, a valid_from ahead or spent
+        # allowance is temporal and still binds (see the module docstring).
+        if direction not in pass_.terms.directions:
+            raise Refused(
+                REFUSAL_DIRECTION_OUTSIDE_THE_PASS_TERMS, "direction",
+                f"pass {enrolment.pass_id!r} allows directions "
+                f"{sorted(d.value for d in pass_.terms.directions)}, and this garage enrols at "
+                f"{direction.value}: the pass can never cover the movement the QR would be "
+                "spent on.",
             )
         identity = require_text(vehicle_identity, "vehicle_identity")
         # 1. the registration -- one car, one pass, refused by name before the
@@ -424,12 +537,13 @@ def redeem_enrolment(
                 cursor, tenant_uuid, garage_external_id, enrolment.pass_id, State.ACTIVE,
                 by=enrolment.id, at=at, reason=f"redeemed at lane {lane_name!r}",
             )
-        # 3. the enrolment redeemed: the identity, lane, direction and instant
-        cursor.execute(
-            "UPDATE enrolments SET state = %s, redeemed_vehicle_identity = %s, redeemed_lane = %s, "
-            "redeemed_direction = %s, redeemed_at = %s WHERE tenant_id = %s AND id = %s",
-            (CredentialState.REDEEMED.value, identity, lane_name, direction.value, at,
-             tenant_uuid, uuid),
+        # 3. the enrolment redeemed: the identity, lane, direction and instant --
+        #    the spend, with its backstop predicate and rowcount
+        _spend(
+            cursor, ENROLMENT, tenant_uuid, uuid,
+            "redeemed_vehicle_identity = %s, redeemed_lane = %s, redeemed_direction = %s, "
+            "redeemed_at = %s",
+            (identity, lane_name, direction.value, at),
         )
         cursor.execute(f"RELEASE SAVEPOINT {SAVEPOINT}")
     except Refused as refused:
@@ -438,6 +552,13 @@ def redeem_enrolment(
         cursor.execute(f"ROLLBACK TO SAVEPOINT {SAVEPOINT}")
         refusal = refused
         registration = change = None
+    except BaseException:
+        # A defect, a driver error the store did not name, an interrupt: the
+        # savepoint takes every write back FIRST, then it surfaces unchanged.
+        # Nothing persists, and nothing is swallowed.
+        cursor.execute(f"ROLLBACK TO SAVEPOINT {SAVEPOINT}")
+        registration = change = None
+        raise
     # 4. the access answer for this same movement, from the module's own access
     #    path -- on the rows as written, or as they stood when the bind was refused
     answer = answer_in_transaction(
@@ -469,13 +590,19 @@ def redeem_holder_link(
     holder_name = require_text(name, "holder.name")
     holder_phone = require_text(phone, "holder.phone")
     garage_uuid, garage = load_readable_garage(cursor, tenant_uuid, garage_external_id)
-    uuid, pass_uuid, pass_garage_uuid, link = _by_token(cursor, HOLDER_LINK, tenant_uuid, presented)
+    # read UNLOCKED, only to learn which pass this link belongs to
+    uuid, pass_uuid, pass_garage_uuid, glimpse = _by_token(
+        cursor, HOLDER_LINK, tenant_uuid, presented,
+    )
     if pass_garage_uuid != garage_uuid:
         raise Refused(
             REFUSAL_GARAGE_MISMATCH, "garage",
-            f"holder link {link.id!r} belongs to pass {link.pass_id!r}, which is not at garage "
-            f"{garage_external_id!r}.",
+            f"holder link {glimpse.id!r} belongs to pass {glimpse.pass_id!r}, which is not at "
+            f"garage {garage_external_id!r}.",
         )
+    # LOCK_ORDER: the pass row first, then the link row; then re-read under them
+    lock_pass_row(cursor, tenant_uuid, pass_uuid)
+    uuid, pass_uuid, _same_garage, link = _lock_credential(cursor, HOLDER_LINK, tenant_uuid, uuid)
     today = day_of(at, zone(garage.timezone))
     _refuse_unless_redeemable(HOLDER_LINK, link, today)
     _pass_uuid, pass_ = load_pass(cursor, tenant_uuid, garage_uuid, link.pass_id)
@@ -490,10 +617,7 @@ def redeem_holder_link(
         cursor, tenant_uuid, garage_external_id, link.pass_id, enrolment_external_id, starts_on,
         days_valid, by=link.id, at=at, vehicle_description=vehicle_description,
     )
-    cursor.execute(
-        "UPDATE holder_links SET state = %s, redeemed_at = %s WHERE tenant_id = %s AND id = %s",
-        (CredentialState.REDEEMED.value, at, tenant_uuid, uuid),
-    )
+    _spend(cursor, HOLDER_LINK, tenant_uuid, uuid, "redeemed_at = %s", (at,))
     return {
         HOLDER_LINK: link.id, "pass": link.pass_id, "holder_name": holder_name,
         "holder_phone": holder_phone, "redeemed_at": at, "enrolment": issued,

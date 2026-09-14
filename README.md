@@ -90,11 +90,23 @@ measured (`redeem-enrolment`), and in one transaction the car is registered
 effective that local day, the pass moves to active if it was not already
 (recorded, with the enrolment as the actor), the QR is spent — one QR, one
 car, once — and the lane gets **the access answer for that same movement, from
-the module's own access path**. A refused redemption — a used, cancelled,
+the module's own access path**. **One credential, one spend, under
+concurrency**: two lanes presenting the same QR at the same instant get exactly
+one bind — the pass row is locked first, then the credential row, everything is
+re-checked under those locks, and the spend itself carries `state = 'issued'`
+and asserts one row, so the loser is refused by name and never told yes. The
+module is written for READ COMMITTED, the store's default; a caller driving it
+at a stricter level meets the database's serialization failure as the same
+named refusal a deadlock gets. A refused redemption — a used, cancelled,
 expired or not-yet-started QR, the wrong end, a pass that is not registrable, a
-lane the pass's terms do not name, an identity already on another pass — writes
-nothing and **still answers the movement**; at an exit lane the answer is never
-a refusal. **Where a garage enrols follows from whether it sells transient
+lane the pass's terms do not name, **a direction the pass's terms do not
+allow** (only a structural exclusion refuses the bind; a weekday pass presented
+on a Sunday, a `valid_from` still ahead or a movement outside the hours still
+binds — enrolling at the weekend is the ordinary case), an identity already on
+another pass — writes nothing and **still answers the movement**; at an exit
+lane the answer is never a refusal. A revocation racing a redemption, in either
+order, leaves no live registration and no issued QR on the revoked pass.
+**Where a garage enrols follows from whether it sells transient
 parking**: a garage with no transient enrols at entry, derived; a transient
 garage states `entry` or `exit` (`set-garage-enrols-at`, recorded like the
 timezone repair), and unstated refuses to answer naming the field. A pass may
@@ -106,7 +118,10 @@ The holder's own details: a one-time link (`issue-holder-link`), the same
 primitive scoped to the pass, lets the holder write their name and phone onto
 the pass — those two columns and nothing else — describe the car they will
 bring (which decides nothing), and get their QR (`redeem-holder-link`). The
-owner-only path stands: no link is needed to enrol.
+owner-only path stands: no link is needed to enrol. Text anywhere — a name, a
+phone, an id, a lane, a label — may be in any script; a control character in
+it (a NUL, a line break inside it) is refused by name, never handed to the
+database driver.
 
 ```
 $ garage-pass set-garage-enrols-at --tenant T --garage garage-downtown --enrols-at entry \

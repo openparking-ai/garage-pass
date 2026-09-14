@@ -142,3 +142,92 @@ def test_the_owner_only_path_stands_no_link_is_needed_to_enrol(app, tenant_id):
     assert out["issued_by"] == "owner"
     assert query(app, tenant_id, "SELECT count(*) FROM holder_links") == [(0,)]
     assert redeem(app, tenant_id, TRANSIENT_ENTRY, out["token"], "CAR-1").redeemed
+
+
+# ---------------------------------------------------------------------------
+# CONTROL CHARACTERS IN THE HOLDER'S TEXT -- the fix round. Measured at the
+# L3: a NUL in holder_name reached the driver and came back as the generic
+# configuration-class sentence, not a refusal. The module's ONE text validator,
+# require_text, now refuses a control character by name wherever it is used --
+# and, held in the same run so the fix cannot quietly become an ASCII rule, a
+# name with accented letters and names in non-Latin scripts are ACCEPTED.
+# ---------------------------------------------------------------------------
+
+CONTROL = [
+    ("NUL", "A\x00B", "U+0000"),
+    ("a line break inside", "A\nB", "U+000A"),
+    ("a tab inside", "A\tB", "U+0009"),
+    ("a C1 control (U+0085)", "A\x85B", "U+0085"),
+    ("NUL alone, which no strip removes", "\x00", "U+0000"),
+]
+
+LETTERS_IN_ANY_SCRIPT = ["José Müller-Løvstad", "山田 太郎", "Ольга Іванівна", "أحمد بن علي",
+                         "Ελένη Παπαδοπούλου", "Nguyễn Thị Hoa", "Zoë O'Brien"]
+
+
+@pytest.mark.guarantee("G24")
+@pytest.mark.parametrize("label,name,code_point", CONTROL, ids=[c[0] for c in CONTROL])
+def test_a_control_character_in_the_holders_name_is_refused_by_name_and_writes_nothing(
+    app, tenant_id, label, name, code_point
+):
+    pass_ = seeded(app, tenant_id, TRANSIENT_ENTRY)
+    link = issue_link(app, tenant_id, TRANSIENT_ENTRY, pass_)
+    before = pass_row(app, tenant_id, pass_)
+    with pytest.raises(f.Refused) as refused:
+        redeem_link(app, tenant_id, TRANSIENT_ENTRY, link["token"], name=name, phone="1")
+    app.rollback()
+    expected = f.REFUSAL_FIELD_BLANK if not name.strip() else f.REFUSAL_TEXT_HAS_CONTROL_CHARACTERS
+    assert refused.value.code == expected and refused.value.field == "holder.name", label
+    if expected == f.REFUSAL_TEXT_HAS_CONTROL_CHARACTERS:
+        assert code_point in refused.value.detail, "the refusal names the character"
+    assert pass_row(app, tenant_id, pass_) == before
+    assert link_row(app, tenant_id)[0] == "issued"
+    # the phone, by the same validator
+    with pytest.raises(f.Refused) as refused:
+        redeem_link(app, tenant_id, TRANSIENT_ENTRY, link["token"], name="A Holder", phone=name)
+    app.rollback()
+    assert refused.value.field == "holder.phone"
+
+
+@pytest.mark.guarantee("G24")
+@pytest.mark.parametrize("name", LETTERS_IN_ANY_SCRIPT)
+def test_letters_in_any_script_are_a_name_and_are_accepted(app, tenant_id, name):
+    """THE CONTROL THAT STOPS THE FIX BECOMING AN ASCII RULE: this module is
+    for garages anywhere, and a validator that refuses a real person's name
+    is a worse defect than the one being fixed. Accented Latin, CJK,
+    Cyrillic, Arabic, Greek, Vietnamese, an apostrophe and a diaeresis --
+    written, read back, and the enrolment issued."""
+    pass_ = seeded(app, tenant_id, TRANSIENT_ENTRY)
+    link = issue_link(app, tenant_id, TRANSIENT_ENTRY, pass_)
+    try:
+        out = redeem_link(app, tenant_id, TRANSIENT_ENTRY, link["token"], name=name)
+    except f.Refused as refused:  # judged as an assertion, so a fail control reads it as one
+        app.rollback()
+        pytest.fail(f"a real person's name was refused: {refused}")
+    assert out["holder_name"] == name
+    assert query(app, tenant_id, "SELECT holder_name FROM passes") == [(name,)]
+    assert link_row(app, tenant_id)[0] == "redeemed"
+    assert enrolment_row(app, tenant_id, "qr-from-link")[0] == "issued"
+
+
+@pytest.mark.guarantee("G24")
+def test_the_one_validator_refuses_a_control_character_wherever_text_is_read():
+    """One validator, one behaviour: ids, lanes, labels, the actor, the
+    description, a token -- the same refusal by name from require_text, and
+    whitespace AROUND the text is not part of it (a scanner's trailing line
+    break after a QR payload is the measured case): stripped, not refused."""
+    from garage_pass.garage import require_text
+
+    for field in ("enrolment.id", "lane", "pass.label", "issued_by", "vehicle_description",
+                  "token"):
+        with pytest.raises(f.Refused) as refused:
+            require_text("x\x00y", field)
+        assert refused.value.code == f.REFUSAL_TEXT_HAS_CONTROL_CHARACTERS
+        assert refused.value.field == field
+    assert require_text("  payload \n", "token") == "payload"
+    assert require_text("\tL1\r\n", "lane") == "L1"
+    for name in LETTERS_IN_ANY_SCRIPT:
+        try:
+            assert require_text(name, "holder.name") == name
+        except f.Refused as refused:
+            pytest.fail(f"a real person's name was refused: {refused}")

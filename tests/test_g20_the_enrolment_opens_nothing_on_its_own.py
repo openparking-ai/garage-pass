@@ -161,21 +161,27 @@ def test_the_redemptions_answer_is_the_access_calls_answer_for_the_same_movement
 @needs_postgres[0]
 @needs_postgres[1]
 def test_the_answer_is_the_access_calls_even_when_it_does_not_cover(app, tenant_id):
-    """The bind lands; the pass's terms do not cover this movement (exit only,
-    at an entry-enrolling garage); the lane is told exactly that. The enrolment
-    opened nothing: whatever the terms say is what the lane hears."""
-    from fixtures import simple_terms
+    """The bind lands; the pass's terms do not cover this movement (a Mon-Fri
+    window, presented on a Sunday); the lane is told exactly that. The
+    enrolment opened nothing: whatever the terms say is what the lane hears.
+    The instance is TEMPORAL on purpose: an employee enrolling at the weekend
+    is the ordinary case and must bind. (It was the exit-only pass at an
+    entry-enrolling garage until the fix round refused that STRUCTURAL case
+    by name -- G19 holds the distinction.)"""
+    from fixtures import WEEKDAYS, simple_terms
+    from garage_pass.terms import Window
 
-    pass_ = seeded(app, tenant_id, TRANSIENT_ENTRY,
-                   terms=simple_terms(directions=frozenset({Direction.EXIT})))
-    token = issue(app, tenant_id, TRANSIENT_ENTRY, pass_)["token"]
-    out = redeem(app, tenant_id, TRANSIENT_ENTRY, token, "CAR-1")
+    weekdays = Window(days=WEEKDAYS, start_minute=0, end_minute=1440)
+    pass_ = seeded(app, tenant_id, TRANSIENT_ENTRY, terms=simple_terms(windows=(weekdays,)))
+    sunday = at(date(2026, 6, 7), 12)
+    token = issue(app, tenant_id, TRANSIENT_ENTRY, pass_, starts_on=date(2026, 6, 7))["token"]
+    out = redeem(app, tenant_id, TRANSIENT_ENTRY, token, "CAR-1", at=sunday)
     assert out.redeemed and pass_state(app, tenant_id, pass_) == "active"
     assert out.answer.outcome is Outcome.NOT_COVERED
-    assert out.answer.reason == f.DIRECTION_NOT_ALLOWED
+    assert out.answer.reason == f.OUTSIDE_WINDOW
     assert out.answer.means == f.MEANS_TRANSIENT_STAY
     assert out.answer == access_from_store(app, tenant_id, TRANSIENT_ENTRY.id, "CAR-1", "L1",
-                                           Direction.ENTRY, NOON_MONDAY)
+                                           Direction.ENTRY, sunday)
 
 
 @pytest.mark.guarantee("G20")
