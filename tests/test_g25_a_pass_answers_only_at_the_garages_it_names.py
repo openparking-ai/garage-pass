@@ -57,6 +57,7 @@ operator typed the command from.
 from __future__ import annotations
 
 from datetime import date
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -403,8 +404,9 @@ def test_an_entry_at_a_garage_whose_clock_is_not_here_is_refused_by_name_never_r
     assert answer.missing == f.MISSING_GARAGE_HANDED_IN and answer.pass_id == pass_.id
     assert "garage 'garage-far' was not handed in (handed in: none; asking: 'garage-a')" in (
         answer.detail)
-    assert "2026-06-01T09:00:00+09:00" in answer.detail, "the entry it could not read, named"
-    assert "on that garage's clock" in answer.detail
+    assert "at 2026-06-01T00:00:00Z (UTC; unrendered on that garage's wall clock, which is " \
+        "not here) must be read on that garage's clock" in answer.detail, answer.detail
+    assert "+09:00" not in answer.detail, "the entry it could not read, named -- as UTC, said so"
     # 2. handed in unreadable: the same refusal the asking garage gets, naming the far one
     stale = garage_from_stored(FAR.id, "Mars/Olympus", True, "entry")
     assert isinstance(stale.unreadable, Unreadable)
@@ -434,6 +436,53 @@ def test_an_entry_at_a_garage_whose_clock_is_not_here_is_refused_by_name_never_r
                        registrations=[registered(pass_)], visits=[tokyo_visit],
                        vehicle_identity="CAR-1", lane="L1", direction=Direction.EXIT, at=when)
         assert exit_.outcome is Outcome.COVERED and exit_.exit_note, (handed_in, exit_)
+
+
+@pytest.mark.guarantee("G25")
+def test_the_instant_a_clock_not_here_refusal_names_is_the_same_bytes_in_any_arriving_offset():
+    """The refusal quotes the entry it could not read. It holds NO clock for
+    that garage -- that is why it refuses -- so it cannot render the entry
+    on that garage's wall clock, and it must not render it on whatever
+    clock the value happened to arrive with: through the store that is the
+    DATABASE SESSION's zone, and under a Denver session the Tokyo entry
+    read ``2026-05-31T18:00:00-06:00`` -- the asking clock's day, inside a
+    sentence whose point is that the entry is not read on the asking
+    clock. So: one instant, handed in with three different tzinfos (the
+    in-memory shape of three session zones), each of the three refusals
+    -- not handed in, handed in unreadable, handed in twice -- is the SAME
+    BYTES, the instant as UTC and said to be unrendered on that garage's
+    clock. A single reading cannot see this class at all; the comparison
+    is the test."""
+    from garage_pass.findings import Unreadable
+    from garage_pass.garage import garage_from_stored
+
+    window = Window(days=frozenset({1, 2, 3, 4, 5}), start_minute=8 * 60, end_minute=18 * 60)
+    pass_ = per_window(1, window, A, FAR)
+    monday = date(2026, 6, 1)
+    tokyo_9 = at(monday, 9, timezone=FAR_ZONE)
+    stale = garage_from_stored(FAR.id, "Mars/Olympus", True, "entry")
+    assert isinstance(stale.unreadable, Unreadable)
+    paths = {
+        f.MISSING_GARAGE_HANDED_IN: [],
+        f.MISSING_TIMEZONE: [stale],
+        f.DUPLICATED_GARAGE_ID: [FAR, FAR],
+    }
+    for missing, handed_in in paths.items():
+        answers = {}
+        for zone_name in (FAR_ZONE, "UTC", SHIFTING_ZONE):
+            arrived = tokyo_9.astimezone(ZoneInfo(zone_name))
+            assert arrived == tokyo_9, "the premise: one instant"
+            visit = recorded(pass_, FAR, arrived)
+            answer = entry_at(A, pass_, [visit], at(monday, 9), handed_in=handed_in)
+            assert answer.outcome is Outcome.REFUSED_TO_ANSWER and answer.missing == missing
+            answers[zone_name] = (answer.missing, answer.pass_id, answer.detail)
+        assert len(set(answers.values())) == 1, (missing, answers)
+        (detail,) = {detail for _, _, detail in answers.values()}
+        assert "at 2026-06-01T00:00:00Z (UTC; unrendered on that garage's wall clock, which " \
+            "is not here) must be read on that garage's clock" in detail, detail
+        for offset in ("+09:00", "+00:00", "-06:00", "2026-05-31"):
+            assert offset not in detail, (offset, detail)
+        assert "garage 'garage-far'" in detail
 
 
 # ---------------------------------------------------------------------------
@@ -1207,6 +1256,62 @@ def test_the_store_hands_the_engine_every_garage_of_the_pass_and_each_entry_is_r
     app.commit()
     again = access_from_store(app, tenant_id, A.id, "CAR-1", "L1", Direction.ENTRY, at(monday, 9))
     assert again.reason == f.OUT_OF_VISITS, again
+
+
+@pytest.mark.guarantee("G25")
+@store_test
+def test_the_store_renders_the_clock_not_here_refusal_the_same_under_three_session_zones(
+    app, owner, tenant_id
+):
+    """The one clock-not-here refusal the store can reach -- a garage of the
+    set stored unreadable raw -- read under THREE database session zones
+    (UTC, Denver, Tokyo): the same bytes each time, the instant as UTC and
+    said to be unrendered, and the decision unchanged (the same key, the
+    same garage named). Measured before this: the session zone leaked into
+    the sentence -- ``+03:00`` on the builder's machine, and under a Denver
+    session the asking clock's day. Fails with ``entered_at.isoformat()``
+    planted back, and only because three zones are compared: under any
+    one zone alone the sentence reads plausibly."""
+    seed_garages(app, tenant_id, A, FAR)
+    window = Window(days=frozenset({1, 2, 3, 4, 5}), start_minute=8 * 60, end_minute=18 * 60)
+    pass_ = per_window(1, window, A, FAR, id="pass-mixed")
+    create(app, tenant_id, A, pass_)
+    with tenant(app, tenant_id) as cursor:
+        register_vehicle(cursor, tenant_id, A.id, pass_.id, "CAR-1", date(2026, 1, 1))
+    app.commit()
+    monday = date(2026, 6, 1)
+    _record(app, tenant_id, FAR, pass_, "CAR-1", at(monday, 9, timezone=FAR_ZONE))
+    with owner.cursor() as cursor:
+        cursor.execute("UPDATE garages SET timezone = 'Mars/Olympus' WHERE tenant_id = %s "
+                       "AND external_id = %s", (tenant_id, FAR.id))
+        assert cursor.rowcount == 1
+    readings = {}
+    try:
+        for zone_name in ("UTC", SHIFTING_ZONE, FAR_ZONE):
+            with app.cursor() as cursor:
+                cursor.execute("SELECT set_config('TimeZone', %s, false)", (zone_name,))
+            app.commit()  # session-level, past the per-test rollback
+            with app.cursor() as cursor:
+                cursor.execute("SHOW TIME ZONE")
+                assert cursor.fetchone() == (zone_name,), "the premise: this session zone"
+            app.rollback()
+            answer = access_from_store(app, tenant_id, A.id, "CAR-1", "L1", Direction.ENTRY,
+                                       at(monday, 9))
+            assert answer.outcome is Outcome.REFUSED_TO_ANSWER, (zone_name, answer)
+            assert answer.missing == f.MISSING_TIMEZONE and answer.pass_id == pass_.id
+            readings[zone_name] = (answer.missing, answer.pass_id, answer.detail)
+    finally:
+        app.rollback()
+        with app.cursor() as cursor:
+            cursor.execute("SET TIME ZONE DEFAULT")
+        app.commit()
+    assert len(set(readings.values())) == 1, readings
+    (detail,) = {detail for _, _, detail in readings.values()}
+    assert "recorded at garage 'garage-far' at 2026-06-01T00:00:00Z (UTC; unrendered on that " \
+        "garage's wall clock, which is not here) must be read on that garage's clock" in detail
+    assert "garage 'garage-far': REFUSAL_TIMEZONE_UNKNOWN [garage.timezone]" in detail
+    for offset in ("+03:00", "+09:00", "+00:00", "-06:00", "2026-05-31"):
+        assert offset not in detail, (offset, detail)
 
 
 @pytest.mark.guarantee("G25")

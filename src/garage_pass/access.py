@@ -111,7 +111,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from enum import Enum
 from zoneinfo import ZoneInfo
 
@@ -732,6 +732,20 @@ def _day_name(weekday: int) -> str:
     return DAY_NAMES[weekday]
 
 
+def absolute(instant: datetime) -> str:
+    """An instant the call holds NO garage clock to read on, as UTC and said
+    so -- never in the offset it happened to arrive with. Measured before
+    this: the ``NoClock`` refusal quoted ``entered_at.isoformat()``, which
+    through the store is the DATABASE SESSION's zone -- under
+    ``PGTZ=America/Denver`` the asking clock's day, inside a sentence whose
+    whole point is that the entry must not be read on the asking clock. The
+    garage's own wall clock cannot be rendered here (the refusal exists
+    because that clock is not held), so the sentence renders the absolute
+    instant and says the local one is unrendered, rather than pretending."""
+    at_utc = require_aware(instant).astimezone(UTC).isoformat().replace("+00:00", "Z")
+    return f"{at_utc} (UTC; unrendered on that garage's wall clock, which is not here)"
+
+
 @dataclass(frozen=True)
 class NoClock:
     """A recorded entry whose garage's clock the call does not hold: which
@@ -769,7 +783,7 @@ def _visits_used(
             missing, detail = clock
             return NoClock(missing, (
                 f"entry of {v.vehicle_identity!r} on pass {pass_.id!r} recorded at garage "
-                f"{v.garage_id!r} at {v.entered_at.isoformat()} must be read on that garage's "
+                f"{v.garage_id!r} at {absolute(v.entered_at)} must be read on that garage's "
                 f"clock to count it against the allowance, and {detail}"
             ))
         if (

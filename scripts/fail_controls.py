@@ -2037,6 +2037,15 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
         "the same plant, measured on the mixed-zone pass's DST edge and through the store: "
         "two Denver entries in the doubled hour read at Phoenix as one in the window",
     ),
+    "G25/refusal-instant-session-zone": (
+        G25, "access.py",
+        '{v.garage_id!r} at {absolute(v.entered_at)} must be read on that garage',
+        '{v.garage_id!r} at {v.entered_at.isoformat()} must be read on that garage',
+        "the clock-not-here refusal quotes the entry in whatever offset the value arrived with "
+        "-- through the store the DATABASE SESSION's zone, under a Denver session the asking "
+        "clock's day, inside the sentence that says the entry is not read on the asking clock; "
+        "visible only when three zones are compared, never in one reading",
+    ),
     "G25/allowance-per-garage": (
         G25, "access.py",
         "            counted = _visits_used(visits, pass_, window, today, clock_at)",
