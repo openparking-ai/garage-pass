@@ -387,10 +387,14 @@ REFUSALS: dict[str, str] = {
         "hours) still BINDS: enrolling at the weekend is the ordinary case."
     ),
     REFUSAL_TEXT_HAS_CONTROL_CHARACTERS: (
-        "A text field carries a control character -- a NUL, a line break, a tab or "
-        "another character whose Unicode category is Cc. Refused by name wherever the "
-        "module reads text, so a driver never turns it into a configuration-class "
-        "sentence. Letters in any script are text and are accepted."
+        "A text field carries a control character INSIDE it -- a NUL, a line break, a tab "
+        "or another character whose Unicode category is Cc, between its first and last "
+        "non-blank characters. Refused by name wherever the module reads text, so a driver "
+        "never turns it into a configuration-class sentence. Whitespace at either edge was "
+        "never part of the text and is removed before the check: the ten Cc code points "
+        "Python counts as whitespace (TAB, LF, VT, FF, CR, U+001C to U+001F and U+0085) are "
+        "stripped there, and NUL is never whitespace and never stripped. Letters in any "
+        "script are text and are accepted."
     ),
 }
 

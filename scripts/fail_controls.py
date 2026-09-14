@@ -31,6 +31,21 @@ first two looked exactly like controls that work. A control may produce
 non-assertion reds BESIDE its assertions -- that near-miss is allowed -- but
 zero assertions is reported EXCEPTION-ONLY and counted dead.
 
+**AND AN ASSERTION IS READ BY WHAT IT IS ABOUT.** The merge gate handed this
+runner a plant that raised at the first line of every redemption and it FIRED:
+its "assertions" were the race harness's own premise (``the premise: lane B
+waits on lane A's lock`` -- an assertion about the harness, raised in
+``tests/enrolment_harness.py``) and a ``pytest.raises(match=)`` whose regex did
+not match -- which is an unexpected exception reaching the test, spelled as an
+assertion. Neither is about the subject. So an assertion red counts only when
+it was raised in a TEST MODULE (``tests/test_*.py``) or in the very file the
+plant went into (a plant in ``tests/fixtures.py`` is judged by the fixture's
+own assertion -- G14), and not when its message is pytest's "Regex pattern did
+not match". The others are printed beside the count as PREMISE or UNEXPECTED
+EXCEPTION, and a control with nothing else is EXCEPTION-ONLY. The fourth
+appearance of this family in this runner's life; the rule is now the file the
+assertion was raised in, not the exception's name alone.
+
 **AND A CONTROL THAT REPORTS UNMEASURED IS REPORTING ON THE RUNNER.** If a target
 is already red before anything is planted, or ran no tests at all, this says
 UNMEASURED rather than counting a pass. Check the runner (is the package
@@ -535,6 +550,28 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
         '        print(f"    EXCEPTION-ONLY:',
         "a control whose only reds are exceptions -- a plant that crashes on the next line "
         "-- is counted as a control that fired",
+    ),
+    "G16/premise-credited": (
+        "tests/test_guarantee_guard.py", "scripts/fail_controls.py",
+        '    if where == planted_file.resolve() or where.name.startswith("test_"):\n'
+        '        return None\n'
+        '    return "PREMISE"',
+        '    return None  # PLANTED: a harness premise assertion is credited to the subject',
+        "an assertion about the harness's own premise, raised in a harness file, counts as an "
+        "assertion about the subject -- the gate's raise-everything plant fires again",
+    ),
+    "G16/regex-mismatch-credited": (
+        "tests/test_guarantee_guard.py", "scripts/fail_controls.py",
+        source(
+            "    if reason[2].startswith(_UNEXPECTED_EXCEPTION):",
+            '        return "UNEXPECTED EXCEPTION"',
+        ),
+        source(
+            "    if False:  # PLANTED: a regex mismatch on a caught exception is an assertion",
+            '        return "UNEXPECTED EXCEPTION"',
+        ),
+        "pytest's 'Regex pattern did not match' -- an unexpected exception reaching the test -- "
+        "is credited as an assertion about the subject",
     ),
     "G10/predicate-tenants": (
         G10, MIGRATION,
@@ -1356,6 +1393,21 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
         "a refusal after the registration was written leaves the registration standing: a "
         "half-landed redemption, the QR still issued -- usable twice",
     ),
+    "G19/session-zone-redeemed": (
+        G19, "store/enrolments.py",
+        '            f"{local(credential.redeemed_at, tz).isoformat()}.",',
+        '            f"{credential.redeemed_at.isoformat()}.",  # PLANTED: the session\'s zone',
+        "the instant a refusal names is rendered in the database session's zone, not the "
+        "garage's wall clock -- what the merge gate found; across the DST edge the offset is wrong",
+    ),
+    "G19/session-zone-cancelled": (
+        G19, "store/enrolments.py",
+        '            f"{local(credential.cancelled_at, tz).isoformat()}: '
+        '{credential.cancelled_reason}.",',
+        '            f"{credential.cancelled_at.isoformat()}: {credential.cancelled_reason}.",'
+        "  # PLANTED: the session's zone",
+        "the same, for the instant a revocation cancelled the credential",
+    ),
     "G19/days-valid-default": (
         G19, "enrolment.py",
         '        raise Refused(REFUSAL_DAYS_VALID_NOT_STATED, "days_valid", '
@@ -1507,6 +1559,22 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
         "a name with accented letters or in a non-Latin script is refused: a worse defect than "
         "the one being fixed",
     ),
+    "G24/edge-strip-gone": (
+        G24, "garage.py",
+        "    text = value.strip()",
+        "    text = value  # PLANTED: edge whitespace is refused as a control character",
+        "the validator tightened to make the old sentence true: a scanner's trailing line break "
+        "after a QR payload is refused, and the edge census reads 0 stripped instead of ten",
+    ),
+    "G24/old-wording": (
+        G24, "findings.py",
+        '        "A text field carries a control character INSIDE it -- a NUL, a line break, '
+        'a tab "',
+        '        "A text field carries a control character -- a NUL, a line break, a tab "'
+        "  # PLANTED: the old wording",
+        "the registry sentence the gate found over-reaching, planted back: it no longer says the "
+        "check is on the INSIDE; the census test measuring sentence and behaviour together reddens",
+    ),
     "G20/divergence": (
         G20, "store/enrolments.py",
         source(
@@ -1602,54 +1670,54 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
     ),
     "G22/spelling-eq": (
         G22, "store/enrolments.py",
-        "        _refuse_unless_redeemable(ENROLMENT, enrolment, today)",
+        "        _refuse_unless_redeemable(ENROLMENT, enrolment, today, tz)",
         source(
             "        if enrolment.vehicle_description == vehicle_identity:  # PLANTED",
             '            raise Refused(REFUSAL_CREDENTIAL_UNKNOWN, "token", "described car")',
-            "        _refuse_unless_redeemable(ENROLMENT, enrolment, today)",
+            "        _refuse_unless_redeemable(ENROLMENT, enrolment, today, tz)",
         ),
         "the description decides: an identity that spells it is refused",
     ),
     "G22/spelling-in": (
         G22, "store/enrolments.py",
-        "        _refuse_unless_redeemable(ENROLMENT, enrolment, today)",
+        "        _refuse_unless_redeemable(ENROLMENT, enrolment, today, tz)",
         source(
             "        if enrolment.vehicle_description and vehicle_identity in "
             "enrolment.vehicle_description:  # PLANTED",
             '            raise Refused(REFUSAL_CREDENTIAL_UNKNOWN, "token", "described car")',
-            "        _refuse_unless_redeemable(ENROLMENT, enrolment, today)",
+            "        _refuse_unless_redeemable(ENROLMENT, enrolment, today, tz)",
         ),
         "the description decides: an identity the description contains is refused",
     ),
     "G22/spelling-lower": (
         G22, "store/enrolments.py",
-        "        _refuse_unless_redeemable(ENROLMENT, enrolment, today)",
+        "        _refuse_unless_redeemable(ENROLMENT, enrolment, today, tz)",
         source(
             "        if (enrolment.vehicle_description or '').lower() == "
             "vehicle_identity.lower():  # PLANTED",
             '            raise Refused(REFUSAL_CREDENTIAL_UNKNOWN, "token", "described car")',
-            "        _refuse_unless_redeemable(ENROLMENT, enrolment, today)",
+            "        _refuse_unless_redeemable(ENROLMENT, enrolment, today, tz)",
         ),
         "the description decides, case-folded",
     ),
     "G22/spelling-startswith": (
         G22, "store/enrolments.py",
-        "        _refuse_unless_redeemable(ENROLMENT, enrolment, today)",
+        "        _refuse_unless_redeemable(ENROLMENT, enrolment, today, tz)",
         source(
             "        if (enrolment.vehicle_description or '').startswith(vehicle_identity[:3]):"
             "  # PLANTED",
             '            raise Refused(REFUSAL_CREDENTIAL_UNKNOWN, "token", "described car")',
-            "        _refuse_unless_redeemable(ENROLMENT, enrolment, today)",
+            "        _refuse_unless_redeemable(ENROLMENT, enrolment, today, tz)",
         ),
         "the description decides, by its first characters",
     ),
     "G22/spelling-len": (
         G22, "store/enrolments.py",
-        "        _refuse_unless_redeemable(ENROLMENT, enrolment, today)",
+        "        _refuse_unless_redeemable(ENROLMENT, enrolment, today, tz)",
         source(
             "        if len(enrolment.vehicle_description or '') > 8:  # PLANTED",
             '            raise Refused(REFUSAL_CREDENTIAL_UNKNOWN, "token", "described car")',
-            "        _refuse_unless_redeemable(ENROLMENT, enrolment, today)",
+            "        _refuse_unless_redeemable(ENROLMENT, enrolment, today, tz)",
         ),
         "the description decides, by its length -- the spelling the G13 scan could not see",
     ),
@@ -1742,8 +1810,51 @@ def failure_reasons(stdout: str) -> list[tuple[str, str, str]]:
     return out
 
 
-def assertion_reds(reasons: list[tuple[str, str, str]]) -> list[tuple[str, str, str]]:
-    return [r for r in reasons if r[1].rsplit(".", 1)[-1] in _ASSERTION_EXCEPTIONS]
+#: pytest's wording when ``pytest.raises(match=...)`` caught an exception of the
+#: right type carrying the wrong message: an UNEXPECTED exception reached the
+#: test. Evidence of an exception, not of the subject.
+_UNEXPECTED_EXCEPTION = "Regex pattern did not match"
+
+
+def _is_assertion(reason: tuple[str, str, str]) -> bool:
+    return reason[1].rsplit(".", 1)[-1] in _ASSERTION_EXCEPTIONS
+
+
+def _raised_in(reason: tuple[str, str, str]) -> Path:
+    return Path(reason[0].rsplit(":", 1)[0]).resolve()
+
+
+def about_the_subject(reason: tuple[str, str, str], planted_file: Path) -> str | None:
+    """Why an assertion red does NOT count, or ``None`` when it does. A red
+    counts when it is an assertion raised in a test module, or in the file the
+    plant went into, and is not pytest's regex-mismatch on a caught exception."""
+    if not _is_assertion(reason):
+        return "not an assertion"
+    if reason[2].startswith(_UNEXPECTED_EXCEPTION):
+        return "UNEXPECTED EXCEPTION"
+    where = _raised_in(reason)
+    if where == planted_file.resolve() or where.name.startswith("test_"):
+        return None
+    return "PREMISE"
+
+
+def assertion_reds(
+    reasons: list[tuple[str, str, str]], planted_file: Path
+) -> list[tuple[str, str, str]]:
+    """The reds that are assertions ABOUT THE SUBJECT: see ``about_the_subject``."""
+    return [r for r in reasons if about_the_subject(r, planted_file) is None]
+
+
+def set_aside(
+    reasons: list[tuple[str, str, str]], planted_file: Path
+) -> list[tuple[str, str, tuple[str, str, str]]]:
+    """The assertion reds that were NOT counted, each with its reason."""
+    out = []
+    for r in reasons:
+        why = about_the_subject(r, planted_file)
+        if why is not None and why != "not an assertion":
+            out.append((why, r[0], r))
+    return out
 
 
 #: ``"0 passed" in stdout`` would be WRONG: "10 passed" contains it.
@@ -1774,8 +1885,10 @@ def run_control(gid: str) -> bool:
         print(f"    NOT A CONTROL: {target} stayed GREEN with its subject broken.")
         return False
     reasons = failure_reasons(red.stdout)
-    assertions = assertion_reds(reasons)
-    others = [r for r in reasons if r not in assertions]
+    planted_file = resolve(path)
+    assertions = assertion_reds(reasons, planted_file)
+    aside = set_aside(reasons, planted_file)
+    others = [r for r in reasons if not _is_assertion(r)]
     if not reasons:
         # A red with no failure line is a collection error or a crash before
         # any test ran -- a plant that broke the import, say. Not a control.
@@ -1785,13 +1898,19 @@ def run_control(gid: str) -> bool:
     if not assertions:
         print(f"    EXCEPTION-ONLY: {target} went red, but not one red is an assertion about "
               f"the subject -- {len(others)} exception(s): "
-              + "; ".join(f"{e} at {w}" for w, e, _m in others[:4]) + ". The plant is "
-              "reporting on itself, not on the subject. NOT A CONTROL.")
+              + "; ".join(f"{e} at {w}" for w, e, _m in others[:4])
+              + (f"; {len(aside)} assertion(s) set aside" if aside else "")
+              + ". The plant is reporting on itself, not on the subject. NOT A CONTROL.")
+        for why, where, (_w, exception, message) in aside[:4]:
+            print(f"      (set aside: {why}) {where}: {exception}: {message[:100]}")
         return False
     print(f"    RED, as required — {summary} — {len(assertions)} assertion red(s)"
-          + (f", {len(others)} other exception(s) beside them" if others else ""))
+          + (f", {len(others)} other exception(s) beside them" if others else "")
+          + (f", {len(aside)} assertion(s) set aside" if aside else ""))
     for where, exception, message in assertions[:4]:
         print(f"      {where}: {exception}: {message[:140]}")
+    for why, where, (_w, exception, message) in aside[:2]:
+        print(f"      (set aside: {why}) {where}: {exception}: {message[:100]}")
     for where, exception, message in others[:2]:
         print(f"      (beside) {where}: {exception}: {message[:100]}")
     return True

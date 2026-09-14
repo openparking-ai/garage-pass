@@ -227,6 +227,65 @@ def test_a_redeemed_enrolment_can_never_be_redeemed_again(app, tenant_id):
     assert enrolment_row(app, tenant_id)[1] == "CAR-1", "the first redemption stands"
 
 
+#: The spring-forward morning in the fixture zone, as UTC instants: 01:59 MST is
+#: still -07:00, two minutes later the wall clock reads 03:01 MDT, -06:00. A
+#: rendering in the SESSION's zone or the caller's offset gets neither.
+SPRING_FORWARD = date(2026, 3, 8)
+BEFORE_THE_JUMP = datetime(2026, 3, 8, 8, 59, tzinfo=UTC)
+AFTER_THE_JUMP = datetime(2026, 3, 8, 9, 1, tzinfo=UTC)
+
+
+@pytest.mark.guarantee("G19")
+@pytest.mark.parametrize("kind", [ENROLMENT, HOLDER_LINK])
+@pytest.mark.parametrize(
+    "when,wall",
+    [(BEFORE_THE_JUMP, "2026-03-08T01:59:00-07:00"), (AFTER_THE_JUMP, "2026-03-08T03:01:00-06:00")],
+    ids=["01:59 MST", "03:01 MDT"],
+)
+def test_the_instant_a_refusal_names_is_the_garages_wall_clock_across_the_dst_edge(
+    app, tenant_id, kind, when, wall
+):
+    """The gate found ``was redeemed at …`` rendered in the database session's
+    zone. The instant an operator reads is the GARAGE's wall clock, whatever
+    offset the winner's ``at`` arrived with (here UTC) and whatever zone the
+    session sits in -- and across the spring-forward edge, where the offset
+    itself changes between two instants two minutes apart. Both credential
+    kinds; the redeemed instant and, after a revocation, the cancelled one."""
+    pass_ = seeded(app, tenant_id, TRANSIENT_ENTRY, state=State.ACTIVE)
+    if kind == ENROLMENT:
+        token = issue(app, tenant_id, TRANSIENT_ENTRY, pass_, starts_on=SPRING_FORWARD)["token"]
+        assert redeem(app, tenant_id, TRANSIENT_ENTRY, token, "CAR-1", at=when).redeemed
+        again = redeem(app, tenant_id, TRANSIENT_ENTRY, token, "CAR-2", at=when).refusal
+    else:
+        token = issue_link(app, tenant_id, TRANSIENT_ENTRY, pass_,
+                           starts_on=SPRING_FORWARD)["token"]
+        redeem_link(app, tenant_id, TRANSIENT_ENTRY, token, starts_on=SPRING_FORWARD, at=when)
+        with pytest.raises(f.Refused) as raised:
+            redeem_link(app, tenant_id, TRANSIENT_ENTRY, token, starts_on=SPRING_FORWARD, at=when,
+                        enrolment_external_id="qr-again")
+        again = raised.value
+    assert again.code == f.REFUSAL_CREDENTIAL_ALREADY_USED
+    assert f"was redeemed at {wall}." in again.detail, again.detail
+    assert when.isoformat() not in again.detail, "the caller's offset is not the rendering"
+    # the same rule for the cancelled instant, written by a revocation at `when`
+    outstanding = (issue if kind == ENROLMENT else issue_link)(
+        app, tenant_id, TRANSIENT_ENTRY, pass_, "cred-2", starts_on=SPRING_FORWARD,
+    )["token"]
+    with tenant(app, tenant_id) as cursor:
+        change_state(cursor, tenant_id, TRANSIENT_ENTRY.id, pass_.id, State.REVOKED,
+                     by="owner", at=when, reason="moved out")
+    app.commit()
+    if kind == ENROLMENT:
+        cancelled = redeem(app, tenant_id, TRANSIENT_ENTRY, outstanding, "CAR-3", at=when).refusal
+    else:
+        with pytest.raises(f.Refused) as raised:
+            redeem_link(app, tenant_id, TRANSIENT_ENTRY, outstanding, starts_on=SPRING_FORWARD,
+                        at=when, enrolment_external_id="qr-3")
+        cancelled = raised.value
+    assert cancelled.code == f.REFUSAL_CREDENTIAL_CANCELLED
+    assert f"was cancelled at {wall}:" in cancelled.detail, cancelled.detail
+
+
 @pytest.mark.guarantee("G19")
 def test_a_qr_redeemed_one_day_late_is_expired_in_the_garages_local_day(app, tenant_id):
     """23:30 Denver on the last day is 05:30 UTC the next day and still good;

@@ -103,6 +103,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from garage_pass.access import Answer
 from garage_pass.enrolment import (
@@ -134,7 +135,7 @@ from garage_pass.findings import (
     Refused,
 )
 from garage_pass.garage import require_text
-from garage_pass.localday import day_of, require_aware, zone
+from garage_pass.localday import day_of, local, require_aware, zone
 from garage_pass.passes import EXPIRED, Pass, State
 from garage_pass.states import effective_state
 from garage_pass.store.access import answer_in_transaction
@@ -419,18 +420,27 @@ def load_credential(cursor: Any, tenant_id: Any, kind: str, external_id: str) ->
     return _credential_from_row(kind, row)[3]
 
 
-def _refuse_unless_redeemable(kind: str, credential: Credential, today: date) -> None:
+def _refuse_unless_redeemable(
+    kind: str, credential: Credential, today: date, tz: ZoneInfo
+) -> None:
+    """A credential that is not issued today, refused by name. The instant a
+    refusal shows -- when the winner redeemed, when the revocation cancelled --
+    is rendered as the GARAGE's wall clock reads it (``localday.local``), never
+    the database session's zone and never the caller's offset: the rule G1's
+    gate fixed for the visit ledger, applied here where the gate found it
+    missing. The row holds the instant; only the rendering moves."""
     state = credential.state_on(today)
     if state == CredentialState.REDEEMED.value:
         raise Refused(
             REFUSAL_CREDENTIAL_ALREADY_USED, kind,
-            f"{kind} {credential.id!r} was redeemed at {credential.redeemed_at.isoformat()}.",
+            f"{kind} {credential.id!r} was redeemed at "
+            f"{local(credential.redeemed_at, tz).isoformat()}.",
         )
     if state == CredentialState.CANCELLED.value:
         raise Refused(
             REFUSAL_CREDENTIAL_CANCELLED, kind,
-            f"{kind} {credential.id!r} was cancelled at {credential.cancelled_at.isoformat()}: "
-            f"{credential.cancelled_reason}.",
+            f"{kind} {credential.id!r} was cancelled at "
+            f"{local(credential.cancelled_at, tz).isoformat()}: {credential.cancelled_reason}.",
         )
     if today < credential.starts_on:
         raise Refused(
@@ -500,8 +510,9 @@ def redeem_enrolment(
         uuid, pass_uuid, _same_garage, enrolment = _lock_credential(
             cursor, ENROLMENT, tenant_uuid, uuid,
         )
-        today = day_of(at, zone(garage.timezone))
-        _refuse_unless_redeemable(ENROLMENT, enrolment, today)
+        tz = zone(garage.timezone)
+        today = day_of(at, tz)
+        _refuse_unless_redeemable(ENROLMENT, enrolment, today, tz)
         _pass_uuid, pass_ = load_pass(cursor, tenant_uuid, garage_uuid, enrolment.pass_id)
         _refuse_unless_registrable(pass_, enrolment.pass_id, today, "a redemption")
         assert pass_.terms is not None
@@ -603,8 +614,9 @@ def redeem_holder_link(
     # LOCK_ORDER: the pass row first, then the link row; then re-read under them
     lock_pass_row(cursor, tenant_uuid, pass_uuid)
     uuid, pass_uuid, _same_garage, link = _lock_credential(cursor, HOLDER_LINK, tenant_uuid, uuid)
-    today = day_of(at, zone(garage.timezone))
-    _refuse_unless_redeemable(HOLDER_LINK, link, today)
+    tz = zone(garage.timezone)
+    today = day_of(at, tz)
+    _refuse_unless_redeemable(HOLDER_LINK, link, today, tz)
     _pass_uuid, pass_ = load_pass(cursor, tenant_uuid, garage_uuid, link.pass_id)
     _refuse_unless_registrable(pass_, link.pass_id, today, "a holder link")
     # THE NARROW WRITE: the holder's name and phone, on the pass, nothing else.

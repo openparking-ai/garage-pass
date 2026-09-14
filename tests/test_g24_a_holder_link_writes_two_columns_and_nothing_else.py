@@ -210,6 +210,63 @@ def test_letters_in_any_script_are_a_name_and_are_accepted(app, tenant_id, name)
     assert enrolment_row(app, tenant_id, "qr-from-link")[0] == "issued"
 
 
+#: What ``str.strip()`` removes at the edges, among the Cc code points: the ten
+#: Python counts as whitespace. Written out so the census below is an assertion
+#: about a named set, not a discovery.
+EDGE_STRIPPED = frozenset("\t\n\x0b\x0c\r\x1c\x1d\x1e\x1f\x85")
+
+
+@pytest.mark.guarantee("G24")
+def test_every_cc_code_point_is_refused_inside_and_the_ten_whitespace_ones_stripped_at_the_edge():
+    """THE CENSUS THE MERGE GATE RAN, kept as a test: every Unicode Cc code
+    point, placed INSIDE text and at its EDGE, against the one validator.
+    Inside, all 65 are refused by name. At the edge, exactly the ten that
+    Python's ``str.isspace`` counts as whitespace are stripped -- the text is
+    accepted without them, as a scanner's trailing line break is -- and the
+    other 55 are refused; NUL is refused in every position. The registry
+    sentence for the refusal is measured by the SAME instrument: it must name
+    the inside rule, the edge rule and the ten, so the published sentence and
+    the behaviour cannot drift apart unnoticed."""
+    import unicodedata
+
+    from garage_pass.garage import require_text
+
+    cc = [chr(i) for i in range(0x110000) if unicodedata.category(chr(i)) == "Cc"]
+    assert len(cc) == 65, "the Unicode Cc block, as this interpreter's unicodedata knows it"
+    assert EDGE_STRIPPED == {ch for ch in cc if ch.isspace()}, "the ten, by Python's own rule"
+
+    def outcome(value: str) -> str:
+        try:
+            return "accepted:" + require_text(value, "holder.name")
+        except f.Refused as refused:
+            return "refused:" + refused.code
+
+    inside = {ch: outcome("a" + ch + "b") for ch in cc}
+    edge = {ch: outcome("ab" + ch) for ch in cc}
+    refused_inside = {ch for ch, out in inside.items()
+                      if out == "refused:" + f.REFUSAL_TEXT_HAS_CONTROL_CHARACTERS}
+    stripped_at_edge = {ch for ch, out in edge.items() if out == "accepted:ab"}
+    refused_at_edge = {ch for ch, out in edge.items() if out.startswith("refused:")}
+    assert refused_inside == set(cc), f"inside: {len(refused_inside)}/65 refused by name"
+    assert stripped_at_edge == EDGE_STRIPPED, sorted(f"U+{ord(c):04X}" for c in stripped_at_edge)
+    assert refused_at_edge == set(cc) - EDGE_STRIPPED, "the other 55 are refused at the edge"
+    assert outcome("ab\x00") == outcome("\x00ab") == outcome("\x00") == (
+        "refused:" + f.REFUSAL_TEXT_HAS_CONTROL_CHARACTERS
+    ), "NUL is never whitespace and never stripped"
+    ten = ", ".join(f"U+{ord(c):04X}" for c in sorted(EDGE_STRIPPED))
+    print(f"Cc census: inside refused {len(refused_inside)}/65; edge stripped "
+          f"{len(stripped_at_edge)}/65 ({ten}); edge refused {len(refused_at_edge)}/65")
+    # the published sentence, against the same measurement
+    sentence = f.REFUSALS[f.REFUSAL_TEXT_HAS_CONTROL_CHARACTERS]
+    assert "INSIDE it" in sentence, "the sentence must say the check is on the inside"
+    assert "either edge" in sentence and "stripped" in sentence, "edge whitespace is stripped"
+    assert "ten Cc code points" in sentence, "and how many are stripped"
+    for named in ("TAB", "LF", "VT", "FF", "CR", "U+001C to U+001F", "U+0085"):
+        assert named in sentence, f"the sentence must name {named}"
+    assert "NUL is never whitespace and never stripped" in sentence
+    assert "wherever the module reads text" in sentence
+
+
 @pytest.mark.guarantee("G24")
 def test_the_one_validator_refuses_a_control_character_wherever_text_is_read():
     """One validator, one behaviour: ids, lanes, labels, the actor, the
