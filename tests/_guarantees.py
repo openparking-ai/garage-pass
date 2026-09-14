@@ -18,12 +18,19 @@ from __future__ import annotations
 
 GUARANTEES: dict[str, str] = {
     "G1": (
-        "ONE CAR, ONE PASS PER GARAGE. A vehicle identity is registered to one pass "
+        "ONE CAR, ONE PASS PER GARAGE -- AT EVERY GARAGE THE PASS NAMES, TOGETHER OR NOT "
+        "AT ALL. A vehicle identity is registered to one pass "
         "at a garage for any given day; a second registration overlapping it is "
-        "refused BY NAME, naming the pass that holds the identity, its state and the "
-        "day that registration ends, BEFORE the database constraint has to -- every "
+        "refused BY NAME, naming the garage, the pass that holds the identity, its state "
+        "and the day that registration ends, BEFORE the database constraint has to -- every "
         "open registration is a holder whatever its pass's state -- and a refusal "
-        "writes nothing. The TARGET pass's state is read: a registration onto a "
+        "writes nothing. A registration is written at every garage the pass names, one row "
+        "per garage in one transaction: a pass over three garages holds the car at all three "
+        "from one enrolment, a car held by another pass at ANY of them refuses the whole "
+        "registration by name, and a partial fan-out is never an outcome -- the EXCLUDE "
+        "backstops each garage and a violation at any one takes every row of the fan-out "
+        "back with it. Ending a registration ends it at every garage of the pass. The TARGET "
+        "pass's state is read: a registration onto a "
         "suspended, revoked or expired pass is refused by name, naming the state; "
         "draft, awaiting enrolment and active take registrations. The database's "
         "EXCLUDE is the backstop for a raw insert and for two registrations "
@@ -341,6 +348,26 @@ GUARANTEES: dict[str, str] = {
         "control character in it is refused by name by the module's one text validator, "
         "never handed to the database driver, and the same rule holds for every id, lane, "
         "label and actor the module reads."
+    ),
+    "G25": (
+        "A PASS ANSWERS ONLY AT THE GARAGES IT NAMES. A pass carries a non-empty SET of "
+        "garages, stated by listing them -- never an 'everywhere' flag, never inferred, an "
+        "empty set or a blank member refused at creation naming the field -- and every door "
+        "reads that set by MEMBERSHIP: the access call selects a pass for a garage only if "
+        "the pass names it (at both places a pass is read for its garage, the duplicated-id "
+        "grouping and the by-id map), the store refuses to store a pass at a garage it does "
+        "not name and to load it at one, and a QR or a holder link of the pass redeems at "
+        "any garage of the set and at no other, refused by name elsewhere. The terms are ONE "
+        "set on the pass, evaluated at whichever garage the car is at -- a 20-visit "
+        "allowance is 20 on the pass, not 20 per garage -- except the lanes, which are "
+        "stated PER GARAGE because lane A1 at two garages is two barriers: where lanes are "
+        "stated every garage the pass names has its own set, refused at creation otherwise "
+        "naming the garage, and the lane check at each garage reads its own set and no "
+        "other. A pass's id is unique per tenant, not per garage. Migration 0004 BACKFILLS: "
+        "every pass that existed keeps exactly the one garage it had and every lane row "
+        "carries its own pass's garage; a lane row it cannot place makes it fail naming "
+        "the count rather than drop the row, and two passes of one tenant sharing an id "
+        "make it fail naming the id rather than pick a winner."
     ),
 }
 

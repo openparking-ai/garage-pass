@@ -36,6 +36,7 @@ from fixtures import (
     no_transient_garage,
     registered,
     simple_terms,
+    terms_at,
     transient_garage,
     unstated_garage,
 )
@@ -77,7 +78,8 @@ def assert_exit_is_not_refused(answer: Answer) -> None:
 @pytest.mark.parametrize("name", list(TERMS_CONFIGURATIONS))
 @pytest.mark.parametrize("garage", GARAGES, ids=[g.id for g in GARAGES])
 def test_every_state_every_configuration_every_garage(garage, name, state):
-    pass_ = a_pass(garage_id=garage.id, terms=TERMS_CONFIGURATIONS[name], state=state)
+    pass_ = a_pass(garage_ids={garage.id}, terms=terms_at(garage.id, TERMS_CONFIGURATIONS[name]),
+                   state=state)
     answer = exit_answer(garage, pass_)
     assert_exit_is_not_refused(answer)
     if state is State.REVOKED:
@@ -87,7 +89,7 @@ def test_every_state_every_configuration_every_garage(garage, name, state):
 @pytest.mark.guarantee("G4")
 def test_an_expired_pass_at_exit_is_out_of_terms_not_refused():
     garage = no_transient_garage()
-    pass_ = a_pass(garage_id=garage.id,
+    pass_ = a_pass(garage_ids={garage.id},
                    terms=simple_terms(valid_from=date(2025, 1, 1), valid_to=date(2025, 12, 31)))
     answer = exit_answer(garage, pass_)
     assert answer.outcome is Outcome.NOT_COVERED and answer.reason == f.EXPIRED
@@ -111,7 +113,7 @@ def test_an_out_of_terms_exit_is_answered_as_out_of_terms(name, kwargs, reason):
     terms = TERMS_CONFIGURATIONS["everything"] if name != "over max stay" else (
         TERMS_CONFIGURATIONS["max stay"]
     )
-    pass_ = a_pass(garage_id=garage.id, terms=terms)
+    pass_ = a_pass(garage_ids={garage.id}, terms=terms_at(garage.id, terms))
     answer = exit_answer(garage, pass_, **kwargs)
     assert answer.outcome is Outcome.NOT_COVERED and answer.reason == reason, answer
     assert_exit_is_not_refused(answer)
@@ -122,7 +124,7 @@ def test_an_exit_at_a_garage_with_no_transient_mode_is_still_answered():
     """The entry half refuses to answer here (G6). The exit half never reads
     the field: a car inside a misconfigured garage still gets its answer."""
     garage = unstated_garage()
-    pass_ = a_pass(garage_id=garage.id)
+    pass_ = a_pass(garage_ids={garage.id})
     answer = exit_answer(garage, pass_)
     assert answer.outcome is Outcome.COVERED
     assert_exit_is_not_refused(answer)
@@ -149,7 +151,7 @@ def test_a_blank_identity_or_lane_at_exit_is_answered_not_covered_naming_the_fie
     signature enumeration below) -- measured before this it was answered as
     blank, which read a caller's bug as a car with no plate."""
     garage = transient_garage()
-    pass_ = a_pass(garage_id=garage.id)
+    pass_ = a_pass(garage_ids={garage.id})
     call = dict(garage=garage, passes=[pass_], registrations=[registered(pass_)], visits=[],
                 vehicle_identity="CAR-1", lane="L1", at=NOON_MONDAY)
     call.update(kwargs)
@@ -166,7 +168,7 @@ def test_an_unmeasurable_maximum_stay_at_exit_is_answered_and_named_not_refused(
     terms that can be evaluated, and the stay is named UNMEASURED -- never
     silently satisfied, never a refusal. G9 asserts the naming in detail."""
     garage = transient_garage()
-    pass_ = a_pass(garage_id=garage.id, terms=TERMS_CONFIGURATIONS["max stay"])
+    pass_ = a_pass(garage_ids={garage.id}, terms=TERMS_CONFIGURATIONS["max stay"])
     answer = exit_answer(garage, pass_, visits=[])
     assert answer.outcome is Outcome.COVERED, answer
     assert answer.unmeasured and "max_stay" in answer.unmeasured
@@ -180,8 +182,8 @@ def test_two_passes_holding_one_car_at_exit_are_each_evaluated_and_the_holder_ge
     evaluated: covered if any covers, the inconsistency named either way. At
     an entry the call refuses to pick one."""
     garage = transient_garage()
-    good = a_pass(id="pass-good", garage_id=garage.id)
-    bad = a_pass(id="pass-bad", garage_id=garage.id, state=State.SUSPENDED)
+    good = a_pass(id="pass-good", garage_ids={garage.id})
+    bad = a_pass(id="pass-bad", garage_ids={garage.id}, state=State.SUSPENDED)
     both = [registered(good, "CAR-1"), registered(bad, "CAR-1")]
     call = dict(garage=garage, passes=[bad, good], registrations=both, visits=[],
                 vehicle_identity="CAR-1", lane="L1", at=NOON_MONDAY)
@@ -209,8 +211,9 @@ def test_no_exit_path_in_the_source_can_refuse_an_answer():
     an ``assert`` of its own: an assertion firing at an exit lane would be the
     exception this guarantee forbids. The tests are the proof.)"""
     garage = unstated_garage()
-    pass_ = a_pass(garage_id=garage.id, terms=TERMS_CONFIGURATIONS["max stay"])
-    two = a_pass(id="pass-2", garage_id=garage.id)
+    pass_ = a_pass(garage_ids={garage.id},
+                   terms=terms_at(garage.id, TERMS_CONFIGURATIONS["max stay"]))
+    two = a_pass(id="pass-2", garage_ids={garage.id})
     inputs = [
         dict(vehicle_identity=" "),
         dict(lane=" "),
@@ -230,7 +233,7 @@ def test_the_control_on_the_assertion_itself():
     """``assert_exit_is_not_refused`` must be able to say no: an entry answer
     at a no-transient garage, relabelled as an exit, fails it."""
     garage = no_transient_garage()
-    pass_ = a_pass(garage_id=garage.id, state=State.SUSPENDED)
+    pass_ = a_pass(garage_ids={garage.id}, state=State.SUSPENDED)
     entry = access(
         garage=garage, passes=[pass_], registrations=[registered(pass_)], visits=[],
         vehicle_identity="CAR-1", lane="L1", direction=Direction.ENTRY, at=NOON_MONDAY,
@@ -265,7 +268,7 @@ def test_a_registration_naming_a_pass_not_handed_in_is_answered_at_exit_naming_t
     a stated not-covered answer naming the inconsistency and the pass; the
     well-formed exit in the same run is the positive control."""
     garage = transient_garage()
-    pass_ = a_pass(garage_id=garage.id)
+    pass_ = a_pass(garage_ids={garage.id})
     call = dict(garage=garage, passes=[pass_], visits=[], vehicle_identity="CAR-1", lane="L1",
                 at=NOON_MONDAY)
     control = access(direction=Direction.EXIT, registrations=[registered(pass_, "CAR-1")], **call)
@@ -289,7 +292,7 @@ def test_a_dangling_registration_beside_a_covering_one_gets_the_holder_out_and_i
     """The two-passes shape with one of them not handed in: the pass that was
     handed in is evaluated and covers; the one that was not is named."""
     garage = transient_garage()
-    pass_ = a_pass(garage_id=garage.id)
+    pass_ = a_pass(garage_ids={garage.id})
     call = dict(garage=garage, passes=[pass_], visits=[], vehicle_identity="CAR-1", lane="L1",
                 at=NOON_MONDAY, registrations=[registered(pass_, "CAR-1"), _dangling()])
     answer = access(direction=Direction.EXIT, **call)
@@ -309,7 +312,7 @@ def test_a_dangling_registration_not_in_force_today_bears_on_no_answer():
     from garage_pass.passes import Registration
 
     garage = transient_garage()
-    pass_ = a_pass(garage_id=garage.id)
+    pass_ = a_pass(garage_ids={garage.id})
     ended = Registration(pass_id="missing", vehicle_identity="CAR-1",
                          effective_day=_date(2025, 1, 1), end_day=_date(2025, 12, 31))
     answer = access(garage=garage, passes=[pass_], registrations=[ended], visits=[],
@@ -341,7 +344,7 @@ def test_a_garage_with_a_timezone_the_system_does_not_carry_cannot_be_constructe
         replace(good, timezone=bad)
     stored = garage_from_stored("g", bad, True)
     assert stored.unreadable is not None
-    pass_ = a_pass(garage_id="g")
+    pass_ = a_pass(garage_ids={"g"})
     answer = access(garage=stored, passes=[pass_], registrations=[registered(pass_, "CAR-1")],
                     visits=[], vehicle_identity="CAR-1", lane="L1", direction=Direction.EXIT,
                     at=NOON_MONDAY)
@@ -357,7 +360,7 @@ def test_the_two_caller_contract_errors_stay_raises_and_are_named_as_such():
     test pins that they were not quietly turned into answers -- an answer
     about a movement whose instant has no timezone would be a guess."""
     garage = transient_garage()
-    pass_ = a_pass(garage_id=garage.id)
+    pass_ = a_pass(garage_ids={garage.id})
     call = dict(garage=garage, passes=[pass_], registrations=[registered(pass_, "CAR-1")],
                 visits=[], vehicle_identity="CAR-1", lane="L1")
     with pytest.raises(ValueError, match="must carry a timezone"):
@@ -397,9 +400,9 @@ def test_a_pass_handed_in_twice_is_never_resolved_by_order_whether_or_not_the_co
     and the SAME answer in both orders. The single-pass controls read COVERED
     and NOT-COVERED in the same run."""
     garage = transient_garage()
-    active = a_pass(garage_id=garage.id, state=State.ACTIVE)
-    revoked = a_pass(garage_id=garage.id, state=State.REVOKED)
-    suspended = a_pass(garage_id=garage.id, state=State.SUSPENDED)
+    active = a_pass(garage_ids={garage.id}, state=State.ACTIVE)
+    revoked = a_pass(garage_ids={garage.id}, state=State.REVOKED)
+    suspended = a_pass(garage_ids={garage.id}, state=State.SUSPENDED)
     call = dict(garage=garage, registrations=[registered(active, "CAR-1")], visits=[],
                 vehicle_identity="CAR-1", lane="L1", at=NOON_MONDAY)
     # the controls: one copy, either state
@@ -426,11 +429,11 @@ def test_a_pass_handed_in_twice_is_never_resolved_by_order_whether_or_not_the_co
     assert f.REVOKED in exit_.detail and f.SUSPENDED in exit_.detail, exit_.detail
     assert_exit_is_not_refused(exit_)
     # three copies, one of them at another garage under the same id: still the duplication
-    elsewhere = a_pass(garage_id="garage-elsewhere", state=State.ACTIVE)
+    elsewhere = a_pass(garage_ids={"garage-elsewhere"}, state=State.ACTIVE)
     entry = _both_orders([active, elsewhere, revoked], Direction.ENTRY, **call)
     assert entry.outcome is Outcome.REFUSED_TO_ANSWER and "3 times" in entry.detail
     # a duplicated id the vehicle is NOT registered on bears on no answer
-    other = a_pass(id="pass-9", garage_id=garage.id)
+    other = a_pass(id="pass-9", garage_ids={garage.id})
     aside = access(passes=[active, other, other], direction=Direction.ENTRY, **call)
     assert aside.outcome is Outcome.COVERED, "a duplicate the registration does not name is aside"
 
@@ -472,7 +475,7 @@ def test_every_parameter_of_the_signature_refuses_a_wrong_type_before_answering(
     import inspect
 
     garage = transient_garage()
-    pass_ = a_pass(garage_id=garage.id)
+    pass_ = a_pass(garage_ids={garage.id})
     good = dict(garage=garage, passes=[pass_], registrations=[registered(pass_, "CAR-1")],
                 visits=[], vehicle_identity="CAR-1", lane="L1", direction=Direction.EXIT,
                 at=NOON_MONDAY)

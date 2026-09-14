@@ -17,7 +17,7 @@ marked as such rather than left looking measured.
 <!-- GENERATED:guarantees -->
 | id | what is guaranteed |
 |---|---|
-| **G1** | ONE CAR, ONE PASS PER GARAGE. A vehicle identity is registered to one pass at a garage for any given day; a second registration overlapping it is refused BY NAME, naming the pass that holds the identity, its state and the day that registration ends, BEFORE the database constraint has to -- every open registration is a holder whatever its pass's state -- and a refusal writes nothing. The TARGET pass's state is read: a registration onto a suspended, revoked or expired pass is refused by name, naming the state; draft, awaiting enrolment and active take registrations. The database's EXCLUDE is the backstop for a raw insert and for two registrations genuinely racing -- in either shape the race takes, the constraint firing or the database rolling one writer back, the loser is refused by the constraint's name and never a traceback -- and is reached through the module by nothing else. Ending a registration on day D frees the identity FROM D: a registration elsewhere effective D is accepted, and the old pass covers the vehicle up to and not including D. |
+| **G1** | ONE CAR, ONE PASS PER GARAGE -- AT EVERY GARAGE THE PASS NAMES, TOGETHER OR NOT AT ALL. A vehicle identity is registered to one pass at a garage for any given day; a second registration overlapping it is refused BY NAME, naming the garage, the pass that holds the identity, its state and the day that registration ends, BEFORE the database constraint has to -- every open registration is a holder whatever its pass's state -- and a refusal writes nothing. A registration is written at every garage the pass names, one row per garage in one transaction: a pass over three garages holds the car at all three from one enrolment, a car held by another pass at ANY of them refuses the whole registration by name, and a partial fan-out is never an outcome -- the EXCLUDE backstops each garage and a violation at any one takes every row of the fan-out back with it. Ending a registration ends it at every garage of the pass. The TARGET pass's state is read: a registration onto a suspended, revoked or expired pass is refused by name, naming the state; draft, awaiting enrolment and active take registrations. The database's EXCLUDE is the backstop for a raw insert and for two registrations genuinely racing -- in either shape the race takes, the constraint firing or the database rolling one writer back, the loser is refused by the constraint's name and never a traceback -- and is reached through the module by nothing else. Ending a registration on day D frees the identity FROM D: a registration elsewhere effective D is accepted, and the old pass covers the vehicle up to and not including D. |
 | **G2** | Contradictory terms are refused AT CREATION, naming the field: a valid_to before valid_from, a window that no day in the valid range can satisfy, an empty window, a maximum stay of zero, a visit allowance of zero, a per-window allowance with no windows, no direction, an empty lane set -- and ONLY contradictions: a maximum stay longer than a window is slack, not a contradiction (windows bind instants, not stays), and such a pass is created and its maximum binds at the exit. A Terms value that fails the check cannot be constructed, so the access call never meets a contradiction. The schema's CHECKs back the single-table rules for a raw write; the three that span two tables are named in the migration and backed by the load path (G17). |
 | **G3** | No fee, no amount, no balance and no barrier command ever crosses the access call: the answer's fields carry none, the schema has no money-shaped or reservation-shaped column, and a document with a field this module does not know is refused rather than ignored. This module never opens or closes a gate and never counts who is inside. |
 | **G4** | AN EXIT IS NEVER REFUSED, AND EVERY EXIT IS ANSWERED. No term, no state, no revocation and no inconsistency in the data refuses an exit to a vehicle that is inside, or fails to answer it: every exit produces a stated COVERED or NOT-COVERED answer -- refused-to-answer is not an outcome an exit can have, and the absence of an answer, a refusal and an exception on any data are each a failure of this guarantee. Whatever cannot be evaluated at an exit is NAMED, never guessed: a blank identity or lane, an unmeasurable maximum stay, an unreadable pass or garage, two passes holding one car, a registration naming a pass that was not handed in, a pass handed in twice under one id -- which is never resolved by the order the copies arrived in: every copy is evaluated, the holder is covered if any copy covers, and the same inputs in any order give the same answer. Every exit answer carries the sentence that says so, a not-covered exit means OUT-OF-TERMS and never a refusal, in every state including revoked, and the exit half of the call does not read the garage's transient mode. What remains outside this sentence is named because it cannot be otherwise, and it is a CLASS proven closed by execution, not a list: a value of a type the signature does not accept -- for any parameter of access(), or any element of its sequences, an instant with no timezone among them -- raises on the first touch, before there is an instant, a pass or an answer to give, and never answers (a wrong-typed value that answered would be a defect, not an exclusion; the test enumerates the signature and proves each one raises); and one ENVIRONMENT error -- a machine with no timezone database at all -- which is raised by its own name, never as an unknown zone. THE MODULE ANSWERS WHEN IT HOLDS A RECORD WHOSE CONTENT IT CANNOT READ, AND REFUSES WHEN IT HOLDS NO RECORD AT ALL, OR NO INSTANT TO READ IT AT: a stored row it cannot read loads unreadable and answers, and a DOCUMENT it cannot read -- a field missing, of the wrong type or unknown, a contradiction, an unknown zone -- is answered at an exit the same way, a pass or garage document degrading to the unreadable pass or garage a stored row becomes and a registration or visit document to a not-covered answer naming the document and the field (RECORD_UNREADABLE); at an entry the same document is refused by name. A file that is missing or is not JSON, and an instant that does not parse, are refused in both directions: no record, or no instant. A garage carrying a timezone this system does not carry cannot be constructed through the pure API, and neither can a registration or visit with a wrong-typed field. |
@@ -41,13 +41,15 @@ marked as such rather than left looking measured.
 | **G22** | THE TYPED VEHICLE DESCRIPTION DECIDES NOTHING. It is the holder's own statement of the car they will bring, recorded on the enrolment; the identity that binds is what the lane measured. The module cannot compare an opaque identity to free text and does not pretend to: a mismatch is not a refusal, and enrolments that differ only in their description redeem identically -- the same outcome, the same refusal, the same answer -- across every description and every identity. THE PROOF IS THE MATRIX, and its power is measured: five spellings of a description-keyed branch are planted as its controls and each reddens it. |
 | **G23** | THE TOKEN IS NEVER STORED AND NEVER RENDERED. Only its SHA-256 goes in the row; the plaintext is returned exactly once, by the issue call, and by nothing else -- not by a read, not by a listing, not in a refusal detail, not in an answer. Proven by scanning every column of every table in the catalogue, and every detail the module rendered, for tokens it issued -- with the digest as the positive control that the scan reads the column that holds it, and a planted sentence as the positive control that the rendered scan can see one, because a zero from an unproven scan is UNMEASURED, not clean. secrets and hashlib from the standard library; no dependency; no QR image. |
 | **G24** | A HOLDER LINK WRITES holder_name AND holder_phone ON THE PASS, AND NOTHING ELSE. Not the email, not the label, not the terms, not the state, not the garage: every other column of the pass row is the same after the redemption as before, and a wider write reddens the test naming the column it should not have touched. Redeeming the link, once, writes those two, issues an enrolment for that pass with the link as the issuer, and spends the link -- one transaction. The vehicle description goes on the enrolment, not the pass. The owner-only path stands: an owner issues an enrolment without the holder ever using a link. No email is sent and no account or password exists: the module mints and records; delivering is the integrator's. The holder's text is text in any script; a control character in it is refused by name by the module's one text validator, never handed to the database driver, and the same rule holds for every id, lane, label and actor the module reads. |
+| **G25** | A PASS ANSWERS ONLY AT THE GARAGES IT NAMES. A pass carries a non-empty SET of garages, stated by listing them -- never an 'everywhere' flag, never inferred, an empty set or a blank member refused at creation naming the field -- and every door reads that set by MEMBERSHIP: the access call selects a pass for a garage only if the pass names it (at both places a pass is read for its garage, the duplicated-id grouping and the by-id map), the store refuses to store a pass at a garage it does not name and to load it at one, and a QR or a holder link of the pass redeems at any garage of the set and at no other, refused by name elsewhere. The terms are ONE set on the pass, evaluated at whichever garage the car is at -- a 20-visit allowance is 20 on the pass, not 20 per garage -- except the lanes, which are stated PER GARAGE because lane A1 at two garages is two barriers: where lanes are stated every garage the pass names has its own set, refused at creation otherwise naming the garage, and the lane check at each garage reads its own set and no other. A pass's id is unique per tenant, not per garage. Migration 0004 BACKFILLS: every pass that existed keeps exactly the one garage it had and every lane row carries its own pass's garage; a lane row it cannot place makes it fail naming the count rather than drop the row, and two passes of one tenant sharing an id make it fail naming the id rather than pick a winner. |
 
-That is 24 guarantees. Every one of them has a fail control that has been proven to fire, and the count above is derived from the registry rather than typed here.
+That is 25 guarantees. Every one of them has a fail control that has been proven to fire, and the count above is derived from the registry rather than typed here.
 <!-- END:guarantees -->
 
 ## The answer
 
-*Design documentation.* The access call takes a garage, the passes at it, the
+*Design documentation.* The access call takes a garage, the passes the caller
+holds (only those naming the garage are this garage's business), the
 registrations and recorded visits the caller holds, a vehicle identity, a lane, a
 direction and an instant. It returns exactly one of three outcomes: **covered**,
 **not covered** with a reason, or **refused to answer** naming the field that
@@ -106,7 +108,7 @@ inconsistency named; at an entry the call refuses to pick one.
 | `GARAGE_UNREADABLE` | The garage carries a value this module refuses to read -- a stored row whose timezone this system does not carry, or, at an EXIT, a garage document handed to the command line whose id, timezone and transient mode read but which is refused for any reason (an unknown zone, an unknown field). Without a clock no window, day or registration range can be evaluated, so it is answered ahead of every term. At an EXIT this is out-of-terms; at an entry the call refuses to answer. |
 | `NOT_ACTIVE` | The pass this vehicle is registered to has not been activated: it is a draft, or it is awaiting enrolment. |
 | `NOT_STARTED` | The pass's valid_from is after this day. |
-| `NO_PASS` | No pass at this garage has this vehicle registered on this day. Where a registration once existed and has ended, the detail says which pass and when. |
+| `NO_PASS` | No pass that names this garage has this vehicle registered on this day. Where a registration once existed and has ended, the detail says which pass and when. A pass answers only at the garages it names: at any other it is not this garage's business, and the vehicle is answered as any unknown one. |
 | `OUTSIDE_WINDOW` | The pass has recurring windows and this instant, in the garage's local day, is inside none of them. |
 | `OUT_OF_VISITS` | The pass's visit allowance is used up. The detail says how many were counted, out of how many, and over what. |
 | `OVER_MAX_STAY` | This exit comes later after the recorded entry than the pass's maximum stay allows. Measured in elapsed time between the two instants, not in wall-clock hours. |
@@ -116,7 +118,7 @@ inconsistency named; at an entry the call refuses to pick one.
 | `RECORD_UNREADABLE` | A record handed in with the call at an EXIT cannot be read as what it claims to be -- a registration or a visit document with a field missing, of the wrong type or unknown, or a pass or garage document too malformed to carry the marker a stored row would (its id, garage, label or state unreadable). The module holds the record and cannot read its content, so the exit is ANSWERED, never refused: not-covered, naming the document and the field so the integrator can find it, with the exit note and the OUT-OF-TERMS meaning every exit answer carries -- at a transient garage chargeable, said so. A pass or garage document whose carrier fields read is not this: it degrades to the unreadable pass or garage a stored row becomes, and answers PASS_UNREADABLE or GARAGE_UNREADABLE only if the vehicle is on it. (At an entry the same document is refused by name. The module refuses only when it holds no record at all -- a file that is missing, not a regular file, or cannot be read as JSON -- or no instant to read it at.) |
 | `REVOKED` | The pass was revoked. Revocation is terminal. |
 | `SUSPENDED` | The owner has put the pass on hold. The hold is reversible. |
-| `WRONG_LANE` | The pass's terms name the lanes it may use, and this is not one. |
+| `WRONG_LANE` | The pass's terms name the lanes it may use AT THIS GARAGE, and this is not one. Lanes are stated per garage; a lane the pass allows at another of its garages is another barrier. |
 <!-- END:not-covered -->
 
 ### What not-covered means at the barrier
@@ -149,9 +151,12 @@ Every EXIT answer, whatever its outcome, carries: *An exit is never refused. Wha
 
 ## The pass
 
-*Design documentation.* A pass belongs to one garage, carries an owner-typed
-label that no behaviour reads, a holder (an email address, optionally a name and
-a phone; no account), its terms, its state, and the vehicles registered to it.
+*Design documentation.* A pass names the garages it answers at — one or more,
+a set the owner states by listing them, never an "everywhere" flag — carries an
+owner-typed label that no behaviour reads, a holder (an email address,
+optionally a name and a phone; no account), its terms, its state, and the
+vehicles registered to it. It answers at every garage it names and at no other
+(G25); its id is unique per tenant.
 
 ### Terms
 
@@ -163,7 +168,13 @@ a phone; no account), its terms, its state, and the vehicles registered to it.
 3. **max_stay** — a duration, measured at exit as elapsed time from the recorded entry.
 4. **visit_allowance** — a count, over the pass's life or per window occurrence.
 5. **directions** — entry, exit or both. Nothing is implicit.
-6. **allowed_lanes** — a named set; absent means every lane of the garage.
+6. **allowed_lanes** — a named set, stated **per garage** (`garage_id` plus its
+   `lanes`, one entry per garage the pass names; lane `A1` at two garages is two
+   barriers); absent means every lane at every garage the pass names.
+
+The terms are one set, on the pass, evaluated at whichever garage the car is at:
+a 20-visit allowance is 20 on the pass, not 20 per garage. Only the lanes are
+per garage.
 
 A contradiction between them is refused when the pass is created — and only a
 contradiction: a maximum stay longer than a window is slack, not a contradiction
@@ -196,17 +207,21 @@ but an UNREADABLE pass, answered as G17 states.
 | `REFUSAL_FIELD_BLANK` | A required field is blank. The field is named beside this code. |
 | `REFUSAL_FIELD_WRONG_TYPE` | A document field carries a value of the wrong type -- text where a list belongs, a number where text belongs, an object where an id belongs. The document is refused naming the field, the type it declares and the value; it is never reinterpreted (text is not read as a list of its characters) and never a traceback. The check is derived from the dataclass the document loads into, so a field added later is covered the day it is added. |
 | `REFUSAL_GARAGE_ALREADY_EXISTS` | A garage with that id already exists in this tenant. |
-| `REFUSAL_GARAGE_MISMATCH` | A pass belongs to one garage and was asked about another. One garage per pass is the stated shape. |
+| `REFUSAL_GARAGE_MISMATCH` | A pass names the garages it answers at, and was asked about a garage it does not name -- to be stored there, or a QR or holder link of it presented there. The detail names the garage asked for and the pass's own set. Nothing is written. |
 | `REFUSAL_GARAGE_NOT_FOUND` | No garage with that id in this tenant. |
 | `REFUSAL_HOLDER_EMAIL_MALFORMED` | The holder's email address does not look like one -- it needs an @ with something before it and something after it. The email is the holder's identity in this module, so a malformed one identifies nobody. |
-| `REFUSAL_LANES_STATED_BUT_EMPTY` | The allowed lanes are stated as an empty set. Absent means every lane; an empty set means no lane, which covers nothing. |
+| `REFUSAL_LANES_AT_A_GARAGE_THE_PASS_DOES_NOT_NAME` | The pass states lanes at a garage it does not name, so those lanes could never be used. The detail names the garage and the pass's own set; the database's key backs it for a raw write. |
+| `REFUSAL_LANES_GARAGE_REPEATED` | The pass states lanes for one garage twice. One entry per garage: a garage named twice with two sets is a contradiction the module will not merge. |
+| `REFUSAL_LANES_NOT_STATED_FOR_GARAGE` | The pass states its lanes, and one of the garages it names has no lane stated there. Lanes are stated PER GARAGE -- lane A1 at two garages is two barriers -- and a garage with none, on a pass whose lanes are stated, would be an implicit empty set: no lane at all. Nothing here is implicit; the detail names the garage. |
+| `REFUSAL_LANES_STATED_BUT_EMPTY` | The allowed lanes are stated as an empty set -- no garage at all, or no lane at one of the garages. Absent means every lane at every garage the pass names; an empty set means no lane, which covers nothing. |
 | `REFUSAL_LANE_NAME_BLANK` | A lane name is blank. |
 | `REFUSAL_LANE_OUTSIDE_THE_PASS_TERMS` | The pass names the lanes it may use, and the lane this QR was presented at is not one of them. Nothing is implicit: the pass carries its own terms, and a redemption at a lane they do not name is refused naming the lane and the set. The owner's fix is to state the lane on the pass. Nothing is written. |
 | `REFUSAL_MAX_STAY_NOT_POSITIVE` | The maximum stay is zero or negative. A pass that allows no time inside covers nothing; state a positive duration, or no maximum. |
 | `REFUSAL_NO_DIRECTIONS` | The pass states no direction. Nothing is implicit: a privilege the terms do not state does not exist, so a pass that names neither entry nor exit covers nothing. |
 | `REFUSAL_NO_OPEN_VISIT` | No recorded entry of this vehicle on this pass is still open, so there is no visit for this exit to close. |
-| `REFUSAL_PASS_ALREADY_EXISTS` | A pass with that id already exists at that garage. |
-| `REFUSAL_PASS_NOT_FOUND` | No pass with that id at that garage in this tenant. |
+| `REFUSAL_PASS_ALREADY_EXISTS` | A pass with that id already exists in this tenant. A pass's id is unique per tenant, not per garage: a pass that spans garages cannot be identified by one. |
+| `REFUSAL_PASS_NAMES_NO_GARAGE` | The pass names no garage. A pass carries a non-empty SET of the garages it answers at -- stated by listing them, never an 'everywhere' flag and never inferred -- and a pass naming none would answer nowhere. A string where the list belongs is refused the same way, never read as a set of its characters. |
+| `REFUSAL_PASS_NOT_FOUND` | No pass with that id names that garage in this tenant. Where the pass exists and names other garages, the detail says which. |
 | `REFUSAL_PASS_NOT_REGISTRABLE` | A vehicle may be registered onto a pass that is draft, awaiting enrolment or active. This pass is not: the detail names its state. A suspended pass is a hold, and a car added to a hold is a claim the owner did not make; a revoked pass is revoked; an expired pass -- derived from its valid_to against the registration's effective day -- is over. |
 | `REFUSAL_REGISTRATION_ALREADY_ENDED` | That registration already has an end day. A registration is ended once; to move the day, that is a new registration. |
 | `REFUSAL_REGISTRATION_ENDS_BEFORE_IT_STARTS` | The registration ends on or before the day it takes effect, so it covers no day. |
@@ -222,7 +237,7 @@ but an UNREADABLE pass, answered as G17 states.
 | `REFUSAL_TIMEZONE_UNKNOWN` | The timezone named is not an IANA name this system carries. It is refused rather than defaulted to UTC: a pass evaluated on UTC clocks crosses its own window edges by hours, and nothing in the answer would say so. The detail names the value; a garage already stored with one is repaired with set-garage-timezone. |
 | `REFUSAL_UNKNOWN_FIELD` | A document carries a field this module does not know. It is refused rather than ignored: a field silently dropped is a term the owner believes is in force and is not. |
 | `REFUSAL_VALID_TO_BEFORE_VALID_FROM` | The pass ends before it starts: valid_to is earlier than valid_from. There is no day on which such a pass could cover anything, so it is not created. |
-| `REFUSAL_VEHICLE_ON_ANOTHER_PASS` | This vehicle identity is already registered to another pass at this garage for days that overlap. One car, one pass: the refusal names the pass that holds it and the day that registration ends. End that registration first, or register from the day it ends. |
+| `REFUSAL_VEHICLE_ON_ANOTHER_PASS` | This vehicle identity is already registered to another pass, at one of the garages the target pass names, for days that overlap. One car, one pass per garage: a registration is written at EVERY garage the pass names, together or not at all, and the refusal names the garage where the identity is held, the pass that holds it and the day that registration ends. End that registration first, or register from the day it ends. |
 | `REFUSAL_VISIT_ALLOWANCE_NOT_POSITIVE` | The visit allowance is zero or negative. A pass allowing no visits covers nothing; state a positive count, or no allowance. |
 | `REFUSAL_VISIT_ALREADY_OPEN` | A recorded entry of this vehicle on this pass is still open. Record its exit before recording another entry, or the visit ledger would hold a car inside twice. |
 | `REFUSAL_WHERE_TO_ENROL_UNSTATED` | A redemption cannot tell whether this lane is the end this garage enrols at. The field named beside this code is the one that would say: garage.transient_available decides first (a garage with no transient enrols at entry, derived, and need state nothing more); a transient garage has a choice and states it in garage.enrols_at. There is no default and no inference. |
@@ -232,7 +247,7 @@ but an UNREADABLE pass, answered as G17 states.
 | `REFUSAL_WINDOW_MINUTE_OUT_OF_RANGE` | A window's start or end is outside 0 to 1440 minutes from local midnight. 1440 means the end of the day. |
 | `REFUSAL_WINDOW_NEVER_OCCURS` | None of the days a recurring window names falls inside the pass's valid range, so the window can never be satisfied. Widen the range or change the days. |
 
-55 refusals. Each is raised with the FIELD it is about, and none of them is raised by the access call about a term: a contradiction is refused when the pass is created.
+59 refusals. Each is raised with the FIELD it is about, and none of them is raised by the access call about a term: a contradiction is refused when the pass is created.
 <!-- END:refusals -->
 
 ### States
@@ -355,7 +370,7 @@ registrations genuinely racing.
 | document | keys |
 |---|---|
 | garage | `enrols_at`, `id`, `timezone`, `transient_available` |
-| pass | `garage_id`, `holder`, `id`, `label`, `state`, `terms` |
+| pass | `garage_ids`, `holder`, `id`, `label`, `state`, `terms` |
 | holder | `email`, `name`, `phone` |
 | terms | `allowed_lanes`, `directions`, `max_stay_minutes`, `valid_from`, `valid_to`, `visit_allowance`, `windows` |
 | window | `days`, `end_minute`, `start_minute` |
@@ -371,11 +386,11 @@ A key not in its document's list is refused, never ignored.
 <!-- GENERATED:worked-example -->
 Produced by running the module over `tests/documents/` -- the garage, the employee pass, one registration and two recorded visits -- for these movements:
 
-- `CAR-1` at lane `L1`, **entry**, `2026-06-01T12:00:00-06:00` → **covered** by `pass-employee-7` (Employee): valid 2026-01-01..2026-12-31; windows Mon,Tue,Wed,Thu,Fri 06:00-20:00; max stay 10:00:00; 3 visit(s) per window; directions entry+exit; lanes L1,L2; in window Mon,Tue,Wed,Thu,Fri 06:00-20:00 on 2026-06-01; visit 3 of 3; counted 2 recorded entries on pass 'pass-employee-7' in window Mon,Tue,Wed,Thu,Fri 06:00-20:00 on 2026-06-01
-- `CAR-1` at lane `L1`, **exit**, `2026-06-01T12:00:00-06:00` → **covered** by `pass-employee-7` (Employee): valid 2026-01-01..2026-12-31; windows Mon,Tue,Wed,Thu,Fri 06:00-20:00; max stay 10:00:00; 3 visit(s) per window; directions entry+exit; lanes L1,L2; in window Mon,Tue,Wed,Thu,Fri 06:00-20:00 on 2026-06-01; stayed 3:00:00 of at most 10:00:00
+- `CAR-1` at lane `L1`, **entry**, `2026-06-01T12:00:00-06:00` → **covered** by `pass-employee-7` (Employee): valid 2026-01-01..2026-12-31; windows Mon,Tue,Wed,Thu,Fri 06:00-20:00; max stay 10:00:00; 3 visit(s) per window; directions entry+exit; lanes garage-downtown:L1,L2; in window Mon,Tue,Wed,Thu,Fri 06:00-20:00 on 2026-06-01; visit 3 of 3; counted 2 recorded entries on pass 'pass-employee-7' in window Mon,Tue,Wed,Thu,Fri 06:00-20:00 on 2026-06-01
+- `CAR-1` at lane `L1`, **exit**, `2026-06-01T12:00:00-06:00` → **covered** by `pass-employee-7` (Employee): valid 2026-01-01..2026-12-31; windows Mon,Tue,Wed,Thu,Fri 06:00-20:00; max stay 10:00:00; 3 visit(s) per window; directions entry+exit; lanes garage-downtown:L1,L2; in window Mon,Tue,Wed,Thu,Fri 06:00-20:00 on 2026-06-01; stayed 3:00:00 of at most 10:00:00
   - exit note: *An exit is never refused. Whatever this answer says, the vehicle leaves.*
 - `CAR-1` at lane `L1`, **entry**, `2026-06-01T05:30:00-06:00` → **not covered** — `OUTSIDE_WINDOW`, meaning `TRANSIENT_STAY`: 2026-06-01T05:30:00-06:00 is 2026-06-01 (Mon) 05:30 in America/Denver, inside none of: Mon,Tue,Wed,Thu,Fri 06:00-20:00.
-- `CAR-1` at lane `L9`, **entry**, `2026-06-01T12:00:00-06:00` → **not covered** — `WRONG_LANE`, meaning `TRANSIENT_STAY`: pass 'pass-employee-7' allows lanes ['L1', 'L2'], not 'L9'.
+- `CAR-1` at lane `L9`, **entry**, `2026-06-01T12:00:00-06:00` → **not covered** — `WRONG_LANE`, meaning `TRANSIENT_STAY`: pass 'pass-employee-7' allows lanes ['L1', 'L2'] at garage 'garage-downtown', not 'L9'.
 - `NOBODY` at lane `L1`, **entry**, `2026-06-01T12:00:00-06:00` → **not covered** — `NO_PASS`, meaning `TRANSIENT_STAY`: no registration of 'NOBODY' at garage 'garage-downtown' on 2026-06-01.
 - `NOBODY` at lane `L1`, **exit**, `2026-06-01T12:00:00-06:00` → **not covered** — `NO_PASS`, meaning `EXIT_OUT_OF_TERMS`: no registration of 'NOBODY' at garage 'garage-downtown' on 2026-06-01.
   - exit note: *An exit is never refused. Whatever this answer says, the vehicle leaves.*
@@ -391,7 +406,14 @@ registration's day range; `0002_garage_changes_are_recorded.sql` adds the garage
 history in the same shape; `0003_enrolments_holder_links_and_where_a_garage_enrols.sql`
 adds the two one-time credentials (the token's SHA-256, never the token), the
 garage's `enrols_at` with its R1 CHECK, and admits the enrols-at repair to the
-garage history. Apply them, in order, as the database owner:
+garage history; `0004_a_pass_spans_many_garages.sql` moves the pass-to-garage
+key into `pass_garages` (one row per garage the pass names), stamps every lane
+row with its garage, makes the pass's id unique per tenant, and says in the
+database that a lane, a registration and a visit name a garage the pass holds —
+backfilling every existing pass with the one garage it had, and refusing to run
+over a lane row it cannot place or two passes of one tenant sharing an id.
+Registrations stay keyed per garage: one enrolment writes one row per garage of
+the pass, together or not at all. Apply them, in order, as the database owner:
 
 ```
 for m in migrations/*.sql; do psql "$DSN" -v ON_ERROR_STOP=1 -f "$m"; done   # 0001, 0002, 0003

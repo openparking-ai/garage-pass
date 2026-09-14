@@ -113,6 +113,6 @@ def test_a_registration_naming_a_pass_nobody_handed_in_is_answered_not_raised():
 
 @pytest.mark.guarantee("G8")
 def test_a_registration_at_another_garage_is_not_this_garages_business():
-    elsewhere = a_pass(id="pass-elsewhere", garage_id="garage-other")
+    elsewhere = a_pass(id="pass-elsewhere", garage_ids={"garage-other"})
     answer = ask("CAR-1", [registered(elsewhere, "CAR-1")], [elsewhere])
     assert answer.outcome is Outcome.NOT_COVERED and answer.reason == f.NO_PASS

@@ -142,6 +142,13 @@ REFUSAL_CREDENTIAL_ALREADY_EXISTS = "REFUSAL_CREDENTIAL_ALREADY_EXISTS"
 REFUSAL_LANE_OUTSIDE_THE_PASS_TERMS = "REFUSAL_LANE_OUTSIDE_THE_PASS_TERMS"
 REFUSAL_DIRECTION_OUTSIDE_THE_PASS_TERMS = "REFUSAL_DIRECTION_OUTSIDE_THE_PASS_TERMS"
 REFUSAL_TEXT_HAS_CONTROL_CHARACTERS = "REFUSAL_TEXT_HAS_CONTROL_CHARACTERS"
+# --- a pass spans many garages (G3a): the set, and the lanes stated per garage ---
+REFUSAL_PASS_NAMES_NO_GARAGE = "REFUSAL_PASS_NAMES_NO_GARAGE"
+REFUSAL_LANES_NOT_STATED_FOR_GARAGE = "REFUSAL_LANES_NOT_STATED_FOR_GARAGE"
+REFUSAL_LANES_AT_A_GARAGE_THE_PASS_DOES_NOT_NAME = (
+    "REFUSAL_LANES_AT_A_GARAGE_THE_PASS_DOES_NOT_NAME"
+)
+REFUSAL_LANES_GARAGE_REPEATED = "REFUSAL_LANES_GARAGE_REPEATED"
 
 REFUSALS: dict[str, str] = {
     REFUSAL_VALID_TO_BEFORE_VALID_FROM: (
@@ -187,7 +194,8 @@ REFUSALS: dict[str, str] = {
         "covers nothing."
     ),
     REFUSAL_LANES_STATED_BUT_EMPTY: (
-        "The allowed lanes are stated as an empty set. Absent means every lane; an "
+        "The allowed lanes are stated as an empty set -- no garage at all, or no lane at "
+        "one of the garages. Absent means every lane at every garage the pass names; an "
         "empty set means no lane, which covers nothing."
     ),
     REFUSAL_LANE_NAME_BLANK: ("A lane name is blank."),
@@ -231,10 +239,12 @@ REFUSALS: dict[str, str] = {
         "it is the one write this module would not be able to explain afterwards."
     ),
     REFUSAL_VEHICLE_ON_ANOTHER_PASS: (
-        "This vehicle identity is already registered to another pass at this "
-        "garage for days that overlap. One car, one pass: the refusal names the "
-        "pass that holds it and the day that registration ends. End that "
-        "registration first, or register from the day it ends."
+        "This vehicle identity is already registered to another pass, at one of the "
+        "garages the target pass names, for days that overlap. One car, one pass per "
+        "garage: a registration is written at EVERY garage the pass names, together or "
+        "not at all, and the refusal names the garage where the identity is held, the "
+        "pass that holds it and the day that registration ends. End that registration "
+        "first, or register from the day it ends."
     ),
     REFUSAL_PASS_NOT_REGISTRABLE: (
         "A vehicle may be registered onto a pass that is draft, awaiting enrolment "
@@ -259,9 +269,15 @@ REFUSALS: dict[str, str] = {
         "That registration already has an end day. A registration is ended once; "
         "to move the day, that is a new registration."
     ),
-    REFUSAL_PASS_NOT_FOUND: ("No pass with that id at that garage in this tenant."),
+    REFUSAL_PASS_NOT_FOUND: (
+        "No pass with that id names that garage in this tenant. Where the pass exists and "
+        "names other garages, the detail says which."
+    ),
     REFUSAL_GARAGE_NOT_FOUND: ("No garage with that id in this tenant."),
-    REFUSAL_PASS_ALREADY_EXISTS: ("A pass with that id already exists at that garage."),
+    REFUSAL_PASS_ALREADY_EXISTS: (
+        "A pass with that id already exists in this tenant. A pass's id is unique per "
+        "tenant, not per garage: a pass that spans garages cannot be identified by one."
+    ),
     REFUSAL_GARAGE_ALREADY_EXISTS: ("A garage with that id already exists in this tenant."),
     REFUSAL_TIMEZONE_UNKNOWN: (
         "The timezone named is not an IANA name this system carries. It is refused "
@@ -277,8 +293,9 @@ REFUSALS: dict[str, str] = {
         "will convert). The detail names the path and what went wrong."
     ),
     REFUSAL_GARAGE_MISMATCH: (
-        "A pass belongs to one garage and was asked about another. One garage per "
-        "pass is the stated shape."
+        "A pass names the garages it answers at, and was asked about a garage it does not "
+        "name -- to be stored there, or a QR or holder link of it presented there. The "
+        "detail names the garage asked for and the pass's own set. Nothing is written."
     ),
     REFUSAL_NO_OPEN_VISIT: (
         "No recorded entry of this vehicle on this pass is still open, so there is "
@@ -396,6 +413,27 @@ REFUSALS: dict[str, str] = {
         "stripped there, and NUL is never whitespace and never stripped. Letters in any "
         "script are text and are accepted."
     ),
+    REFUSAL_PASS_NAMES_NO_GARAGE: (
+        "The pass names no garage. A pass carries a non-empty SET of the garages it answers "
+        "at -- stated by listing them, never an 'everywhere' flag and never inferred -- and "
+        "a pass naming none would answer nowhere. A string where the list belongs is refused "
+        "the same way, never read as a set of its characters."
+    ),
+    REFUSAL_LANES_NOT_STATED_FOR_GARAGE: (
+        "The pass states its lanes, and one of the garages it names has no lane stated "
+        "there. Lanes are stated PER GARAGE -- lane A1 at two garages is two barriers -- and "
+        "a garage with none, on a pass whose lanes are stated, would be an implicit empty "
+        "set: no lane at all. Nothing here is implicit; the detail names the garage."
+    ),
+    REFUSAL_LANES_AT_A_GARAGE_THE_PASS_DOES_NOT_NAME: (
+        "The pass states lanes at a garage it does not name, so those lanes could never be "
+        "used. The detail names the garage and the pass's own set; the database's key backs "
+        "it for a raw write."
+    ),
+    REFUSAL_LANES_GARAGE_REPEATED: (
+        "The pass states lanes for one garage twice. One entry per garage: a garage named "
+        "twice with two sets is a contradiction the module will not merge."
+    ),
 }
 
 
@@ -424,9 +462,10 @@ RECORD_UNREADABLE = "RECORD_UNREADABLE"
 
 NOT_COVERED_REASONS: dict[str, str] = {
     NO_PASS: (
-        "No pass at this garage has this vehicle registered on this day. Where a "
+        "No pass that names this garage has this vehicle registered on this day. Where a "
         "registration once existed and has ended, the detail says which pass and "
-        "when."
+        "when. A pass answers only at the garages it names: at any other it is not "
+        "this garage's business, and the vehicle is answered as any unknown one."
     ),
     NOT_ACTIVE: (
         "The pass this vehicle is registered to has not been activated: it is a "
@@ -440,7 +479,11 @@ NOT_COVERED_REASONS: dict[str, str] = {
     SUSPENDED: ("The owner has put the pass on hold. The hold is reversible."),
     REVOKED: ("The pass was revoked. Revocation is terminal."),
     DIRECTION_NOT_ALLOWED: ("The pass's terms do not state this direction."),
-    WRONG_LANE: ("The pass's terms name the lanes it may use, and this is not one."),
+    WRONG_LANE: (
+        "The pass's terms name the lanes it may use AT THIS GARAGE, and this is not one. "
+        "Lanes are stated per garage; a lane the pass allows at another of its garages "
+        "is another barrier."
+    ),
     OUTSIDE_WINDOW: (
         "The pass has recurring windows and this instant, in the garage's local "
         "day, is inside none of them."

@@ -56,7 +56,7 @@ from enrolment_harness import (
     seeded,
     state_changes,
 )
-from fixtures import NOON_MONDAY, WEEKDAYS, at, simple_terms
+from fixtures import NOON_MONDAY, WEEKDAYS, at, lanes_at, simple_terms
 from garage_pass import findings as f
 from garage_pass.access import Outcome
 from garage_pass.enrolment import (
@@ -528,7 +528,7 @@ def test_the_swap_is_end_registration_then_a_new_qr_and_the_half_open_range_hold
     from fixtures import a_pass
     from garage_pass.store.records import create_pass
 
-    other = a_pass(id="pass-other", garage_id=TRANSIENT_ENTRY.id)
+    other = a_pass(id="pass-other", garage_ids={TRANSIENT_ENTRY.id})
     with tenant(app, tenant_id) as cursor:
         create_pass(cursor, tenant_id, TRANSIENT_ENTRY.id, other, by="seed", at=NOON_MONDAY)
     app.commit()
@@ -870,7 +870,7 @@ def test_wrong_lane_and_wrong_direction_keeps_the_lane_refusal(app, tenant_id):
     """The order does not move: a movement that is both is refused for the
     LANE, as it was measured before the direction refusal existed."""
     pass_ = seeded(app, tenant_id, TRANSIENT_ENTRY, terms=simple_terms(
-        directions=frozenset({Direction.EXIT}), allowed_lanes=frozenset({"L9"})))
+        directions=frozenset({Direction.EXIT}), allowed_lanes=lanes_at(TRANSIENT_ENTRY.id, "L9")))
     token = issue(app, tenant_id, TRANSIENT_ENTRY, pass_)["token"]
     out = redeem(app, tenant_id, TRANSIENT_ENTRY, token, "CAR-1", "L1")
     assert out.refusal.code == f.REFUSAL_LANE_OUTSIDE_THE_PASS_TERMS
@@ -978,7 +978,7 @@ def test_a_revocation_racing_a_redemption_leaves_no_live_registration_on_the_rev
     from fixtures import a_pass
     from garage_pass.store.records import create_pass
 
-    other = a_pass(id="pass-other", garage_id=TRANSIENT_ENTRY.id)
+    other = a_pass(id="pass-other", garage_ids={TRANSIENT_ENTRY.id})
     with tenant(app, tenant_id) as cursor:
         create_pass(cursor, tenant_id, TRANSIENT_ENTRY.id, other, by="seed", at=NOON_MONDAY)
     app.commit()

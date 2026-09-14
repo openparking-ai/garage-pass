@@ -43,7 +43,9 @@ $ garage-pass access-in-store --tenant T --garage garage-downtown \
 
 ## What a pass is
 
-One garage. An owner-typed **label** — "Employee", "Monthly", "Vendor", whatever
+The garages it answers at — one or more, a set the owner states by listing
+them, never an "everywhere" flag; a pass answers at every garage it names and at
+no other. An owner-typed **label** — "Employee", "Monthly", "Vendor", whatever
 the owner needs — that no behaviour reads. A **holder**: an email address, and
 optionally a name and a phone; no account, no login. Its **terms**. Its
 **state**. The **vehicles** registered to it.
@@ -56,8 +58,11 @@ passes is which other module is connected to them, and in this version none is.
 A valid-from / valid-to range in the garage's local day. Recurring windows: days
 of the week plus minutes of the local day. A maximum stay per visit. A visit
 allowance, over the pass's life or per window. The directions the pass states —
-entry, exit or both; nothing is implicit. The lanes it may use; absent means
-every lane.
+entry, exit or both; nothing is implicit. The lanes it may use, stated per
+garage — lane `A1` at two garages is two barriers — absent means every lane at
+every garage the pass names. The terms are one set, on the pass, evaluated at
+whichever garage the car is at: a 20-visit allowance is 20 on the pass, not 20
+per garage; only the lanes are per garage.
 
 **A contradiction is refused when the pass is created, naming the field.** A
 valid-to before valid-from, a weekend window on a Monday-to-Wednesday pass, a
@@ -135,12 +140,16 @@ $ garage-pass redeem-enrolment --tenant T --garage garage-downtown --token <what
 ### One car, one pass per garage
 
 A vehicle identity is on one pass at a garage for any given day. A second
-registration is refused by name — naming the pass that holds the identity, its
-state and the day that registration ends — before the database's own constraint
-has to; every open registration counts as a holder whatever its pass's state,
-so the constraint is the backstop for a raw insert and for two writers
-genuinely racing, and nothing else reaches it through the module. Ending a
-registration on day D frees the identity **from** D.
+registration is refused by name — naming the garage, the pass that holds the
+identity, its state and the day that registration ends — before the database's
+own constraint has to; every open registration counts as a holder whatever its
+pass's state, so the constraint is the backstop for a raw insert and for two
+writers genuinely racing, and nothing else reaches it through the module. A
+registration is written at **every garage the pass names**, one row per garage
+in one transaction — a pass over three garages holds the car at all three from
+one enrolment; a car held by another pass at any one of them refuses the whole
+registration, and a partial fan-out is never an outcome. Ending a registration
+on day D frees the identity **from** D, at every garage of the pass.
 
 **A vehicle is registered onto a draft, awaiting-enrolment or active pass.** A
 registration onto a suspended pass (a hold; a car added to a hold is a claim the
@@ -248,8 +257,8 @@ credential and records that it was issued; delivering it is the integrator's,
 and rendering a bitmap is the client's. No money. No connection to any billing
 module — whether the registration-day transient fee is credited, and when
 monthly status begins, is the billing connection's business — and no
-reservations of either kind. No accounts, no passwords, no screens. One garage
-per pass.
+reservations of either kind. No accounts, no passwords, no screens. A pass
+answers only at the garages it names.
 
 ## Install
 

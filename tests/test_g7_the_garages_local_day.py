@@ -48,7 +48,7 @@ EVERY_DAY_SIX_TO_EIGHT = Window(days=frozenset(range(1, 8)), start_minute=360, e
 
 
 def entry(garage, terms, when, identity="CAR-1"):
-    pass_ = a_pass(garage_id=garage.id, terms=terms)
+    pass_ = a_pass(garage_ids={garage.id}, terms=terms)
     return access(
         garage=garage, passes=[pass_], registrations=[registered(pass_)], visits=[],
         vehicle_identity=identity, lane="L1", direction=Direction.ENTRY, at=when,
@@ -105,7 +105,8 @@ def test_a_stay_across_the_fall_back_hour_is_measured_in_elapsed_time():
     assert elapsed(start, end) == timedelta(hours=4)
 
     garage = transient_garage(SHIFTING_ZONE)
-    pass_ = a_pass(garage_id=garage.id, terms=simple_terms(max_stay=timedelta(hours=3, minutes=30)))
+    pass_ = a_pass(garage_ids={garage.id},
+                   terms=simple_terms(max_stay=timedelta(hours=3, minutes=30)))
     answer = access(
         garage=garage, passes=[pass_], registrations=[registered(pass_)],
         visits=[Visit(pass_id=pass_.id, vehicle_identity="CAR-1", entry_lane="L1",

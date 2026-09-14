@@ -639,7 +639,15 @@ WRONG_TYPED_DOCUMENTS = [
     ("visit", "entered_at", 5, f.REFUSAL_FIELD_WRONG_TYPE),
     ("pass", "terms.allowed_lanes", "L1", f.REFUSAL_FIELD_WRONG_TYPE),  # W3: not {'1','L'}
     ("pass", "terms.allowed_lanes", 5, f.REFUSAL_FIELD_WRONG_TYPE),
-    ("pass", "terms.allowed_lanes", [1], f.REFUSAL_FIELD_WRONG_TYPE),
+    ("pass", "terms.allowed_lanes", [1], f.REFUSAL_FIELD_BLANK),  # an entry is an object
+    ("pass", "terms.allowed_lanes", ["L1"], f.REFUSAL_FIELD_BLANK),  # the pre-G3a flat shape
+    ("pass", "terms.allowed_lanes.0.lanes", "L1", f.REFUSAL_FIELD_WRONG_TYPE),  # W3, per garage
+    ("pass", "terms.allowed_lanes.0.garage_id", 5, f.REFUSAL_FIELD_WRONG_TYPE),
+    ("pass", "garage_ids", "garage-downtown", f.REFUSAL_FIELD_WRONG_TYPE),  # W3: not a set of chars
+    ("pass", "garage_ids", 5, f.REFUSAL_FIELD_WRONG_TYPE),
+    ("pass", "garage_ids", [5], f.REFUSAL_FIELD_WRONG_TYPE),
+    ("pass", "garage_ids", [], f.REFUSAL_PASS_NAMES_NO_GARAGE),
+    ("pass", "garage_ids", ..., f.REFUSAL_FIELD_BLANK),
     ("pass", "terms.directions", 5, f.REFUSAL_FIELD_WRONG_TYPE),
     ("pass", "terms.directions", "entry", f.REFUSAL_FIELD_WRONG_TYPE),  # W3
     ("pass", "terms.windows", 5, f.REFUSAL_FIELD_WRONG_TYPE),
@@ -713,19 +721,29 @@ def test_a_string_is_never_reinterpreted_as_a_collection(tmp_path, capsys):
     """W3 as the control reads: ``allowed_lanes: "L1"`` used to LOAD as the lane
     set ``{'1', 'L'}`` -- no traceback, no refusal, and a legitimate entry on L1
     was then WRONG_LANE. Now the load itself is refused; the same document with
-    the list ``["L1"]`` is the control and covers."""
+    the list is the control and covers. Since G3a the lanes are stated per
+    garage -- ``[{"garage_id": ..., "lanes": ["L1"]}]`` -- and the string is
+    refused at the outer list and at the inner one alike."""
     from garage_pass.documents import load_pass
+    from garage_pass.terms import GarageLanes
 
     with pytest.raises(f.Refused) as refused:
         load_pass(pass_document(terms={**pass_document()["terms"], "allowed_lanes": "L1"}))
     assert refused.value.code == f.REFUSAL_FIELD_WRONG_TYPE
     assert refused.value.field == "pass.terms.allowed_lanes"
-    assert "a list of text" in refused.value.detail and "'L1'" in refused.value.detail
-    loaded = load_pass(pass_document(terms={**pass_document()["terms"], "allowed_lanes": ["L1"]}))
-    assert loaded.terms is not None and loaded.terms.allowed_lanes == frozenset({"L1"})
+    assert "a list of" in refused.value.detail and "'L1'" in refused.value.detail
+    stated = [{"garage_id": "garage-downtown", "lanes": ["L1"]}]
+    with pytest.raises(f.Refused) as refused:
+        load_pass(pass_document(terms={**pass_document()["terms"], "allowed_lanes": [
+            {"garage_id": "garage-downtown", "lanes": "L1"}]}))
+    assert refused.value.code == f.REFUSAL_FIELD_WRONG_TYPE
+    assert refused.value.field == "pass.terms.allowed_lanes[0].lanes"
+    loaded = load_pass(pass_document(terms={**pass_document()["terms"], "allowed_lanes": stated}))
+    assert loaded.terms is not None and loaded.terms.allowed_lanes == (
+        GarageLanes("garage-downtown", frozenset({"L1"})),)
     garage, pass_ = _documents(tmp_path)
     pass_.write_text(json.dumps(pass_document(terms={**pass_document()["terms"],
-                                                     "allowed_lanes": ["L1"]})))
+                                                     "allowed_lanes": stated})))
     registrations = _write(tmp_path, "r.json", [REGISTRATION])
     status, printed = run(["access", "--garage", str(garage), "--pass", str(pass_),
                            "--registrations", str(registrations), *MOVE], capsys)
@@ -1310,7 +1328,7 @@ def test_the_unreadable_pass_detail_says_carries_on_both_doors_never_stored(tmp_
     from garage_pass.passes import Pass, Registration, State
     from garage_pass.terms import Direction
 
-    stored = Pass(id="pass-1", garage_id="garage-downtown", label="Employee", holder=None,
+    stored = Pass(id="pass-1", garage_ids={"garage-downtown"}, label="Employee", holder=None,
                   terms=None, state=State.ACTIVE,
                   unreadable=Unreadable(f.REFUSAL_LANES_STATED_BUT_EMPTY, "allowed_lanes",
                                         "allowed_lanes is an empty set."))

@@ -24,12 +24,6 @@
   "why": "README: describes the STORED case and asserts no 'only'; the document case is the paragraph at README:148"
  },
  {
-  "sentence": "A second registration is refused by name — naming the pass that holds the identity, its state and the day that registration ends — before the database's own constraint has to; every open registration counts as a holder whatever its pass's state, so the constraint is the backstop for a raw insert and for two writers genuinely racing, and nothing else reaches it through the module.",
-  "file": "README.md",
-  "verdict": "TRUE",
-  "why": "README: G1's by-name refusal and the backstop, measured"
- },
- {
   "sentence": "Exit status 0 covered, 1 not covered, 2 refused to answer or the machine's configuration (one sentence on stderr: no DSN, a database that does not connect or is not migrated, a role without its grants, no timezone database), 3 the request was refused — and a refusal is always the JSON `{\"refused\", \"field\", \"detail\"}`, never a traceback: a mistyped timezone, a document that is not JSON, an instant without an offset, a day that does not parse, and — at an entry — a field of the wrong type are each refused naming the field and the value; at an exit a document the module cannot read is answered not-covered naming the field, because an exit is never refused.",
   "file": "README.md",
   "verdict": "TRUE",
@@ -354,12 +348,6 @@
   "why": "G2: the CHECKs in 0001; the three cross-table rules backed by the load path (G17)"
  },
  {
-  "sentence": "Against the store (``GARAGE_PASS_DSN``, ``--tenant``): ``create-garage``, ``set-garage-timezone`` (the repair for a garage stored with a timezone the system does not carry -- the one write that takes an unreadable garage, and it records who, when and why like a state change does), ``set-garage-enrols-at`` (where a garage enrols -- entry or exit -- recorded the same way), ``create-pass``, ``register-vehicle``, ``end-registration``, ``set-state``, ``record-entry``, ``record-exit``, ``access-in-store``, and the enrolment: ``issue-enrolment`` (mint the QR for a pass: the token is printed ONCE, here, and by nothing else), ``redeem-enrolment`` (the lane presents the QR with the vehicle identity it measured: the bind, and the access answer for that same movement -- always, refused or not; exit status follows the answer's outcome, and the enrolment half is in the JSON), ``issue-holder-link`` and ``redeem-holder-link`` (the holder writes their own name and phone onto the pass and gets their QR).",
-  "file": "src/garage_pass/cli.py",
-  "verdict": "NOT-PUBLISHED",
-  "why": "cli module docstring (G2 rewrite of the judged verb list): the timezone repair is still the one write an unreadable garage takes -- set_garage_enrols_at, issue_*, redeem_holder_link go through load_readable_garage and redeem_enrolment carries the refusal (G17's derived write list exercises every one); the token is printed by the issue calls and by nothing else (G23)"
- },
- {
   "sentence": "**THE EMAIL IS THE IDENTITY, THE QR IS THE CREDENTIAL, AND THERE IS NO ACCOUNT AND NO PASSWORD.** An enrolment is a token minted once, returned once by the call that issued it, and known to this module afterwards only by its SHA-256.",
   "file": "src/garage_pass/enrolment.py",
   "verdict": "NOT-PUBLISHED",
@@ -424,5 +412,83 @@
   "file": "docs/CONTRACT.md",
   "verdict": "TRUE",
   "why": "CONTRACT's authored copy of the G20 registry claim: Garage.__post_init__, set_garage_enrols_at, and the CHECK exercised by a raw INSERT and UPDATE as the owner"
+ },
+ {
+  "sentence": "Against the store (``GARAGE_PASS_DSN``, ``--tenant``): ``create-garage``, ``set-garage-timezone`` (the repair for a garage stored with a timezone the system does not carry -- the one write that takes an unreadable garage, and it records who, when and why like a state change does), ``set-garage-enrols-at`` (where a garage enrols -- entry or exit -- recorded the same way), ``create-pass`` (the document's ``garage_ids`` names one or more garages, and ``--garage`` is one of them; the pass answers at every garage it names and at no other), ``register-vehicle`` (one row per garage the pass names, together or not at all), ``end-registration``, ``set-state``, ``record-entry``, ``record-exit``, ``access-in-store``, and the enrolment: ``issue-enrolment`` (mint the QR for a pass: the token is printed ONCE, here, and by nothing else), ``redeem-enrolment`` (the lane presents the QR with the vehicle identity it measured: the bind, and the access answer for that same movement -- always, refused or not; exit status follows the answer's outcome, and the enrolment half is in the JSON), ``issue-holder-link`` and ``redeem-holder-link`` (the holder writes their own name and phone onto the pass and gets their QR).",
+  "file": "src/garage_pass/cli.py",
+  "verdict": "NOT-PUBLISHED",
+  "why": "cli module docstring (G2 rewrite of the judged verb list): the timezone repair is still the one write an unreadable garage takes -- set_garage_enrols_at, issue_*, redeem_holder_link go through load_readable_garage and redeem_enrolment carries the refusal (G17's derived write list exercises every one); the token is printed by the issue calls and by nothing else (G23) (G3a rewrite: create-pass's garage_ids and register-vehicle's per-garage rows, measured by G25 and the G25 walk)"
+ },
+ {
+  "sentence": "The detail names the garage and the pass's own set; the database's key backs it for a raw write.",
+  "file": "src/garage_pass/findings.py",
+  "verdict": "TRUE",
+  "why": "REFUSAL_LANES_AT_A_GARAGE_THE_PASS_DOES_NOT_NAME: pass_lanes_garage_of_pass (0004), measured by G25's raw-insert test (ForeignKeyViolation)"
+ },
+ {
+  "sentence": "A pass answers only at the garages it names: at any other it is not this garage's business, and the vehicle is answered as any unknown one.",
+  "file": "src/garage_pass/findings.py",
+  "verdict": "TRUE",
+  "why": "NO_PASS: measured by G25 (a {A, B} pass at C answers NO_PASS, pass_id None, both directions)"
+ },
+ {
+  "sentence": "**A PASS NAMES A SET OF GARAGES, AND ANSWERS ONLY AT THOSE.** His decision, 2026-09-14: one account, many garages under it, and a monthly may be good at more than one of them.",
+  "file": "src/garage_pass/passes.py",
+  "verdict": "NOT-PUBLISHED",
+  "why": "passes.py module docstring; G25"
+ },
+ {
+  "sentence": "``garage_ids`` is a non-empty set stated by the owner -- never a nullable \"everywhere\" flag: a pass valid at every garage of the account says so by listing them, because an implicit empty set is exactly the shape this module keeps refusing at creation (``lanes_stated`` proved what the alternative costs).",
+  "file": "src/garage_pass/passes.py",
+  "verdict": "NOT-PUBLISHED",
+  "why": "passes.py module docstring; G25 -- require_garage_ids refuses the empty set by name, measured"
+ },
+ {
+  "sentence": "Refused naming the garage; the database's own key backs the first rule for a raw write.",
+  "file": "src/garage_pass/passes.py",
+  "verdict": "NOT-PUBLISHED",
+  "why": "refuse_lanes_off_the_pass docstring; the FK pass_lanes_garage_of_pass (0004) and G25's raw-insert test"
+ },
+ {
+  "sentence": "A pass whose lanes are stated names no garage without an entry (refused where the pass is built), so the empty set is reached only by asking about a garage the pass does not name.",
+  "file": "src/garage_pass/terms.py",
+  "verdict": "NOT-PUBLISHED",
+  "why": "Terms.lanes_at docstring; refuse_lanes_off_the_pass in passes.py is the refusal it cites, measured by G25 (lanes_at(C) == frozenset() on a pass naming A and B)"
+ },
+ {
+  "sentence": "A PASS ANSWERS ONLY AT THE GARAGES IT NAMES.",
+  "file": "tests/_guarantees.py",
+  "verdict": "TRUE",
+  "why": "G25: the line, measured by G25's tests at every door"
+ },
+ {
+  "sentence": "A pass carries a non-empty SET of garages, stated by listing them -- never an 'everywhere' flag, never inferred, an empty set or a blank member refused at creation naming the field -- and every door reads that set by MEMBERSHIP: the access call selects a pass for a garage only if the pass names it (at both places a pass is read for its garage, the duplicated-id grouping and the by-id map), the store refuses to store a pass at a garage it does not name and to load it at one, and a QR or a holder link of the pass redeems at any garage of the set and at no other, refused by name elsewhere.",
+  "file": "tests/_guarantees.py",
+  "verdict": "TRUE",
+  "why": "G25: every door measured -- access (both comprehensions), create/load, the QR and the holder link at C -- and each membership site has a control"
+ },
+ {
+  "sentence": "The terms are ONE set on the pass, evaluated at whichever garage the car is at -- a 20-visit allowance is 20 on the pass, not 20 per garage -- except the lanes, which are stated PER GARAGE because lane A1 at two garages is two barriers: where lanes are stated every garage the pass names has its own set, refused at creation otherwise naming the garage, and the lane check at each garage reads its own set and no other.",
+  "file": "tests/_guarantees.py",
+  "verdict": "TRUE",
+  "why": "G25: the 2-visit allowance across A/B/C, lanes per garage at creation and at the access lane check, measured"
+ },
+ {
+  "sentence": "**A PASS ANSWERS ONLY AT THE GARAGES IT NAMES.** A pass carries a set of garages (``Pass.garage_ids``); which passes this call SELECTS is decided by membership -- ``garage.id in p.garage_ids`` -- at both places a pass is read for its garage (the duplicated-id grouping and ``by_id``), and a pass that does not name this garage is not this garage's business: a registration on it is skipped, never dangling.",
+  "file": "src/garage_pass/access.py",
+  "verdict": "NOT-PUBLISHED",
+  "why": "access.py module docstring; G25 -- membership at both comprehensions, measured by G25's tests and its two membership controls"
+ },
+ {
+  "sentence": "A second registration is refused by name — naming the garage, the pass that holds the identity, its state and the day that registration ends — before the database's own constraint has to; every open registration counts as a holder whatever its pass's state, so the constraint is the backstop for a raw insert and for two writers genuinely racing, and nothing else reaches it through the module.",
+  "file": "README.md",
+  "verdict": "TRUE",
+  "why": "README: G1's by-name refusal and the backstop, measured; G3a: the garage named too, measured by G25's collision-at-the-second-garage test"
+ },
+ {
+  "sentence": "A pass answers only at the garages it names.",
+  "file": "README.md",
+  "verdict": "TRUE",
+  "why": "README: G25's line, measured at every door by G25's tests"
  }
 ]

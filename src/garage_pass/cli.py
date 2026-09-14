@@ -21,7 +21,10 @@ Against the store (``GARAGE_PASS_DSN``, ``--tenant``): ``create-garage``,
 system does not carry -- the one write that takes an unreadable garage, and it
 records who, when and why like a state change does), ``set-garage-enrols-at``
 (where a garage enrols -- entry or exit -- recorded the same way),
-``create-pass``, ``register-vehicle``, ``end-registration``, ``set-state``,
+``create-pass`` (the document's ``garage_ids`` names one or more garages, and
+``--garage`` is one of them; the pass answers at every garage it names and at
+no other), ``register-vehicle`` (one row per garage the pass names, together or
+not at all), ``end-registration``, ``set-state``,
 ``record-entry``, ``record-exit``, ``access-in-store``, and the enrolment:
 ``issue-enrolment`` (mint the QR for a pass: the token is printed ONCE, here,
 and by nothing else), ``redeem-enrolment`` (the lane presents the QR with the
@@ -167,8 +170,10 @@ def _parser() -> argparse.ArgumentParser:
         s.add_argument("--garage", required=True, help="the garage's external id")
         return s
 
-    s = store("create-pass", "store a pass; refuse a contradiction")
-    s.add_argument("--pass", dest="pass_", required=True)
+    s = store("create-pass", "store a pass at one of the garages its document names "
+              "(garage_ids: one or more); refuse a contradiction")
+    s.add_argument("--pass", dest="pass_", required=True, help="the pass document; its "
+                   "garage_ids list every garage the pass answers at, and --garage is one of them")
     s.add_argument("--by", required=True, help="who created it, for the state history")
     s.add_argument("--at", required=True, help="when, as an ISO instant with an offset")
     s = store("register-vehicle", "bind a vehicle identity to a pass")

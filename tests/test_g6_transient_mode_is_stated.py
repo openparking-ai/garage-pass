@@ -16,6 +16,7 @@ from fixtures import (
     a_pass,
     no_transient_garage,
     registered,
+    terms_at,
     transient_garage,
     unstated_garage,
 )
@@ -38,7 +39,8 @@ def entry(garage, pass_, identity="CAR-1"):
 @pytest.mark.parametrize("state", list(State), ids=[s.value for s in State])
 def test_an_entry_at_an_unstated_garage_is_refused_an_answer(name, state):
     garage = unstated_garage()
-    pass_ = a_pass(garage_id=garage.id, terms=TERMS_CONFIGURATIONS[name], state=state)
+    pass_ = a_pass(garage_ids={garage.id}, terms=terms_at(garage.id, TERMS_CONFIGURATIONS[name]),
+                   state=state)
     answer = entry(garage, pass_)
     assert answer.outcome is Outcome.REFUSED_TO_ANSWER
     assert answer.missing == f.MISSING_TRANSIENT_MODE
@@ -48,7 +50,7 @@ def test_an_entry_at_an_unstated_garage_is_refused_an_answer(name, state):
 @pytest.mark.guarantee("G6")
 def test_a_vehicle_with_no_pass_at_an_unstated_garage_is_refused_an_answer_too():
     """The case the default would decide: nobody's car at the entry."""
-    answer = entry(unstated_garage(), a_pass(garage_id="garage-unstated"), identity="NOBODY")
+    answer = entry(unstated_garage(), a_pass(garage_ids={"garage-unstated"}), identity="NOBODY")
     assert answer.outcome is Outcome.REFUSED_TO_ANSWER
     assert answer.missing == f.MISSING_TRANSIENT_MODE
 
@@ -63,7 +65,7 @@ def test_a_vehicle_with_no_pass_at_an_unstated_garage_is_refused_an_answer_too()
 def test_a_stated_garage_says_what_not_covered_means(garage, means):
     """The two stated values give two different meanings -- so the refusal on
     the unstated one is refusing to pick between things that differ."""
-    answer = entry(garage, a_pass(garage_id=garage.id), identity="NOBODY")
+    answer = entry(garage, a_pass(garage_ids={garage.id}), identity="NOBODY")
     assert answer.outcome is Outcome.NOT_COVERED and answer.reason == f.NO_PASS
     assert answer.means == means
 

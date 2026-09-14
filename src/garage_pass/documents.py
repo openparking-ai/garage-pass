@@ -269,7 +269,7 @@ def load(cls: type, document: Any, what: str) -> Any:
 #: its refusal the way a stored row does: without them there is no object to
 #: hold the marker, and the exit is answered on the bare marker instead.
 CARRIER_FIELDS: dict[type, tuple[str, ...]] = {
-    Pass: ("id", "garage_id", "label", "state"),
+    Pass: ("id", "garage_ids", "label", "state"),
     Garage: ("id", "timezone", "transient_available"),
 }
 

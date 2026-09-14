@@ -1,0 +1,1029 @@
+"""G25 -- A PASS ANSWERS ONLY AT THE GARAGES IT NAMES, and G1's multi-garage
+path: one enrolment, one registration row per garage of the pass, all or none.
+
+His decision, 2026-09-14: one account, many garages under it, and a monthly
+may be good at more than one of that account's garages. The pass carries a
+non-empty SET of garages; registrations stay keyed per garage and the
+one-car-one-pass EXCLUDE keeps its exact meaning; lanes are stated per garage;
+the terms are one set evaluated at whichever garage the car is at; the
+external id is unique per tenant.
+
+**EVERY SITE THAT READS THE SET HAS A CONTROL.** The two comprehensions in
+``access.py``, the store's create and load, the two credential comparisons --
+a planted removal of the membership test at any one of them reddens a test
+here, and the fan-out's two halves are each measured WITH THE OTHER REMOVED:
+the EXCLUDE with the module's named refusal monkeypatched away, the named
+refusal with the fan-out's atomicity monkeypatched away. A control run with
+both in place would prove nothing about either.
+"""
+
+from __future__ import annotations
+
+from datetime import date
+
+import pytest
+
+from fixtures import (
+    HOLDER,
+    NOON_MONDAY,
+    SHIFTING_ZONE,
+    a_pass,
+    at,
+    lanes_at,
+    registered,
+    simple_terms,
+)
+from garage_pass import findings as f
+from garage_pass.access import Outcome, access
+from garage_pass.garage import Garage
+from garage_pass.passes import Pass, State
+from garage_pass.terms import Direction, GarageLanes, Terms
+
+A = Garage(id="garage-a", timezone=SHIFTING_ZONE, transient_available=True, enrols_at="entry")
+B = Garage(id="garage-b", timezone=SHIFTING_ZONE, transient_available=True, enrols_at="entry")
+C = Garage(id="garage-c", timezone=SHIFTING_ZONE, transient_available=True, enrols_at="entry")
+ELSEWHERE = Garage(id="garage-elsewhere", timezone=SHIFTING_ZONE, transient_available=True,
+                   enrols_at="entry")
+THREE = (A, B, C)
+
+
+def spanning(*garages: Garage, id: str = "pass-span", **overrides) -> Pass:
+    return a_pass(id=id, garage_ids={g.id for g in garages}, **overrides)
+
+
+# ---------------------------------------------------------------------------
+# The engine: the set is stated, and the answer reads it.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.guarantee("G25")
+@pytest.mark.parametrize("value, code", [
+    (frozenset(), f.REFUSAL_PASS_NAMES_NO_GARAGE),
+    ([], f.REFUSAL_PASS_NAMES_NO_GARAGE),
+    (frozenset({"", "g1"}), f.REFUSAL_FIELD_BLANK),
+    (frozenset({" ", "g1"}), f.REFUSAL_FIELD_BLANK),
+    ("garage-a", f.REFUSAL_PASS_NAMES_NO_GARAGE),  # a string is not a set of its characters
+    (None, f.REFUSAL_PASS_NAMES_NO_GARAGE),
+], ids=["empty frozenset", "empty list", "blank member", "space member", "string", "none"])
+def test_a_pass_names_at_least_one_garage_and_no_blank_one_refused_naming_the_field(value, code):
+    with pytest.raises(f.Refused) as refused:
+        Pass(id="p", garage_ids=value, label="x", holder=HOLDER, terms=simple_terms())
+    assert refused.value.code == code and refused.value.field == "pass.garage_ids", refused.value
+
+
+@pytest.mark.guarantee("G25")
+def test_a_single_garage_pass_constructs_and_answers_exactly_as_before():
+    """The control for the round: nothing about a one-garage pass moved."""
+    pass_ = a_pass(garage_ids={A.id})
+    assert pass_.garage_ids == frozenset({A.id})
+    answer = access(garage=A, passes=[pass_], registrations=[registered(pass_)], visits=[],
+                    vehicle_identity="CAR-1", lane="L1", direction=Direction.ENTRY, at=NOON_MONDAY)
+    assert answer.outcome is Outcome.COVERED and answer.pass_id == pass_.id
+
+
+@pytest.mark.guarantee("G25")
+@pytest.mark.parametrize("direction", list(Direction), ids=lambda d: d.value)
+def test_a_pass_covers_at_every_garage_it_names_and_at_no_other(direction):
+    """{A, B}: covered at A and at B; at C the pass is not this garage's
+    business -- NO_PASS, the same answer an unknown identity gets -- at both
+    ends. The registration is one row in the pure API: a car on a pass."""
+    pass_ = spanning(A, B)
+    for garage in (A, B):
+        answer = access(garage=garage, passes=[pass_], registrations=[registered(pass_)],
+                        visits=[], vehicle_identity="CAR-1", lane="L1", direction=direction,
+                        at=NOON_MONDAY)
+        assert answer.outcome is Outcome.COVERED and answer.pass_id == pass_.id, (garage, answer)
+    answer = access(garage=C, passes=[pass_], registrations=[registered(pass_)], visits=[],
+                    vehicle_identity="CAR-1", lane="L1", direction=direction, at=NOON_MONDAY)
+    assert answer.outcome is Outcome.NOT_COVERED and answer.reason == f.NO_PASS, answer
+    assert answer.pass_id is None, "a pass that does not name this garage is not named either"
+    assert "garage-c" in answer.detail
+
+
+@pytest.mark.guarantee("G25")
+def test_the_terms_are_one_set_evaluated_at_whichever_garage_the_car_is_at():
+    """C5, his rule stated back: a 2-visit allowance is 2 ON THE PASS. One
+    recorded entry at A and one at B use it up at C."""
+    from fixtures import TWO_HOURS_BEFORE
+    from garage_pass.passes import Visit
+    from garage_pass.terms import AllowancePeriod, VisitAllowance
+
+    pass_ = spanning(A, B, C, terms=simple_terms(
+        visit_allowance=VisitAllowance(count=2, per=AllowancePeriod.LIFE)))
+    visits = [Visit(pass_id=pass_.id, vehicle_identity="CAR-1", entry_lane="L1",
+                    entered_at=TWO_HOURS_BEFORE),
+              Visit(pass_id=pass_.id, vehicle_identity="CAR-1", entry_lane="L1",
+                    entered_at=at(date(2026, 5, 31), 9))]
+    answer = access(garage=C, passes=[pass_], registrations=[registered(pass_)], visits=visits,
+                    vehicle_identity="CAR-1", lane="L1", direction=Direction.ENTRY, at=NOON_MONDAY)
+    assert answer.outcome is Outcome.NOT_COVERED and answer.reason == f.OUT_OF_VISITS, answer
+    assert "2 of 2 visit(s) used" in answer.detail
+
+
+@pytest.mark.guarantee("G25")
+@pytest.mark.parametrize("direction", list(Direction), ids=lambda d: d.value)
+def test_a_two_garage_pass_handed_in_twice_is_duplicated_data_answered_the_same_way(direction):
+    """H3's control: the duplicate-copy rule, re-measured on a pass that holds
+    TWO garages -- the entry refuses naming the id, the exit evaluates every
+    copy and is covered if any covers -- and then with the copies DISAGREEING
+    on their garage sets, a shape that could not exist before this round:
+    duplicated data, answered the same way, never resolved by order."""
+    agreeing = [spanning(A, B), spanning(A, B)]
+    disagreeing = [spanning(A, B), spanning(A)]
+    for copies in (agreeing, disagreeing):
+        answers = []
+        for ordered in (copies, list(reversed(copies))):
+            answers.append(access(
+                garage=A, passes=ordered, registrations=[registered(copies[0])], visits=[],
+                vehicle_identity="CAR-1", lane="L1", direction=direction, at=NOON_MONDAY))
+        first, second = answers
+        assert first == second, "the answer depended on the order the copies arrived in"
+        if direction is Direction.ENTRY:
+            assert first.outcome is Outcome.REFUSED_TO_ANSWER
+            assert first.missing == f.DUPLICATED_PASS_ID and "'pass-span'" in first.detail
+        else:
+            assert first.outcome is Outcome.COVERED and "handed in 2 times" in first.detail
+
+
+@pytest.mark.guarantee("G25")
+def test_a_pass_handed_in_twice_that_names_another_garage_is_not_this_garages_business():
+    """The duplicated comprehension reads membership too: two copies of a pass
+    that names only B, handed in at A, are neither duplicated here nor
+    selected here -- NO_PASS, not a refusal about an id A never reads."""
+    copies = [spanning(B), spanning(B)]
+    answer = access(garage=A, passes=copies, registrations=[registered(copies[0])], visits=[],
+                    vehicle_identity="CAR-1", lane="L1", direction=Direction.ENTRY, at=NOON_MONDAY)
+    assert answer.outcome is Outcome.NOT_COVERED and answer.reason == f.NO_PASS, answer
+
+
+# ---------------------------------------------------------------------------
+# Lanes are stated PER GARAGE.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.guarantee("G25")
+def test_lanes_stated_at_one_garage_of_two_is_refused_at_creation_naming_the_garage():
+    with pytest.raises(f.Refused) as refused:
+        spanning(A, B, terms=simple_terms(allowed_lanes=lanes_at(A.id, "L1")))
+    assert refused.value.code == f.REFUSAL_LANES_NOT_STATED_FOR_GARAGE
+    assert refused.value.field == "allowed_lanes" and "'garage-b'" in refused.value.detail
+
+
+@pytest.mark.guarantee("G25")
+def test_lanes_stated_at_a_garage_the_pass_does_not_name_is_refused_naming_the_garage():
+    with pytest.raises(f.Refused) as refused:
+        spanning(A, terms=simple_terms(allowed_lanes=lanes_at(A.id, "L1") + lanes_at(B.id, "L1")))
+    assert refused.value.code == f.REFUSAL_LANES_AT_A_GARAGE_THE_PASS_DOES_NOT_NAME
+    assert "'garage-b'" in refused.value.detail
+
+
+@pytest.mark.guarantee("G25")
+@pytest.mark.guarantee("G2")
+@pytest.mark.parametrize("lanes, code, field", [
+    ((), f.REFUSAL_LANES_STATED_BUT_EMPTY, "allowed_lanes"),
+    ((GarageLanes("garage-a", frozenset()),), f.REFUSAL_LANES_STATED_BUT_EMPTY,
+     "allowed_lanes[0].lanes"),
+    ((GarageLanes("garage-a", frozenset({"L1", " "})),), f.REFUSAL_LANE_NAME_BLANK,
+     "allowed_lanes[0].lanes"),
+    ((GarageLanes(" ", frozenset({"L1"})),), f.REFUSAL_FIELD_BLANK, "allowed_lanes[0].garage_id"),
+    ((GarageLanes("garage-a", frozenset({"L1"})), GarageLanes("garage-a", frozenset({"L2"}))),
+     f.REFUSAL_LANES_GARAGE_REPEATED, "allowed_lanes[1].garage_id"),
+], ids=["empty", "empty at a garage", "blank lane", "blank garage", "garage twice"])
+def test_a_contradiction_in_the_per_garage_lane_set_is_refused_at_creation(lanes, code, field):
+    with pytest.raises(f.Refused) as refused:
+        Terms(directions=frozenset(Direction), allowed_lanes=lanes)
+    assert (refused.value.code, refused.value.field) == (code, field), refused.value
+
+
+@pytest.mark.guarantee("G25")
+@pytest.mark.parametrize("direction", list(Direction), ids=lambda d: d.value)
+def test_the_lane_check_at_each_garage_reads_its_own_set(direction):
+    """A lane valid at A, presented at B, is outside the pass's terms AT B --
+    WRONG_LANE naming B's set, not A's -- while the same lane at A covers."""
+    pass_ = spanning(A, B, terms=simple_terms(
+        allowed_lanes=lanes_at(A.id, "L1", "L2") + lanes_at(B.id, "L3")))
+    at_a = access(garage=A, passes=[pass_], registrations=[registered(pass_)], visits=[],
+                  vehicle_identity="CAR-1", lane="L1", direction=direction, at=NOON_MONDAY)
+    assert at_a.outcome is Outcome.COVERED, at_a
+    at_b = access(garage=B, passes=[pass_], registrations=[registered(pass_)], visits=[],
+                  vehicle_identity="CAR-1", lane="L1", direction=direction, at=NOON_MONDAY)
+    assert at_b.outcome is Outcome.NOT_COVERED and at_b.reason == f.WRONG_LANE, at_b
+    assert "['L3']" in at_b.detail and "'garage-b'" in at_b.detail and "L2" not in at_b.detail
+    assert pass_.terms.lanes_at(B.id) == frozenset({"L3"})
+    assert pass_.terms.lanes_at(C.id) == frozenset(), "stated, and none here: no lane at all"
+    assert simple_terms().lanes_at(C.id) is None, "not stated: every lane, everywhere"
+
+
+@pytest.mark.guarantee("G25")
+def test_a_pass_document_carries_its_garages_and_its_lanes_per_garage():
+    """The document door: ``garage_ids`` is a list, ``allowed_lanes`` a list of
+    {garage_id, lanes} objects, both derived from the dataclasses; a string
+    where the list belongs is refused naming the field, never read as a set of
+    its characters (W3)."""
+    from fixtures import pass_document
+    from garage_pass.documents import load_pass
+
+    document = pass_document(
+        garage_ids=["garage-a", "garage-b"],
+        terms={**pass_document()["terms"],
+               "allowed_lanes": [{"garage_id": "garage-a", "lanes": ["L1"]},
+                                 {"garage_id": "garage-b", "lanes": ["L2", "L3"]}]},
+    )
+    loaded = load_pass(document)
+    assert loaded.garage_ids == frozenset({"garage-a", "garage-b"})
+    assert loaded.terms.lanes_at("garage-b") == frozenset({"L2", "L3"})
+    with pytest.raises(f.Refused) as refused:
+        load_pass(pass_document(garage_ids="garage-a"))
+    assert refused.value.code == f.REFUSAL_FIELD_WRONG_TYPE
+    assert refused.value.field == "pass.garage_ids"
+    with pytest.raises(f.Refused) as refused:
+        load_pass(pass_document(garage_ids=["garage-a"], terms={
+            **pass_document()["terms"], "allowed_lanes": ["L1"]}))
+    assert refused.value.field == "pass.terms.allowed_lanes[0]", refused.value
+
+
+# ---------------------------------------------------------------------------
+# The store: create, load, enrol, redeem -- the set through every door.
+# ---------------------------------------------------------------------------
+
+from enrolment_harness import issue, issue_link, redeem, redeem_link  # noqa: E402
+from garage_pass.store.access import access_from_store  # noqa: E402
+from garage_pass.store.postgres import tenant  # noqa: E402
+from garage_pass.store.records import (  # noqa: E402
+    ONE_PASS_PER_GARAGE,
+    create_pass,
+    end_registration,
+    load_pass,
+    register_vehicle,
+    store_garage,
+)
+from store_harness import CREATED_AT, query, store_test  # noqa: E402
+
+
+def seed_garages(app, tenant_id, *garages: Garage) -> dict[str, object]:
+    uuids = {}
+    with tenant(app, tenant_id) as cursor:
+        for garage in garages:
+            uuids[garage.id] = store_garage(cursor, tenant_id, garage)
+    app.commit()
+    return uuids
+
+
+def create(app, tenant_id, garage: Garage, pass_: Pass) -> None:
+    with tenant(app, tenant_id) as cursor:
+        create_pass(cursor, tenant_id, garage.id, pass_, by="owner", at=CREATED_AT)
+    app.commit()
+
+
+def registration_rows(app, tenant_id) -> list[tuple]:
+    """(pass, garage, identity, effective, end) -- every row, by garage."""
+    return query(
+        app, tenant_id,
+        "SELECT p.external_id, g.external_id, r.vehicle_identity, r.effective_day, r.end_day "
+        "FROM vehicle_registrations r JOIN passes p ON p.id = r.pass_id "
+        "JOIN garages g ON g.id = r.garage_id ORDER BY 1, 2, 4",
+    )
+
+
+def pass_garage_rows(app, tenant_id) -> list[tuple]:
+    return query(
+        app, tenant_id,
+        "SELECT p.external_id, g.external_id FROM pass_garages pg "
+        "JOIN passes p ON p.id = pg.pass_id JOIN garages g ON g.id = pg.garage_id ORDER BY 1, 2",
+    )
+
+
+@pytest.mark.guarantee("G25")
+@store_test
+def test_a_pass_stored_at_a_naming_a_and_b_loads_at_both_and_not_at_c(app, tenant_id):
+    """H4's control. Same terms, same set, at either garage; at C, refused by
+    name -- the refusal every caller already has -- naming the set."""
+    uuids = seed_garages(app, tenant_id, A, B, C)
+    pass_ = spanning(A, B, terms=simple_terms(
+        allowed_lanes=lanes_at(A.id, "L1") + lanes_at(B.id, "L2", "L3")))
+    create(app, tenant_id, A, pass_)
+    assert pass_garage_rows(app, tenant_id) == [("pass-span", "garage-a"),
+                                                ("pass-span", "garage-b")]
+    loaded = {}
+    with tenant(app, tenant_id) as cursor:
+        for garage in (A, B):
+            _uuid, loaded[garage.id] = load_pass(cursor, tenant_id, uuids[garage.id], pass_.id)
+        with pytest.raises(f.Refused) as refused:
+            load_pass(cursor, tenant_id, uuids[C.id], pass_.id)
+    app.rollback()
+    assert loaded[A.id] == loaded[B.id] == pass_
+    assert loaded[A.id].terms.lanes_at(B.id) == frozenset({"L2", "L3"})
+    assert refused.value.code == f.REFUSAL_PASS_NOT_FOUND
+    assert "'garage-c'" in refused.value.detail and "garage-a" in refused.value.detail
+
+
+@pytest.mark.guarantee("G25")
+@store_test
+def test_a_pass_naming_a_asked_to_be_stored_at_b_is_refused_as_today(app, tenant_id):
+    seed_garages(app, tenant_id, A, B)
+    with pytest.raises(f.Refused) as refused:
+        create(app, tenant_id, B, spanning(A))
+    app.rollback()
+    assert refused.value.code == f.REFUSAL_GARAGE_MISMATCH
+    assert "'garage-b'" in refused.value.detail and "['garage-a']" in refused.value.detail
+    assert pass_garage_rows(app, tenant_id) == [], "a refusal writes nothing"
+
+
+@pytest.mark.guarantee("G25")
+@store_test
+def test_a_pass_naming_a_garage_the_tenant_does_not_have_is_refused_and_nothing_is_written(
+    app, tenant_id
+):
+    seed_garages(app, tenant_id, A)
+    with pytest.raises(f.Refused) as refused:
+        create(app, tenant_id, A, spanning(A, ELSEWHERE))
+    app.rollback()
+    assert refused.value.code == f.REFUSAL_GARAGE_NOT_FOUND
+    assert "'garage-elsewhere'" in refused.value.detail
+    assert query(app, tenant_id, "SELECT count(*) FROM passes") == [(0,)]
+
+
+@pytest.mark.guarantee("G25")
+@store_test
+def test_a_passs_external_id_is_unique_per_tenant_not_per_garage(app, tenant_id):
+    """C4: EMP-1 at A and EMP-1 at B is one id twice, refused by name; the
+    UNIQUE (tenant_id, external_id) is the backstop for a raw write."""
+    import psycopg
+
+    seed_garages(app, tenant_id, A, B)
+    create(app, tenant_id, A, spanning(A, id="EMP-1"))
+    with pytest.raises(f.Refused) as refused:
+        create(app, tenant_id, B, spanning(B, id="EMP-1"))
+    app.rollback()
+    assert refused.value.code == f.REFUSAL_PASS_ALREADY_EXISTS
+    with pytest.raises(psycopg.errors.UniqueViolation) as violation:
+        with tenant(app, tenant_id) as cursor:
+            cursor.execute(
+                "INSERT INTO passes (tenant_id, external_id, label, holder_email, entry_allowed, "
+                "exit_allowed, lanes_stated, state) VALUES (%s, 'EMP-1', 'l', 'h@example.com', "
+                "true, true, false, 'draft')", (tenant_id,),
+            )
+    app.rollback()
+    assert violation.value.diag.constraint_name == "passes_tenant_id_external_id_key"
+
+
+@pytest.mark.guarantee("G25")
+@pytest.mark.guarantee("G1")
+@store_test
+def test_one_redemption_on_a_three_garage_pass_writes_exactly_three_rows_and_covers_at_all(
+    app, tenant_id
+):
+    """H5 control (a): exactly three registration rows, one per garage, and
+    the car is covered at all three on the next access call."""
+    seed_garages(app, tenant_id, *THREE)
+    pass_ = spanning(*THREE)
+    create(app, tenant_id, A, pass_)
+    token = issue(app, tenant_id, A, pass_)["token"]
+    out = redeem(app, tenant_id, A, token)
+    assert out.redeemed and out.refusal is None, out.refusal
+    assert out.registration["garages"] == ["garage-a", "garage-b", "garage-c"]
+    day = date(2026, 6, 1)
+    assert registration_rows(app, tenant_id) == [
+        ("pass-span", "garage-a", "CAR-1", day, None),
+        ("pass-span", "garage-b", "CAR-1", day, None),
+        ("pass-span", "garage-c", "CAR-1", day, None),
+    ]
+    for garage in THREE:
+        for direction in Direction:
+            answer = access_from_store(app, tenant_id, garage.id, "CAR-1", "L1", direction,
+                                       at(day, 13))
+            assert answer.outcome is Outcome.COVERED, (garage, answer)
+            assert answer.pass_id == pass_.id
+    elsewhere = access_from_store(app, tenant_id, A.id, "CAR-1", "L1", Direction.ENTRY, at(day, 13))
+    assert elsewhere.outcome is Outcome.COVERED
+    # and revocation ends every one of them, at every garage, in one write
+    from garage_pass.store.records import change_state
+
+    with tenant(app, tenant_id) as cursor:
+        out = change_state(cursor, tenant_id, B.id, pass_.id, State.REVOKED, by="owner",
+                           at=at(day, 14), reason="left")
+    app.commit()
+    assert out["registrations_ended"] == 3
+    assert {r[4] for r in registration_rows(app, tenant_id)} == {day}
+
+
+@pytest.mark.guarantee("G25")
+@pytest.mark.guarantee("G1")
+@store_test
+def test_a_collision_at_the_second_garage_refuses_the_whole_redemption_and_writes_nothing(
+    app, tenant_id
+):
+    """H5 control (b): the car is already on another pass at B, the SECOND
+    garage of {A, B, C}. The whole redemption is refused by name, naming B and
+    the survivor, and ZERO rows are written anywhere -- the end state is
+    asserted, not the exception."""
+    seed_garages(app, tenant_id, *THREE)
+    holder = spanning(B, id="pass-holder", state=State.ACTIVE)
+    create(app, tenant_id, B, holder)
+    with tenant(app, tenant_id) as cursor:
+        register_vehicle(cursor, tenant_id, B.id, holder.id, "CAR-1", date(2026, 1, 1))
+    app.commit()
+    pass_ = spanning(*THREE, state=State.DRAFT)
+    create(app, tenant_id, A, pass_)
+    token = issue(app, tenant_id, A, pass_)["token"]
+    before = registration_rows(app, tenant_id)
+    out = redeem(app, tenant_id, A, token)
+    assert not out.redeemed and out.refusal.code == f.REFUSAL_VEHICLE_ON_ANOTHER_PASS, out.refusal
+    assert "'garage-b'" in out.refusal.detail and "'pass-holder'" in out.refusal.detail
+    assert registration_rows(app, tenant_id) == before == [
+        ("pass-holder", "garage-b", "CAR-1", date(2026, 1, 1), None)
+    ], "zero rows written anywhere: partial enrolment is not an outcome"
+    assert query(app, tenant_id, "SELECT state FROM enrolments") == [("issued",)]
+    assert query(app, tenant_id, "SELECT state FROM passes WHERE external_id = 'pass-span'") == [
+        ("draft",)
+    ]
+    # the same through register-vehicle directly, from the owner's side, at C
+    with pytest.raises(f.Refused) as refused:
+        with tenant(app, tenant_id) as cursor:
+            register_vehicle(cursor, tenant_id, C.id, pass_.id, "CAR-1", date(2026, 6, 1))
+    app.rollback()
+    assert refused.value.code == f.REFUSAL_VEHICLE_ON_ANOTHER_PASS
+    assert "'garage-b'" in refused.value.detail
+    assert registration_rows(app, tenant_id) == before
+
+
+@pytest.mark.guarantee("G25")
+@pytest.mark.guarantee("G1")
+@store_test
+def test_the_exclude_holds_the_fan_out_with_the_named_refusal_removed(app, tenant_id, monkeypatch):
+    """H5 control (d), first half: THE BACKSTOP, MEASURED ALONE. The module's
+    collision check is monkeypatched to see no holder, so the fan-out reaches
+    the database: A's row is written, B's meets the EXCLUDE, and the savepoint
+    takes A's row back with it -- REFUSAL_CONSTRAINT by the constraint's name,
+    and the rows after equal the rows before. A control run with the named
+    refusal in place would prove nothing about the EXCLUDE."""
+    from garage_pass.store import records
+
+    seed_garages(app, tenant_id, *THREE)
+    holder = spanning(B, id="pass-holder", state=State.ACTIVE)
+    create(app, tenant_id, B, holder)
+    with tenant(app, tenant_id) as cursor:
+        register_vehicle(cursor, tenant_id, B.id, holder.id, "CAR-1", date(2026, 1, 1))
+    app.commit()
+    pass_ = spanning(*THREE)
+    create(app, tenant_id, A, pass_)
+    token = issue(app, tenant_id, A, pass_)["token"]
+    before = registration_rows(app, tenant_id)
+    monkeypatch.setattr(records, "_holders", lambda *args: [])
+    out = redeem(app, tenant_id, A, token)
+    assert not out.redeemed and out.refusal.code == f.REFUSAL_CONSTRAINT, out.refusal
+    assert ONE_PASS_PER_GARAGE in out.refusal.detail and "'garage-b'" in out.refusal.detail
+    assert registration_rows(app, tenant_id) == before, "never a partial fan-out"
+    assert query(app, tenant_id, "SELECT state FROM enrolments") == [("issued",)]
+
+
+@pytest.mark.guarantee("G25")
+@pytest.mark.guarantee("G1")
+@store_test
+def test_the_named_refusal_holds_with_the_fan_outs_atomicity_removed(app, tenant_id):
+    """H5 control (d), second half: THE PRIMARY, MEASURED ALONE. The savepoint
+    a redemption sits under is turned into a no-op through the cursor, so
+    nothing would take a partial fan-out back -- and the named refusal fires
+    BEFORE the first INSERT, so there is nothing to take back: zero
+    registration INSERTs were issued, and zero rows stand after the commit."""
+    from garage_pass.store.enrolments import redeem_enrolment
+
+    seed_garages(app, tenant_id, *THREE)
+    holder = spanning(B, id="pass-holder", state=State.ACTIVE)
+    create(app, tenant_id, B, holder)
+    with tenant(app, tenant_id) as cursor:
+        register_vehicle(cursor, tenant_id, B.id, holder.id, "CAR-1", date(2026, 1, 1))
+    app.commit()
+    pass_ = spanning(*THREE)
+    create(app, tenant_id, A, pass_)
+    token = issue(app, tenant_id, A, pass_)["token"]
+    before = registration_rows(app, tenant_id)
+    statements: list[str] = []
+
+    class NoSavepoint:
+        """The real cursor, with every SAVEPOINT verb dropped on the floor."""
+
+        def __init__(self, real):
+            self._real = real
+
+        def execute(self, statement, parameters=None):
+            statements.append(statement)
+            if statement.lstrip().upper().startswith(("SAVEPOINT", "ROLLBACK TO", "RELEASE")):
+                return None
+            return self._real.execute(statement, parameters)
+
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+
+    with tenant(app, tenant_id) as cursor:
+        out = redeem_enrolment(NoSavepoint(cursor), tenant_id, A.id, token, "CAR-1", "L1",
+                               Direction.ENTRY, NOON_MONDAY)
+    app.commit()
+    assert not out.redeemed and out.refusal.code == f.REFUSAL_VEHICLE_ON_ANOTHER_PASS, out.refusal
+    assert [s for s in statements if "INSERT INTO vehicle_registrations" in s] == [], (
+        "the named refusal fires before the first row of the fan-out is written"
+    )
+    assert registration_rows(app, tenant_id) == before
+
+
+@pytest.mark.guarantee("G25")
+@pytest.mark.guarantee("G19")
+@store_test
+def test_two_lanes_one_token_on_a_three_garage_pass_exactly_one_redeems_three_rows_or_none(
+    app, owner, tenant_id
+):
+    """H5 control (c): the G2 race, unchanged, on a three-garage pass. The
+    winner writes three rows; the loser is refused ALREADY_USED by name and
+    writes none -- never a partial fan-out. Deterministic interleaving: B
+    blocks on A's lock, observed, never assumed."""
+    from enrolment_harness import enrolment_row, race
+    from garage_pass.store.enrolments import redeem_enrolment
+
+    seed_garages(app, tenant_id, *THREE)
+    pass_ = spanning(*THREE)
+    create(app, tenant_id, A, pass_)
+    token = issue(app, tenant_id, A, pass_)["token"]
+
+    def lane(identity, lane_name):
+        def run(cursor):
+            return redeem_enrolment(cursor, tenant_id, A.id, token, identity, lane_name,
+                                    Direction.ENTRY, NOON_MONDAY)
+        return run
+
+    a, b = race(owner, tenant_id, lane("CAR-A", "L1"), lane("CAR-B", "L2"))
+    assert not isinstance(a, BaseException) and not isinstance(b, BaseException), (a, b)
+    assert a.redeemed and not b.redeemed
+    assert b.refusal.code == f.REFUSAL_CREDENTIAL_ALREADY_USED, b.refusal
+    rows = registration_rows(app, tenant_id)
+    assert [(r[1], r[2]) for r in rows] == [("garage-a", "CAR-A"), ("garage-b", "CAR-A"),
+                                            ("garage-c", "CAR-A")]
+    assert enrolment_row(app, tenant_id)[1] == "CAR-A"
+
+
+@pytest.mark.guarantee("G25")
+@store_test
+def test_a_qr_and_a_holder_link_redeem_at_any_garage_the_pass_names_and_at_no_other(
+    app, tenant_id
+):
+    """H5's cheap half: the two credential comparisons are membership tests.
+    Issued at A, the QR redeems at B; a link issued at B redeems at A; at C
+    both are refused GARAGE_MISMATCH naming the garage, the pass and its set,
+    and nothing is written."""
+    seed_garages(app, tenant_id, *THREE)
+    pass_ = spanning(A, B)
+    create(app, tenant_id, A, pass_)
+    token = issue(app, tenant_id, A, pass_, "qr-1")["token"]
+    refused = redeem(app, tenant_id, C, token)
+    assert not refused.redeemed and refused.refusal.code == f.REFUSAL_GARAGE_MISMATCH
+    assert "'garage-c'" in refused.refusal.detail and "garage-b" in refused.refusal.detail
+    assert registration_rows(app, tenant_id) == []
+    out = redeem(app, tenant_id, B, token)
+    assert out.redeemed, out.refusal
+    assert [r[1] for r in registration_rows(app, tenant_id)] == ["garage-a", "garage-b"]
+    link = issue_link(app, tenant_id, B, pass_)["token"]
+    with pytest.raises(f.Refused) as mismatch:
+        redeem_link(app, tenant_id, C, link)
+    app.rollback()
+    assert mismatch.value.code == f.REFUSAL_GARAGE_MISMATCH
+    assert "'garage-c'" in mismatch.value.detail
+    assert query(app, tenant_id, "SELECT state FROM holder_links") == [("issued",)]
+    redeemed = redeem_link(app, tenant_id, A, link, enrolment_external_id="qr-2")
+    assert redeemed["pass"] == pass_.id and redeemed["enrolment"]["pass"] == pass_.id
+
+
+@pytest.mark.guarantee("G25")
+@pytest.mark.guarantee("G1")
+@store_test
+def test_ending_a_registration_ends_it_at_every_garage_of_the_pass(app, tenant_id):
+    seed_garages(app, tenant_id, *THREE)
+    pass_ = spanning(*THREE)
+    create(app, tenant_id, A, pass_)
+    with tenant(app, tenant_id) as cursor:
+        register_vehicle(cursor, tenant_id, B.id, pass_.id, "CAR-1", date(2026, 1, 1))
+        out = end_registration(cursor, tenant_id, C.id, pass_.id, "CAR-1", date(2026, 6, 1))
+    app.commit()
+    assert out["garages"] == ["garage-a", "garage-b", "garage-c"]
+    assert {r[4] for r in registration_rows(app, tenant_id)} == {date(2026, 6, 1)}
+    for garage in THREE:
+        answer = access_from_store(app, tenant_id, garage.id, "CAR-1", "L1", Direction.ENTRY,
+                                   NOON_MONDAY)
+        assert answer.outcome is Outcome.NOT_COVERED, (garage, answer)
+        assert answer.reason == f.NO_PASS
+
+
+@pytest.mark.guarantee("G25")
+@store_test
+def test_a_raw_registration_at_a_garage_the_pass_does_not_name_is_refused_by_the_database(
+    app, tenant_id
+):
+    """The database says it, not only Python: a registration (and a lane row)
+    naming a garage the pass does not hold is a foreign-key violation."""
+    import psycopg
+
+    uuids = seed_garages(app, tenant_id, A, B)
+    pass_ = spanning(A)
+    create(app, tenant_id, A, pass_)
+    (pass_uuid,) = query(app, tenant_id, "SELECT id FROM passes")[0]
+    for statement in (
+        "INSERT INTO vehicle_registrations (tenant_id, garage_id, pass_id, vehicle_identity, "
+        "effective_day) VALUES (%s, %s, %s, 'CAR-1', '2026-01-01')",
+        "INSERT INTO pass_lanes (tenant_id, pass_id, garage_id, lane) VALUES (%s, %s, %s, 'L1')",
+    ):
+        with pytest.raises(psycopg.errors.ForeignKeyViolation) as violation:
+            with tenant(app, tenant_id) as cursor:
+                if "pass_lanes" in statement:
+                    cursor.execute(statement, (tenant_id, pass_uuid, uuids[B.id]))
+                else:
+                    cursor.execute(statement, (tenant_id, uuids[B.id], pass_uuid))
+        app.rollback()
+        assert violation.value.diag.constraint_name.endswith("_garage_of_pass"), violation.value
+
+
+@pytest.mark.guarantee("G25")
+@store_test
+def test_a_stored_pass_with_lanes_stated_and_none_at_one_of_its_garages_loads_unreadable(
+    app, owner, tenant_id
+):
+    """A raw write leaves lanes stated at A only on a pass naming {A, B}: the
+    load path re-validates and the pass degrades to a STATED answer at B --
+    refused-to-answer at entry, not-covered at exit -- never an exception."""
+    uuids = seed_garages(app, tenant_id, A, B)
+    pass_ = spanning(A, B, terms=simple_terms(
+        allowed_lanes=lanes_at(A.id, "L1") + lanes_at(B.id, "L1")))
+    create(app, tenant_id, A, pass_)
+    with tenant(app, tenant_id) as cursor:
+        register_vehicle(cursor, tenant_id, A.id, pass_.id, "CAR-1", date(2026, 1, 1))
+    app.commit()
+    with owner.cursor() as cursor:
+        cursor.execute("DELETE FROM pass_lanes WHERE tenant_id = %s AND garage_id = %s",
+                       (tenant_id, uuids[B.id]))
+    owner.commit()
+    entry = access_from_store(app, tenant_id, B.id, "CAR-1", "L1", Direction.ENTRY, NOON_MONDAY)
+    assert entry.outcome is Outcome.REFUSED_TO_ANSWER and entry.missing == f.UNREADABLE_TERMS
+    assert f.REFUSAL_LANES_NOT_STATED_FOR_GARAGE in entry.detail and "'garage-b'" in entry.detail
+    exit_ = access_from_store(app, tenant_id, B.id, "CAR-1", "L1", Direction.EXIT, NOON_MONDAY)
+    assert exit_.outcome is Outcome.NOT_COVERED and exit_.reason == f.PASS_UNREADABLE
+
+
+# ---------------------------------------------------------------------------
+# Migration 0004 BACKFILLS -- A1.1. Seeded at 0003, migrated, read back.
+# ---------------------------------------------------------------------------
+
+
+def _apply(cursor, path) -> None:
+    from store_harness import MIGRATIONS
+
+    cursor.execute((MIGRATIONS / path).read_text())
+
+
+def _rebuild_to_0003(owner) -> None:
+    from store_harness import MIGRATIONS
+
+    with owner.cursor() as cursor:
+        cursor.execute("DROP SCHEMA public CASCADE; CREATE SCHEMA public;")
+        cursor.execute("CREATE EXTENSION IF NOT EXISTS pgcrypto;")
+        for path in sorted(MIGRATIONS.glob("*.sql")):
+            if path.name.startswith("0004"):
+                continue
+            cursor.execute(path.read_text())
+
+
+def _try_0004(owner) -> str | None:
+    """Apply 0004; the error's primary message when it refuses, else None."""
+    import psycopg
+
+    from store_harness import MIGRATIONS
+
+    (path,) = [p for p in MIGRATIONS.glob("0004_*.sql")]
+    with owner.cursor() as cursor:
+        try:
+            cursor.execute(path.read_text())
+        except psycopg.Error as failure:
+            cursor.execute("ROLLBACK")
+            return (failure.diag.message_primary or str(failure)).strip()
+    return None
+
+
+@pytest.fixture
+def at_0003(owner):
+    """The schema at 0003 as the OWNER, under the cluster lock (0001 ALTERs
+    the cluster-global role); rebuilt to the full schema afterwards so the
+    module's other tests read the shape that ships."""
+    from store_harness import DSN, cluster_lock, migrate
+
+    with cluster_lock(DSN):
+        _rebuild_to_0003(owner)
+        yield owner
+    migrate(DSN).close()
+
+
+def _seed_at_0003(owner, tenant_id, passes: list[tuple[str, str, list[str]]],
+                  garages: tuple[str, ...] = ("g-a", "g-b")) -> dict[str, object]:
+    """Raw rows in the OLD shape: garages, passes each at ONE garage with
+    lanes (stated) and two windows. Returns the garage uuids."""
+    uuids = {}
+    with owner.cursor() as cursor:
+        for garage in garages:
+            cursor.execute(
+                "INSERT INTO garages (tenant_id, external_id, timezone, transient_available) "
+                "VALUES (%s, %s, 'America/Denver', true) RETURNING id", (tenant_id, garage))
+            uuids[garage] = cursor.fetchone()[0]
+        for external_id, garage, lanes in passes:
+            cursor.execute(
+                "INSERT INTO passes (tenant_id, garage_id, external_id, label, holder_email, "
+                "entry_allowed, exit_allowed, lanes_stated, state) VALUES (%s, %s, %s, 'l', "
+                "'h@example.com', true, true, %s, 'active') RETURNING id",
+                (tenant_id, uuids[garage], external_id, bool(lanes)))
+            (pass_uuid,) = cursor.fetchone()
+            for lane in lanes:
+                cursor.execute("INSERT INTO pass_lanes (tenant_id, pass_id, lane) VALUES "
+                               "(%s, %s, %s)", (tenant_id, pass_uuid, lane))
+            for position, (start, end) in enumerate(((360, 720), (780, 1200))):
+                cursor.execute(
+                    "INSERT INTO pass_windows (tenant_id, pass_id, days, start_minute, "
+                    "end_minute, position) VALUES (%s, %s, '{1,2,3}', %s, %s, %s)",
+                    (tenant_id, pass_uuid, start, end, position))
+    return uuids
+
+
+@pytest.mark.guarantee("G25")
+@store_test
+def test_0004_backfills_every_pass_with_its_one_garage_and_every_lane_with_its_passs_garage(
+    at_0003, tenant_id
+):
+    """A1.1 control (a): seeded at 0003 -- several passes, multi-lane, multi-
+    window, at two garages -- then 0004. Every pass has exactly one
+    pass_garages row naming its OLD garage, and every lane row carries its
+    own pass's garage. Counts against the pre-migration counts, not a literal."""
+    from store_harness import new_tenant
+
+    owner = at_0003
+    tenant_id = new_tenant(owner)
+    _seed_at_0003(owner, tenant_id, [("p-1", "g-a", ["L1", "L2"]), ("p-2", "g-b", ["L1"]),
+                                     ("p-3", "g-a", []), ("p-4", "g-b", ["L3", "L4", "L5"])])
+    with owner.cursor() as cursor:
+        cursor.execute("SELECT external_id, garage_id FROM passes WHERE tenant_id = %s "
+                       "ORDER BY 1", (tenant_id,))
+        old = cursor.fetchall()
+        cursor.execute("SELECT count(*) FROM pass_lanes WHERE tenant_id = %s", (tenant_id,))
+        (lanes_before,) = cursor.fetchone()
+    assert len(old) == 4 and lanes_before == 6, "the premise: rows to backfill"
+    failure = _try_0004(owner)
+    if failure is not None:
+        pytest.fail(f"0004 did not apply over rows seeded at 0003: {failure}")
+    with owner.cursor() as cursor:
+        cursor.execute(
+            "SELECT p.external_id, array_agg(pg.garage_id) FROM passes p "
+            "LEFT JOIN pass_garages pg ON pg.tenant_id = p.tenant_id AND pg.pass_id = p.id "
+            "WHERE p.tenant_id = %s GROUP BY p.external_id ORDER BY 1", (tenant_id,))
+        new = cursor.fetchall()
+        cursor.execute(
+            "SELECT count(*), count(*) FILTER (WHERE l.garage_id = pg.garage_id) "
+            "FROM pass_lanes l JOIN pass_garages pg ON pg.tenant_id = l.tenant_id "
+            "AND pg.pass_id = l.pass_id WHERE l.tenant_id = %s", (tenant_id,))
+        lanes_after, lanes_at_their_passs_garage = cursor.fetchone()
+        cursor.execute("SELECT count(*) FROM information_schema.columns WHERE table_name = "
+                       "'passes' AND column_name = 'garage_id'")
+        (column,) = cursor.fetchone()
+    assert [(ext, garages) for ext, garages in new] == [(ext, [g]) for ext, g in old], (
+        "every pass has exactly ONE pass_garages row, naming the garage it had")
+    assert (lanes_after, lanes_at_their_passs_garage) == (lanes_before, lanes_before)
+    assert column == 0, "passes.garage_id is gone"
+
+
+@pytest.mark.guarantee("G25")
+@store_test
+def test_0004_on_an_empty_cluster_reads_as_the_catalogue_describes(at_0003):
+    """A1.1 control (b): the empty case -- and each reading the other way at
+    0003 in the same run, or the probe measured nothing."""
+    owner = at_0003
+
+    def catalogue():
+        with owner.cursor() as cursor:
+            cursor.execute("SELECT relname, relrowsecurity, relforcerowsecurity FROM pg_class "
+                           "WHERE relname = 'pass_garages'")
+            table = cursor.fetchone()
+            cursor.execute("SELECT table_name, column_name FROM information_schema.columns "
+                           "WHERE (table_name, column_name) IN (('passes', 'garage_id'), "
+                           "('pass_lanes', 'garage_id')) ORDER BY 1")
+            return table, cursor.fetchall()
+    table_at_0003, columns_at_0003 = catalogue()
+    assert table_at_0003 is None and columns_at_0003 == [("passes", "garage_id")]
+    assert _try_0004(owner) is None
+    table, columns = catalogue()
+    assert table == ("pass_garages", True, True), "present, RLS enabled and forced"
+    assert columns == [("pass_lanes", "garage_id")], (
+        "passes.garage_id absent; pass_lanes.garage_id present")
+
+
+@pytest.mark.guarantee("G25")
+@store_test
+def test_0004_refuses_to_drop_a_lane_row_whose_pass_does_not_exist(at_0003):
+    """A1.1 control (c), THE LOUD FAILURE: an orphan lane row (a raw write
+    with the constraint's triggers off -- a shape the product cannot make)
+    makes 0004 FAIL naming the count, never drop the row."""
+    from uuid import uuid4
+
+    from store_harness import new_tenant
+
+    owner = at_0003
+    tenant_id = new_tenant(owner)
+    _seed_at_0003(owner, tenant_id, [("p-1", "g-a", ["L1"])])
+    with owner.cursor() as cursor:
+        cursor.execute("ALTER TABLE pass_lanes DISABLE TRIGGER ALL")
+        cursor.execute("INSERT INTO pass_lanes (tenant_id, pass_id, lane) VALUES (%s, %s, 'L9')",
+                       (tenant_id, uuid4()))
+        cursor.execute("ALTER TABLE pass_lanes ENABLE TRIGGER ALL")
+    failure = _try_0004(owner)
+    assert failure is not None, "0004 applied over an orphan lane row"
+    assert "1 pass_lanes row(s) name a pass that does not exist" in failure, failure
+    with owner.cursor() as cursor:
+        cursor.execute("SELECT count(*) FROM pass_lanes WHERE lane = 'L9'")
+        assert cursor.fetchone() == (1,), "the row was not dropped"
+
+
+@pytest.mark.guarantee("G25")
+@store_test
+def test_0004_refuses_the_unique_tightening_by_name_and_never_picks_a_winner(at_0003):
+    """A1.1 control (d): EMP-1 at g-a and EMP-1 at g-b, one tenant. 0004 FAILS
+    naming the colliding id; both passes stand."""
+    from store_harness import new_tenant
+
+    owner = at_0003
+    tenant_id = new_tenant(owner)
+    _seed_at_0003(owner, tenant_id,
+                  [("EMP-1", "g-a", []), ("EMP-1", "g-b", []), ("EMP-2", "g-a", [])])
+    failure = _try_0004(owner)
+    assert failure is not None, "0004 applied over two passes called EMP-1 in one tenant"
+    assert "EMP-1 (2 passes)" in failure and "EMP-2" not in failure, failure
+    with owner.cursor() as cursor:
+        cursor.execute("SELECT count(*) FROM passes WHERE tenant_id = %s AND external_id = 'EMP-1'",
+                       (tenant_id,))
+        assert cursor.fetchone() == (2,), "nothing was chosen for anyone"
+
+
+# ---------------------------------------------------------------------------
+# The command line: the full product walk over a three-garage pass, every
+# new refusal rendered through main() -- 0 tracebacks, every exit status
+# asserted, and the rendered collector sees every detail (G18 holds).
+# ---------------------------------------------------------------------------
+
+
+def _run(main, capsys, argv: list[str]) -> tuple[int, dict]:
+    import json
+
+    status = main(argv)
+    out = capsys.readouterr()
+    assert "Traceback" not in out.err and "Traceback" not in out.out, out
+    return status, json.loads(out.out) if out.out.strip() else {}
+
+
+@pytest.mark.guarantee("G25")
+@pytest.mark.guarantee("G18")
+@store_test
+def test_the_product_walk_over_a_three_garage_pass_through_the_command_line(
+    app, owner, tenant_id, tmp_path, capsys, monkeypatch
+):
+    """H7: create three garages, create the pass at one of them naming all
+    three, enrol, redeem, access at each garage, swap the car, revoke --
+    and every refusal this round adds, rendered with its documented exit
+    code. Every status is asserted; a traceback anywhere is the failure."""
+    import json
+
+    import sweep_route_sentences as sweep
+
+    from _rendered_sentences import rendered_so_far
+    from enrolment_harness import app_dsn_into_the_environment
+    from fixtures import pass_document
+    from garage_pass.cli import main
+
+    app_dsn_into_the_environment(monkeypatch)
+    started = len(rendered_so_far())
+    T = ["--tenant", str(tenant_id)]
+    AT = "2026-06-01T12:00:00-06:00"
+
+    def write(name: str, document) -> str:
+        path = tmp_path / name
+        path.write_text(json.dumps(document))
+        return str(path)
+
+    for garage in THREE:
+        status, out = _run(main, capsys, ["create-garage", *T, "--garage", write(
+            f"{garage.id}.json", {"id": garage.id, "timezone": garage.timezone,
+                                  "transient_available": True, "enrols_at": "entry"})])
+        assert status == 0 and out["stored"] == garage.id, out
+    lanes = [{"garage_id": g.id, "lanes": ["L1", "L2"]} for g in THREE]
+    document = pass_document(id="pass-span", garage_ids=[g.id for g in THREE],
+                             terms={**pass_document()["terms"], "allowed_lanes": lanes})
+    refusals: dict[str, tuple[int, dict]] = {}
+    # the new refusals, each through main(): exit 3, the JSON refusal, the field
+    refusals["no garage"] = _run(main, capsys, ["check-terms", "--pass", write(
+        "no-garage.json", {**document, "garage_ids": []})])
+    refusals["lanes at one garage only"] = _run(main, capsys, ["check-terms", "--pass", write(
+        "one-garage-lanes.json", {**document, "terms": {**document["terms"],
+                                                         "allowed_lanes": lanes[:1]}})])
+    refusals["lanes at a garage not named"] = _run(main, capsys, ["check-terms", "--pass", write(
+        "elsewhere-lanes.json", {**document, "terms": {**document["terms"], "allowed_lanes": [
+            *lanes, {"garage_id": ELSEWHERE.id, "lanes": ["L1"]}]}})])
+    refusals["a garage's lanes twice"] = _run(main, capsys, ["check-terms", "--pass", write(
+        "twice.json", {**document, "terms": {**document["terms"], "allowed_lanes": [
+            *lanes, {"garage_id": A.id, "lanes": ["L3"]}]}})])
+    refusals["stored at a garage it does not name"] = _run(main, capsys, [
+        "create-pass", *T, "--garage", ELSEWHERE.id, "--pass", write("span.json", document),
+        "--by", "owner", "--at", AT])
+    expected = {
+        "no garage": (f.REFUSAL_PASS_NAMES_NO_GARAGE, "pass.garage_ids"),
+        "lanes at one garage only": (f.REFUSAL_LANES_NOT_STATED_FOR_GARAGE, "allowed_lanes"),
+        "lanes at a garage not named": (f.REFUSAL_LANES_AT_A_GARAGE_THE_PASS_DOES_NOT_NAME,
+                                        "allowed_lanes"),
+        "a garage's lanes twice": (f.REFUSAL_LANES_GARAGE_REPEATED, "allowed_lanes[3].garage_id"),
+        "stored at a garage it does not name": (f.REFUSAL_GARAGE_NOT_FOUND, "garage"),
+    }
+    for name, (status, out) in refusals.items():
+        assert status == 3 and (out["refused"], out["field"]) == expected[name], (name, out)
+    # ELSEWHERE is not even a garage of this tenant: GARAGE_NOT_FOUND came first, by
+    # the published order. Store it now, and the membership refusal is the one heard.
+    _run(main, capsys, ["create-garage", *T, "--garage", write("elsewhere.json", {
+        "id": ELSEWHERE.id, "timezone": ELSEWHERE.timezone, "transient_available": True,
+        "enrols_at": "entry"})])
+    status, out = _run(main, capsys, ["create-pass", *T, "--garage", ELSEWHERE.id, "--pass",
+                                      write("span.json", document), "--by", "owner", "--at", AT])
+    assert status == 3 and out["refused"] == f.REFUSAL_GARAGE_MISMATCH, out
+    assert "'garage-elsewhere'" in out["detail"] and "garage-c" in out["detail"]
+    # the walk: create at A, enrol, redeem at A, covered at A, B and C
+    status, out = _run(main, capsys, ["create-pass", *T, "--garage", A.id, "--pass",
+                                      write("span.json", document), "--by", "owner", "--at", AT])
+    assert status == 0 and out["stored"] == "pass-span", out
+    status, out = _run(main, capsys, ["issue-enrolment", *T, "--garage", B.id, "--pass-id",
+                                      "pass-span", "--enrolment-id", "qr-1", "--starts-on",
+                                      "2026-06-01", "--days-valid", "3", "--by", "owner",
+                                      "--at", AT])
+    assert status == 0 and out["pass"] == "pass-span", out
+    token = out["token"]
+    status, out = _run(main, capsys, ["redeem-enrolment", *T, "--garage", ELSEWHERE.id, "--token",
+                                      token, "--vehicle", "CAR-1", "--lane", "L1", "--direction",
+                                      "entry", "--at", AT])
+    assert status == 1 and out["enrolment"]["refused"] == f.REFUSAL_GARAGE_MISMATCH, out
+    assert out["answer"]["reason"] == f.NO_PASS, "the movement is answered beside the refusal"
+    status, out = _run(main, capsys, ["redeem-enrolment", *T, "--garage", A.id, "--token", token,
+                                      "--vehicle", "CAR-1", "--lane", "L1", "--direction", "entry",
+                                      "--at", AT])
+    assert status == 0 and out["enrolment"]["redeemed"] is True, out
+    assert out["enrolment"]["registration"]["garages"] == [A.id, B.id, C.id]
+    for garage in THREE:
+        for direction, lane, want in (("entry", "L1", 0), ("exit", "L2", 0), ("entry", "L9", 1)):
+            status, out = _run(main, capsys, ["access-in-store", *T, "--garage", garage.id,
+                                              "--vehicle", "CAR-1", "--lane", lane,
+                                              "--direction", direction, "--at", AT])
+            assert status == want, (garage.id, direction, lane, out)
+            if want:
+                assert out["reason"] == f.WRONG_LANE and f"'{garage.id}'" in out["detail"]
+    status, out = _run(main, capsys, ["access-in-store", *T, "--garage", ELSEWHERE.id,
+                                      "--vehicle", "CAR-1", "--lane", "L1", "--direction", "entry",
+                                      "--at", AT])
+    assert status == 1 and out["reason"] == f.NO_PASS, out
+    # a second car, registered by the owner at C: held at every garage, and a
+    # register-vehicle at a garage the pass does not name is refused by name
+    status, out = _run(main, capsys, ["register-vehicle", *T, "--garage", C.id, "--pass-id",
+                                      "pass-span", "--vehicle", "CAR-2", "--effective-day",
+                                      "2026-06-01"])
+    assert status == 0 and out["garages"] == [A.id, B.id, C.id], out
+    status, out = _run(main, capsys, ["register-vehicle", *T, "--garage", ELSEWHERE.id,
+                                      "--pass-id", "pass-span", "--vehicle", "CAR-3",
+                                      "--effective-day", "2026-06-01"])
+    assert status == 3 and out["refused"] == f.REFUSAL_PASS_NOT_FOUND, out
+    assert "garage-elsewhere" in out["detail"] and "garage-a" in out["detail"]
+    # the swap: end CAR-1 everywhere, a new QR, the new car
+    status, out = _run(main, capsys, ["end-registration", *T, "--garage", B.id, "--pass-id",
+                                      "pass-span", "--vehicle", "CAR-1", "--end-day",
+                                      "2026-06-02"])
+    assert status == 0 and out["garages"] == [A.id, B.id, C.id], out
+    status, out = _run(main, capsys, ["issue-enrolment", *T, "--garage", C.id, "--pass-id",
+                                      "pass-span", "--enrolment-id", "qr-2", "--starts-on",
+                                      "2026-06-02", "--days-valid", "3", "--by", "owner",
+                                      "--at", AT])
+    assert status == 0
+    status, out = _run(main, capsys, ["redeem-enrolment", *T, "--garage", C.id, "--token",
+                                      out["token"], "--vehicle", "CAR-1-NEW", "--lane", "L2",
+                                      "--direction", "entry", "--at", "2026-06-02T09:00:00-06:00"])
+    assert status == 0 and out["enrolment"]["redeemed"] is True, out
+    status, out = _run(main, capsys, ["access-in-store", *T, "--garage", A.id, "--vehicle",
+                                      "CAR-1", "--lane", "L1", "--direction", "entry", "--at",
+                                      "2026-06-02T09:00:00-06:00"])
+    assert status == 1 and out["reason"] == f.NO_PASS and "ended on 2026-06-02" in out["detail"]
+    # revoke: every registration at every garage ends, every credential dies
+    status, out = _run(main, capsys, ["set-state", *T, "--garage", B.id, "--pass-id",
+                                      "pass-span", "--state", "revoked", "--by", "owner",
+                                      "--reason", "left", "--at", "2026-06-03T09:00:00-06:00"])
+    assert status == 0 and out["registrations_ended"] == 6, out
+    for garage in THREE:
+        status, out = _run(main, capsys, ["access-in-store", *T, "--garage", garage.id,
+                                          "--vehicle", "CAR-2", "--lane", "L1", "--direction",
+                                          "exit", "--at", "2026-06-04T09:00:00-06:00"])
+        assert status == 1 and out["reason"] == f.REVOKED, (garage.id, out)
+    # the rendered collector saw every refusal detail this walk printed
+    rendered = rendered_so_far()[started:]
+    for name, (_status, out) in refusals.items():
+        assert any(out["detail"] == d for d, _stack in rendered), f"{name} was not collected"
+    status, result = sweep.judge_rendered(list(rendered))
+    assert result["unjudged"] == [] and result["false"] == [], sweep.report_rendered(result)

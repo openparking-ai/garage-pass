@@ -39,12 +39,13 @@ IDENTITIES = ("CAR-1", "car-1", "CAR-2", "silver Toyota, dented rear bumper")
 
 def outcome(redemption) -> tuple:
     """Everything a redemption returned, minus what may legitimately differ
-    (the enrolment's own id): the outcome the description must not move."""
+    (the enrolment's own id, and the pass's -- one pass id per garage since a
+    pass's id is unique per tenant): the outcome the description must not move."""
     refusal = redemption.refusal
     return (
         redemption.redeemed,
         (refusal.code, refusal.field) if refusal else None,
-        replace(redemption.answer, detail=""),
+        replace(redemption.answer, detail="", pass_id=None),
         redemption.registration and redemption.registration["vehicle_identity"],
         redemption.pass_state_change and redemption.pass_state_change["to"],
     )
@@ -56,7 +57,8 @@ SITUATIONS = ("fresh", "identity on another pass", "already used")
 def situated(app, tenant_id, garage, situation: str, identity: str) -> None:
     """The same situation at every garage, before the QR is presented."""
     if situation == "identity on another pass":
-        holder = a_pass(id="pass-holding", garage_id=garage.id, state=State.ACTIVE)
+        # one id per garage: a pass's id is unique per tenant since G3a
+        holder = a_pass(id=f"pass-holding-{garage.id}", garage_ids={garage.id}, state=State.ACTIVE)
         with tenant(app, tenant_id) as cursor:
             create_pass(cursor, tenant_id, garage.id, holder, by="seed", at=NOON_MONDAY)
             register_vehicle(cursor, tenant_id, garage.id, holder.id, identity, date(2026, 1, 1))
@@ -76,7 +78,7 @@ def test_enrolments_differing_only_in_description_redeem_identically(
     outcomes = []
     for i, description in enumerate(DESCRIPTIONS):
         here = replace(garage, id=f"{garage.id}-{i}")
-        pass_ = seeded(app, tenant_id, here)
+        pass_ = seeded(app, tenant_id, here, id=f"pass-{i}")
         situated(app, tenant_id, here, situation, identity)
         token = issue(app, tenant_id, here, pass_, f"qr-{i}", vehicle_description=description)[
             "token"

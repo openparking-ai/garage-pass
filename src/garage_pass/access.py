@@ -66,6 +66,16 @@ cannot be built) and refused by name at an entry. A pass handed in twice under
 one id is inconsistent data like the dangling registration: never resolved by
 order, every copy evaluated, the duplication named.
 
+**A PASS ANSWERS ONLY AT THE GARAGES IT NAMES.** A pass carries a set of
+garages (``Pass.garage_ids``); which passes this call SELECTS is decided by
+membership -- ``garage.id in p.garage_ids`` -- at both places a pass is read
+for its garage (the duplicated-id grouping and ``by_id``), and a pass that
+does not name this garage is not this garage's business: a registration on it
+is skipped, never dangling. The terms are one set, evaluated here at whichever
+garage the car is at; only the lanes are read per garage
+(``Terms.lanes_at``). Membership changes WHICH passes are selected, never WHEN
+anything is checked.
+
 **THE ORDER OF THE CHECKS IS PART OF THE CONTRACT.** An unreadable garage
 answers first (without a clock nothing else can be read). Then the blank
 identity and lane. Then, at entry, the transient mode. Then which pass. Per
@@ -299,9 +309,9 @@ def access(
     duplicated = {
         pid: sorted(ps, key=_copy_order)
         for pid, ps in copies.items()
-        if len(ps) > 1 and any(p.garage_id == garage.id for p in ps)
+        if len(ps) > 1 and any(garage.id in p.garage_ids for p in ps)
     }
-    by_id = {p.id: p for p in passes if p.garage_id == garage.id and p.id not in duplicated}
+    by_id = {p.id: p for p in passes if garage.id in p.garage_ids and p.id not in duplicated}
     here = []
     # A registration naming a pass that was NOT handed in is INCONSISTENT DATA
     # -- the registrations and the passes disagree -- and it is answered, not
@@ -321,7 +331,7 @@ def access(
             continue
         if registration.pass_id not in by_id:
             if any(p.id == registration.pass_id for p in passes):
-                continue  # a pass at another garage; not this garage's business
+                continue  # a pass that does not name this garage; not this garage's business
             if registration.covers(today):
                 dangling.append(registration)
             continue
@@ -433,10 +443,11 @@ def access(
                 f"not {direction.value!r}.",
                 pass_,
             )
-        if terms.allowed_lanes is not None and lane_name not in terms.allowed_lanes:
+        lanes_here = terms.lanes_at(garage.id)
+        if lanes_here is not None and lane_name not in lanes_here:
             return not_covered(
                 WRONG_LANE,
-                f"pass {pass_.id!r} allows lanes {sorted(terms.allowed_lanes)}, "
+                f"pass {pass_.id!r} allows lanes {sorted(lanes_here)} at garage {garage.id!r}, "
                 f"not {lane_name!r}.",
                 pass_,
             )

@@ -60,10 +60,20 @@ lane does now. A refused redemption at an exit still answers, and the exit is
 never refused (G4): a redemption refusal is a refusal to BIND, never a refusal
 to LEAVE.
 
+**A CREDENTIAL CARRIES NO GARAGE OF ITS OWN; IT DERIVES THE SET FROM ITS
+PASS.** A pass names a set of garages, and a QR or a holder link of it may be
+redeemed at any garage of that set and at no other: the comparison at both
+doors is MEMBERSHIP -- this garage is one of the pass's garages -- refused by
+name otherwise (``REFUSAL_GARAGE_MISMATCH``), naming the garage asked for, the
+pass and its set. A redemption then writes ONE REGISTRATION ROW PER GARAGE OF
+THE PASS, through ``records.register_vehicle``, inside the same transaction,
+after the locks, never before them: all or none, and a car held by another
+pass at any garage of the set refuses the whole redemption by name.
+
 **THE ORDER OF THE REFUSALS IS PART OF THE CONTRACT**, and every one writes
 nothing: the garage (unreadable; then where it enrols, ``transient_available``
-before ``enrols_at``; then the wrong end); the credential (unknown; at another
-garage; then, under the locks, already used; cancelled; not yet started;
+before ``enrols_at``; then the wrong end); the credential (unknown; of a pass
+that does not name this garage; then, under the locks, already used; cancelled; not yet started;
 expired -- derived in the garage's local day); the pass (not registrable:
 suspended, revoked or expired, naming the state; unreadable, naming the
 field); the lane outside the pass's stated lane set, naming the lane and the
@@ -84,7 +94,7 @@ defect. The suite holds both sides (G19).
 
 **THE HOLDER LINK WRITES ``holder_name`` AND ``holder_phone`` ON THE PASS AND
 NOTHING ELSE** -- not the email, not the label, not the terms, not the state,
-not the garage. A credential that arrives by email must not be able to rewrite
+not the garages. A credential that arrives by email must not be able to rewrite
 the terms of the pass it opens; a test compares every other column of the row
 before and after. Then it issues an enrolment for that pass, with the link as
 the issuer, and is spent. **The owner-only path stands**: an owner issues an
@@ -330,21 +340,42 @@ def issue_holder_link(
                    None)
 
 
-_COLUMNS = ("c.id, c.pass_id, p.garage_id, p.external_id, c.external_id, c.starts_on, "
+#: The credential row with its pass's GARAGE SET beside it -- the uuids and the
+#: external ids, aggregated in one order -- read through the pass, never stored
+#: on the credential (0003: a copy would be a second place for one fact to drift).
+_COLUMNS = ("c.id, c.pass_id, "
+            "(SELECT array_agg(pg.garage_id ORDER BY pg.garage_id) FROM pass_garages pg "
+            " WHERE pg.tenant_id = p.tenant_id AND pg.pass_id = p.id), "
+            "(SELECT array_agg(g.external_id ORDER BY g.external_id) FROM pass_garages pg "
+            " JOIN garages g ON g.tenant_id = pg.tenant_id AND g.id = pg.garage_id "
+            " WHERE pg.tenant_id = p.tenant_id AND pg.pass_id = p.id), "
+            "p.external_id, c.external_id, c.starts_on, "
             "c.days_valid, c.state, c.issued_by, c.issued_at, c.redeemed_at, c.cancelled_at, "
             "c.cancelled_reason")
 
 
-def _credential_from_row(kind: str, row: tuple) -> tuple[UUID, UUID, UUID, Credential]:
-    (uuid, pass_uuid, garage_uuid, pass_ext, ext, starts_on, days_valid, state, issued_by,
-     issued_at, redeemed_at, cancelled_at, cancelled_reason, *rest) = row
+@dataclass(frozen=True)
+class PassGarages:
+    """The garages a credential's pass names, as the token lookup read them."""
+
+    uuids: frozenset[UUID]
+    external_ids: tuple[str, ...]
+
+
+def _credential_from_row(kind: str, row: tuple) -> tuple[UUID, UUID, PassGarages, Credential]:
+    (uuid, pass_uuid, garage_uuids, garage_exts, pass_ext, ext, starts_on, days_valid, state,
+     issued_by, issued_at, redeemed_at, cancelled_at, cancelled_reason, *rest) = row
     credential = Credential(
         kind=kind, id=ext, pass_id=pass_ext, starts_on=starts_on, days_valid=days_valid,
         state=CredentialState(state), issued_by=issued_by, issued_at=issued_at,
         vehicle_description=rest[0] if rest else None, redeemed_at=redeemed_at,
         cancelled_at=cancelled_at, cancelled_reason=cancelled_reason,
     )
-    return as_uuid(uuid), as_uuid(pass_uuid), as_uuid(garage_uuid), credential
+    garages = PassGarages(
+        uuids=frozenset(as_uuid(u) for u in (garage_uuids or ())),
+        external_ids=tuple(garage_exts or ()),
+    )
+    return as_uuid(uuid), as_uuid(pass_uuid), garages, credential
 
 
 def _select(kind: str, where: str) -> str:
@@ -358,7 +389,7 @@ def _select(kind: str, where: str) -> str:
 
 def _by_token(
     cursor: Any, kind: str, tenant_uuid: UUID, presented: str
-) -> tuple[UUID, UUID, UUID, Credential]:
+) -> tuple[UUID, UUID, PassGarages, Credential]:
     """The credential whose digest matches the token presented, or a refusal
     that names neither the token nor whether any credential exists."""
     cursor.execute(_select(kind, "c.token_sha256 = %s"), (tenant_uuid, digest(token_of(presented))))
@@ -373,7 +404,7 @@ def _by_token(
 
 def _lock_credential(
     cursor: Any, kind: str, tenant_uuid: UUID, uuid: UUID
-) -> tuple[UUID, UUID, UUID, Credential]:
+) -> tuple[UUID, UUID, PassGarages, Credential]:
     """THE PRIMARY, second half of ``LOCK_ORDER``: the credential row locked
     (``FOR UPDATE OF c``: the pass row is already held) and RE-READ under
     that lock. What the caller read before the lock was only the pass to
@@ -494,20 +525,21 @@ def redeem_enrolment(
                 f"{direction.value}.",
             )
         # read UNLOCKED, only to learn which pass this credential belongs to
-        uuid, pass_uuid, pass_garage_uuid, glimpse = _by_token(
+        uuid, pass_uuid, pass_garages, glimpse = _by_token(
             cursor, ENROLMENT, tenant_uuid, presented,
         )
         enrolment_id = glimpse.id
-        if pass_garage_uuid != garage_uuid:
+        # MEMBERSHIP: this garage is one of the QR's pass's garages
+        if garage_uuid not in pass_garages.uuids:  # the QR's pass
             raise Refused(
                 REFUSAL_GARAGE_MISMATCH, "garage",
-                f"enrolment {glimpse.id!r} belongs to pass {glimpse.pass_id!r}, which is "
-                f"not at garage {garage_external_id!r}.",
+                f"enrolment {glimpse.id!r} belongs to pass {glimpse.pass_id!r}, which names "
+                f"garages {list(pass_garages.external_ids)}, not {garage_external_id!r}.",
             )
         # LOCK_ORDER: the pass row first, then the credential row -- then every
         # check below is made on rows re-read UNDER the locks, never on the glimpse
         lock_pass_row(cursor, tenant_uuid, pass_uuid)
-        uuid, pass_uuid, _same_garage, enrolment = _lock_credential(
+        uuid, pass_uuid, _same_garages, enrolment = _lock_credential(
             cursor, ENROLMENT, tenant_uuid, uuid,
         )
         tz = zone(garage.timezone)
@@ -517,11 +549,12 @@ def redeem_enrolment(
         _refuse_unless_registrable(pass_, enrolment.pass_id, today, "a redemption")
         assert pass_.terms is not None
         lane_name = require_text(lane, "lane")
-        if pass_.terms.allowed_lanes is not None and lane_name not in pass_.terms.allowed_lanes:
+        lanes_here = pass_.terms.lanes_at(garage_external_id)
+        if lanes_here is not None and lane_name not in lanes_here:
             raise Refused(
                 REFUSAL_LANE_OUTSIDE_THE_PASS_TERMS, "lane",
-                f"pass {enrolment.pass_id!r} allows lanes {sorted(pass_.terms.allowed_lanes)}, "
-                f"not {lane_name!r}.",
+                f"pass {enrolment.pass_id!r} allows lanes {sorted(lanes_here)} at garage "
+                f"{garage_external_id!r}, not {lane_name!r}.",
             )
         # the direction AFTER the lane, deliberately: the lane check was measured
         # first before this refusal existed, and a movement that is both keeps
@@ -537,7 +570,8 @@ def redeem_enrolment(
             )
         identity = require_text(vehicle_identity, "vehicle_identity")
         # 1. the registration -- one car, one pass, refused by name before the
-        #    EXCLUDE has to; effective on the garage's local day of this instant
+        #    EXCLUDE has to; effective on the garage's local day of this instant;
+        #    ONE ROW PER GARAGE THE PASS NAMES, all or none (the fan-out)
         registration = register_vehicle(
             cursor, tenant_uuid, garage_external_id, enrolment.pass_id, identity, today,
         )
@@ -602,18 +636,19 @@ def redeem_holder_link(
     holder_phone = require_text(phone, "holder.phone")
     garage_uuid, garage = load_readable_garage(cursor, tenant_uuid, garage_external_id)
     # read UNLOCKED, only to learn which pass this link belongs to
-    uuid, pass_uuid, pass_garage_uuid, glimpse = _by_token(
+    uuid, pass_uuid, pass_garages, glimpse = _by_token(
         cursor, HOLDER_LINK, tenant_uuid, presented,
     )
-    if pass_garage_uuid != garage_uuid:
+    # MEMBERSHIP: this garage is one of the link's pass's garages
+    if garage_uuid not in pass_garages.uuids:  # the link's pass
         raise Refused(
             REFUSAL_GARAGE_MISMATCH, "garage",
-            f"holder link {glimpse.id!r} belongs to pass {glimpse.pass_id!r}, which is not at "
-            f"garage {garage_external_id!r}.",
+            f"holder link {glimpse.id!r} belongs to pass {glimpse.pass_id!r}, which names "
+            f"garages {list(pass_garages.external_ids)}, not {garage_external_id!r}.",
         )
     # LOCK_ORDER: the pass row first, then the link row; then re-read under them
     lock_pass_row(cursor, tenant_uuid, pass_uuid)
-    uuid, pass_uuid, _same_garage, link = _lock_credential(cursor, HOLDER_LINK, tenant_uuid, uuid)
+    uuid, pass_uuid, _same_garages, link = _lock_credential(cursor, HOLDER_LINK, tenant_uuid, uuid)
     tz = zone(garage.timezone)
     today = day_of(at, tz)
     _refuse_unless_redeemable(HOLDER_LINK, link, today, tz)

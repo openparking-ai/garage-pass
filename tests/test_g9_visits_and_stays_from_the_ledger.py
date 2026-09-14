@@ -40,6 +40,7 @@ from fixtures import (
     SIX_TO_EIGHT,
     a_pass,
     at,
+    lanes_at,
     registered,
     simple_terms,
     transient_garage,
@@ -184,7 +185,7 @@ def test_a_maximum_stay_with_no_recorded_entry_is_unmeasured_and_says_so_by_name
     # the other terms still decide the outcome: an out-of-terms exit with an
     # unmeasurable stay is not-covered AND names the unmeasured stay
     entry_only = a_pass(terms=simple_terms(max_stay=timedelta(hours=2),
-                                           allowed_lanes=frozenset({"L9"})))
+                                           allowed_lanes=lanes_at("garage-downtown", "L9")))
     out = ask(entry_only, [], Direction.EXIT)
     assert out.outcome is Outcome.NOT_COVERED and out.reason == f.WRONG_LANE
     assert out.unmeasured is None, "the stay was never reached; nothing to name"
@@ -288,7 +289,8 @@ def test_one_open_visit_per_vehicle_per_pass_by_refusal_and_by_index(app, tenant
     app.rollback()
     assert refused.value.code == f.REFUSAL_VISIT_ALREADY_OPEN
     (garage_uuid, pass_uuid) = query(
-        app, tenant_id, "SELECT garage_id, id FROM passes WHERE external_id = 'pass-1'")[0]
+        app, tenant_id, "SELECT pg.garage_id, p.id FROM passes p JOIN pass_garages pg "
+        "ON pg.pass_id = p.id WHERE p.external_id = 'pass-1'")[0]
     with pytest.raises(psycopg.errors.UniqueViolation) as violation:
         with tenant(app, tenant_id) as cursor:
             cursor.execute(

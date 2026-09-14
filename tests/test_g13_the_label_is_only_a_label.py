@@ -37,6 +37,7 @@ from fixtures import (
     a_pass,
     no_transient_garage,
     registered,
+    terms_at,
     transient_garage,
 )
 from garage_pass.access import access
@@ -54,8 +55,8 @@ def test_passes_differing_only_in_label_answer_identically(name, direction, stat
     answers = []
     for garage in (transient_garage(), no_transient_garage()):
         for label in LABELS:
-            pass_ = a_pass(garage_id=garage.id, label=label, terms=TERMS_CONFIGURATIONS[name],
-                           state=state)
+            pass_ = a_pass(garage_ids={garage.id}, label=label, state=state,
+                           terms=terms_at(garage.id, TERMS_CONFIGURATIONS[name]))
             answer = access(
                 garage=garage, passes=[pass_], registrations=[registered(pass_)],
                 visits=[Visit(pass_id=pass_.id, vehicle_identity="CAR-1", entry_lane="L1",

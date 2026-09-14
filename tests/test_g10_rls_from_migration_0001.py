@@ -160,18 +160,25 @@ def test_a_tenant_cannot_write_a_row_attributed_to_another(app, owner):
 @pytest.mark.guarantee("G10")
 def test_a_tenant_cannot_name_another_tenants_garage_even_by_a_raw_insert(app, owner):
     """The composite key: the foreign-key check runs past the policy, and the
-    pair (tenant_id, garage_id) does not exist for tenant alpha."""
+    pair (tenant_id, garage_id) does not exist for tenant alpha. Since 0004 the
+    pass-to-garage reference is a ``pass_garages`` row, so that is the row a
+    raw write would use to name another tenant's garage."""
     alpha, beta = new_tenant(owner), new_tenant(owner)
     with tenant(app, beta) as cursor:
         garage_uuid = store_garage(cursor, beta, transient_garage())
     app.commit()
-    with pytest.raises(psycopg.errors.ForeignKeyViolation):
-        with tenant(app, alpha) as cursor:
+    with tenant(app, alpha) as cursor:
+        cursor.execute(
+            "INSERT INTO passes (tenant_id, external_id, label, holder_email, entry_allowed, "
+            "exit_allowed, lanes_stated, state) VALUES (%s, 'p', 'l', 'h@example.com', true, "
+            "true, false, 'draft') RETURNING id",
+            (alpha,),
+        )
+        (pass_uuid,) = cursor.fetchone()
+        with pytest.raises(psycopg.errors.ForeignKeyViolation):
             cursor.execute(
-                "INSERT INTO passes (tenant_id, garage_id, external_id, label, holder_email, "
-                "entry_allowed, exit_allowed, lanes_stated, state) VALUES (%s, %s, 'p', 'l', "
-                "'h@example.com', true, true, false, 'draft')",
-                (alpha, garage_uuid),
+                "INSERT INTO pass_garages (tenant_id, pass_id, garage_id) VALUES (%s, %s, %s)",
+                (alpha, pass_uuid, garage_uuid),
             )
     app.rollback()
 
