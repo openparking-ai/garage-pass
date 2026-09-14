@@ -484,6 +484,61 @@ def test_the_instant_a_clock_not_here_refusal_names_is_the_same_bytes_in_any_arr
             assert offset not in detail, (offset, detail)
         assert "garage 'garage-far'" in detail
 
+@pytest.mark.guarantee("G25")
+def test_a_visits_garage_id_goes_through_the_one_text_validator_and_matches_the_garage_it_names():
+    """``Visit.garage_id`` is stripped and refused blank or with a control
+    character naming ``visit.garage_id`` -- through ``require_text``, as
+    ``Garage.id`` and each member of ``Pass.garage_ids`` already are. THE
+    CASE FLIPPED: a Tokyo entry recorded under ``'garage-far '`` (a scanner's
+    trailing space) with ``garage-far`` handed in readable now MATCHES, is
+    counted, and the entry at Denver is OUT_OF_VISITS naming garage-far.
+    Measured before this: the same visit was permanently "not handed in" --
+    refused at every entry on the pass, fail-closed, never counted -- because
+    the garage's id was stripped and the visit's was not. And at the door the
+    car is leaving, the open entry under ``' garage-a '`` is THIS garage's:
+    the stay is measured, not UNMEASURED. A wrong TYPE is still the
+    ``TypeError`` G4 proves, checked first."""
+    from datetime import timedelta as _td
+
+    from garage_pass.passes import Visit as _Visit
+
+    padded = recorded(spanning(A, FAR), FAR, at(date(2026, 6, 1), 9, timezone=FAR_ZONE))
+    stripped = _Visit(pass_id=padded.pass_id, garage_id="garage-far ", vehicle_identity="CAR-1",
+                      entry_lane="L1", entered_at=padded.entered_at, exited_at=padded.exited_at,
+                      exit_lane="L1")
+    assert stripped.garage_id == FAR.id == "garage-far" and stripped == padded
+    for value, code in (("", f.REFUSAL_FIELD_BLANK), ("   ", f.REFUSAL_FIELD_BLANK),
+                        ("\t", f.REFUSAL_FIELD_BLANK),
+                        ("garage\tfar", f.REFUSAL_TEXT_HAS_CONTROL_CHARACTERS),
+                        ("garage-far\x00", f.REFUSAL_TEXT_HAS_CONTROL_CHARACTERS)):
+        with pytest.raises(f.Refused) as refused:
+            _Visit(pass_id="p", garage_id=value, vehicle_identity="CAR-1", entry_lane="L1",
+                   entered_at=NOON_MONDAY)
+        assert (refused.value.code, refused.value.field) == (code, "visit.garage_id"), (
+            value, refused.value)
+    with pytest.raises(TypeError, match="Visit.garage_id"):
+        _Visit(pass_id="p", garage_id=None, vehicle_identity="CAR-1", entry_lane="L1",
+               entered_at=NOON_MONDAY)
+    # the case flipped: the paste-10 shape counts and answers where it was refused
+    window = Window(days=frozenset({1, 2, 3, 4, 5}), start_minute=8 * 60, end_minute=18 * 60)
+    pass_ = per_window(1, window, A, FAR)
+    monday = date(2026, 6, 1)
+    tokyo_visit = _Visit(pass_id=pass_.id, garage_id="garage-far ", vehicle_identity="CAR-1",
+                         entry_lane="L1", entered_at=at(monday, 9, timezone=FAR_ZONE),
+                         exited_at=at(monday, 9, 30, timezone=FAR_ZONE), exit_lane="L1")
+    answer = entry_at(A, pass_, [tokyo_visit], at(monday, 9), handed_in=[FAR])
+    assert answer.reason == f.OUT_OF_VISITS, answer
+    assert "(garage-far: 1)" in answer.detail and "not handed in" not in answer.detail, answer
+    # the same shape at the asking garage, at an exit: the open entry is THIS garage's
+    stay = spanning(A, FAR, terms=simple_terms(max_stay=_td(hours=2)))
+    open_here = _Visit(pass_id=stay.id, garage_id=" garage-a ", vehicle_identity="CAR-1",
+                       entry_lane="L1", entered_at=at(monday, 8))
+    exit_ = access(garage=A, garages=[FAR], passes=[stay], registrations=[registered(stay)],
+                   visits=[open_here], vehicle_identity="CAR-1", lane="L1",
+                   direction=Direction.EXIT, at=at(monday, 11))
+    assert exit_.outcome is Outcome.NOT_COVERED and exit_.reason == f.OVER_MAX_STAY, exit_
+    assert exit_.unmeasured is None, exit_
+
 
 # ---------------------------------------------------------------------------
 # Lanes are stated PER GARAGE.
@@ -1313,6 +1368,72 @@ def test_the_store_renders_the_clock_not_here_refusal_the_same_under_three_sessi
     for offset in ("+03:00", "+09:00", "+00:00", "-06:00", "2026-05-31"):
         assert offset not in detail, (offset, detail)
 
+@pytest.mark.guarantee("G25")
+@pytest.mark.guarantee("G17")
+@pytest.mark.guarantee("G4")
+@store_test
+def test_a_stored_garage_id_with_whitespace_around_it_loads_onto_the_visit_stripped_and_answers(
+    app, owner, tenant_id
+):
+    """The store's one ``Visit`` constructor (``visits_on``) reads each row's
+    garage id off the garages table, and the validator on the visit strips
+    it as the garage's own constructor does. A garage row rewritten RAW under
+    ``' garage-far '`` and under ``'garage-far\\n'`` (both past the schema's
+    ``btrim`` CHECK, both stripped by the module): the Tokyo entry recorded
+    there is counted at every garage of the three-zone pass -- OUT_OF_VISITS
+    naming garage-far, where before this it was "not handed in" at all three
+    -- and every EXIT is answered (G4), the G17 unreadable pass answers at
+    every garage, and nothing on the load path raises. The shapes the
+    validator REFUSES (a control character; a tab alone, blank to
+    ``strip()`` and not to ``btrim()``) never reach a visit: the pass's own
+    set is re-validated by the same validator at load, first."""
+    from garage_pass.store.records import visits_on
+
+    seed_garages(app, tenant_id, A, FAR, FIXED)
+    window = Window(days=frozenset({1, 2, 3, 4, 5}), start_minute=8 * 60, end_minute=18 * 60)
+    pass_ = per_window(1, window, A, FAR, FIXED, id="pass-mixed")
+    create(app, tenant_id, A, pass_)
+    lanes = spanning(A, FAR, FIXED, id="pass-lanes", terms=simple_terms(
+        allowed_lanes=lanes_at(A.id, "L1") + lanes_at(FAR.id, "L1") + lanes_at(FIXED.id, "L1")))
+    create(app, tenant_id, A, lanes)
+    with tenant(app, tenant_id) as cursor:
+        register_vehicle(cursor, tenant_id, A.id, pass_.id, "CAR-1", date(2026, 1, 1))
+        register_vehicle(cursor, tenant_id, A.id, lanes.id, "CAR-7", date(2026, 1, 1))
+        record_entry(cursor, tenant_id, FAR.id, lanes.id, "CAR-7", "L1",
+                     at(date(2026, 6, 1), 9, timezone=FAR_ZONE))
+    app.commit()
+    monday = date(2026, 6, 1)
+    _record(app, tenant_id, FAR, pass_, "CAR-1", at(monday, 9, timezone=FAR_ZONE))
+    with owner.cursor() as cursor:  # G17: the lanes pass made unreadable raw
+        cursor.execute("DELETE FROM pass_lanes pl USING passes p, garages g "
+                       "WHERE pl.pass_id = p.id AND pl.garage_id = g.id AND p.tenant_id = %s "
+                       "AND p.external_id = %s AND g.external_id = %s",
+                       (tenant_id, lanes.id, FAR.id))
+        assert cursor.rowcount == 1
+    asks = {A.id: at(monday, 9), FAR.id: at(monday, 17, timezone=FAR_ZONE),
+            FIXED.id: at(monday, 9, timezone=FIXED_ZONE)}
+    for raw in (" garage-far ", "garage-far\n"):
+        with owner.cursor() as cursor:
+            cursor.execute("UPDATE garages SET external_id = %s WHERE tenant_id = %s AND "
+                           "external_id IN (%s, %s, %s)", (raw, tenant_id, FAR.id, " garage-far ",
+                                                           "garage-far\n"))
+            assert cursor.rowcount == 1, raw
+        with tenant(app, tenant_id) as cursor:
+            cursor.execute("SELECT id FROM passes WHERE tenant_id = %s AND external_id = %s",
+                           (tenant_id, pass_.id))
+            (pass_uuid,) = cursor.fetchone()
+            loaded = visits_on(cursor, tenant_id, pass_uuid, pass_.id)
+        app.rollback()
+        assert [v.garage_id for v in loaded] == [FAR.id], (raw, loaded)
+        for asking, when in ((A.id, asks[A.id]), (raw, asks[FAR.id]), (FIXED.id, asks[FIXED.id])):
+            entry = access_from_store(app, tenant_id, asking, "CAR-1", "L1", Direction.ENTRY, when)
+            assert entry.reason == f.OUT_OF_VISITS, (raw, asking, entry)
+            assert "(garage-far: 1)" in entry.detail and "not handed in" not in entry.detail, entry
+            exit_ = access_from_store(app, tenant_id, asking, "CAR-1", "L1", Direction.EXIT, when)
+            assert exit_.outcome is Outcome.COVERED and exit_.exit_note, (raw, asking, exit_)
+            g17 = access_from_store(app, tenant_id, asking, "CAR-7", "L1", Direction.EXIT, when)
+            assert g17.reason == f.PASS_UNREADABLE and g17.exit_note, (raw, asking, g17)
+
 
 @pytest.mark.guarantee("G25")
 @pytest.mark.guarantee("G5")
@@ -1933,5 +2054,74 @@ def test_the_documents_door_reads_each_entry_on_its_own_garages_clock_with_garag
     status, out = _run(main, capsys, [*base, "--garages", not_a_list, *exit_])
     assert status == 1 and out["reason"] == f.RECORD_UNREADABLE and "--garages" in out["detail"]
     # every refusal this printed was collected and judged
+    status, result = sweep.judge_rendered(list(rendered_so_far()[started:]))
+    assert result["unjudged"] == [] and result["false"] == [], sweep.report_rendered(result)
+
+
+@pytest.mark.guarantee("G25")
+@pytest.mark.guarantee("G18")
+def test_the_documents_door_strips_a_visits_garage_id_and_refuses_a_blank_or_control_one_by_name(
+    tmp_path, capsys
+):
+    """The caller's construction, through ``garage-pass access``: a visit
+    document whose ``garage_id`` is ``'garage-far '`` is the Tokyo entry --
+    counted, OUT_OF_VISITS at Denver, exit 1 -- where before this it was
+    refused to answer as "not handed in" (exit 2). A blank, a whitespace-only
+    and a control-character ``garage_id`` are refused BY NAME at an entry
+    (exit 3, ``visit.garage_id``, the existing keys) and ANSWERED
+    RECORD_UNREADABLE at an exit (exit 1) -- the door's reading for any visit
+    document it cannot build, the same as one missing its garage. No new
+    refusal key; every sentence rendered here is judged."""
+    import json
+
+    import sweep_route_sentences as sweep
+
+    from _rendered_sentences import rendered_so_far
+    from fixtures import pass_document
+    from garage_pass.cli import main
+
+    started = len(rendered_so_far())
+
+    def write(name: str, document: object) -> str:
+        (tmp_path / name).write_text(json.dumps(document))
+        return str(tmp_path / name)
+
+    denver = write("denver.json", {"id": A.id, "timezone": SHIFTING_ZONE,
+                                   "transient_available": True})
+    tokyo = write("tokyo.json", [{"id": FAR.id, "timezone": FAR_ZONE, "transient_available": True}])
+    pass_ = write("pass.json", pass_document(
+        id="pass-span", garage_ids=[A.id, FAR.id],
+        terms={**pass_document()["terms"], "allowed_lanes": None,
+               "windows": [{"days": [1, 2, 3, 4, 5], "start_minute": 480, "end_minute": 1080}],
+               "visit_allowance": {"count": 1, "per": "window"}, "max_stay_minutes": None}))
+    registrations = write("r.json", [{"pass_id": "pass-span", "vehicle_identity": "CAR-1",
+                                      "effective_day": "2026-01-01"}])
+
+    def visits(garage_id: str) -> str:
+        return write("v.json", [{"pass_id": "pass-span", "garage_id": garage_id,
+                                 "vehicle_identity": "CAR-1", "entry_lane": "L1",
+                                 "entered_at": "2026-06-01T09:00:00+09:00",
+                                 "exited_at": "2026-06-01T10:00:00+09:00", "exit_lane": "L1"}])
+
+    def base(garage_id: str) -> list[str]:
+        return ["access", "--garage", denver, "--pass", pass_, "--registrations", registrations,
+                "--visits", visits(garage_id), "--garages", tokyo, "--vehicle", "CAR-1",
+                "--lane", "L1"]
+
+    entry = ["--direction", "entry", "--at", "2026-06-01T09:00:00-06:00"]
+    exit_ = ["--direction", "exit", "--at", "2026-06-01T09:00:00-06:00"]
+    status, out = _run(main, capsys, [*base("garage-far "), *entry])
+    assert status == 1 and out["reason"] == f.OUT_OF_VISITS, out
+    assert "(garage-far: 1)" in out["detail"] and "not handed in" not in out["detail"], out
+    status, out = _run(main, capsys, [*base("garage-far "), *exit_])
+    assert status == 0 and out["outcome"] == "covered" and out["exit_note"], out
+    for value, code in (("", f.REFUSAL_FIELD_BLANK), ("  ", f.REFUSAL_FIELD_BLANK),
+                        ("garage\tfar", f.REFUSAL_TEXT_HAS_CONTROL_CHARACTERS)):
+        status, out = _run(main, capsys, [*base(value), *entry])
+        assert status == 3 and out["refused"] == code, (value, out)
+        assert out["field"] == "visit.garage_id" and "visit.garage_id" in out["detail"], out
+        status, out = _run(main, capsys, [*base(value), *exit_])
+        assert status == 1 and out["reason"] == f.RECORD_UNREADABLE, (value, out)
+        assert f"{code} [visit.garage_id]" in out["detail"], out["detail"]
     status, result = sweep.judge_rendered(list(rendered_so_far()[started:]))
     assert result["unjudged"] == [] and result["false"] == [], sweep.report_rendered(result)

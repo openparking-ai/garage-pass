@@ -2046,6 +2046,18 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
         "clock's day, inside the sentence that says the entry is not read on the asking clock; "
         "visible only when three zones are compared, never in one reading",
     ),
+    "G25/visit-garage-id-normalised": (
+        G25, "passes.py",
+        '        object.__setattr__(self, "garage_id", require_text(self.garage_id, '
+        '"visit.garage_id"))',
+        "        pass  # PLANTED: the visit's garage id is type-checked only -- never stripped, "
+        "never refused",
+        "the visit's garage id skips the module's one text validator: an entry recorded under "
+        "'garage-far ' (a scanner's trailing space) never matches the readable garage handed in "
+        "as 'garage-far', so the entry is 'not handed in' at every door and every per-window "
+        "answer on the pass is refused -- fail-closed, never counted; and a blank or "
+        "control-character id constructs instead of being refused by name",
+    ),
     "G25/allowance-per-garage": (
         G25, "access.py",
         "            counted = _visits_used(visits, pass_, window, today, clock_at)",

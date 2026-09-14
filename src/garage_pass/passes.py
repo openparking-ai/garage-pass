@@ -191,7 +191,16 @@ class Visit:
     garage on the visit, an exit at garage B measured the stay from an entry
     recorded at garage A and answered OVER_MAX_STAY quoting A's instant. The
     allowance is the other question and stays per pass: every garage's
-    entries count (C5)."""
+    entries count (C5).
+
+    ``garage_id`` goes through the module's one text validator, as
+    ``Garage.id`` and every member of ``Pass.garage_ids`` do -- stripped, and a
+    blank or a control character refused naming ``visit.garage_id``. Measured
+    before this: a visit whose garage id carried a trailing space (a scanner's
+    line break after a QR payload is the case the validator names) never
+    matched the readable garage handed in under the stripped id, so the entry
+    was permanently "not handed in" and every per-window answer on the pass
+    was refused -- fail-closed, never a wrong count, and never counted."""
 
     pass_id: str
     garage_id: str
@@ -203,6 +212,7 @@ class Visit:
 
     def __post_init__(self) -> None:
         require_typed(self)
+        object.__setattr__(self, "garage_id", require_text(self.garage_id, "visit.garage_id"))
         require_aware(self.entered_at, "entered_at")
         if self.exited_at is not None:
             require_aware(self.exited_at, "exited_at")
