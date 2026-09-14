@@ -331,9 +331,28 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
     ),
     "G9/open-visit": (
         G9, "access.py",
-        "        if v.pass_id == pass_.id and v.vehicle_identity.strip() == identity and v.is_open",
-        "        if v.pass_id == pass_.id and v.is_open  # PLANTED: any vehicle's entry",
+        source(
+            "        if v.pass_id == pass_.id and v.garage_id == garage.id",
+            "        and v.vehicle_identity.strip() == identity and v.is_open",
+        ),
+        source(
+            "        if v.pass_id == pass_.id and v.garage_id == garage.id",
+            "        and v.is_open  # PLANTED: any vehicle's entry",
+        ),
         "a stay is measured from whichever vehicle on the pass entered last",
+    ),
+    "G9/open-visit-any-garage": (
+        G9, "access.py",
+        source(
+            "        if v.pass_id == pass_.id and v.garage_id == garage.id",
+            "        and v.vehicle_identity.strip() == identity and v.is_open",
+        ),
+        source(
+            "        if v.pass_id == pass_.id",
+            "        and v.vehicle_identity.strip() == identity and v.is_open  # PLANTED: anywhere",
+        ),
+        "the stay's entry is chosen from every garage of the pass again: an exit at B is measured "
+        "from an entry recorded at A and answered OVER_MAX_STAY quoting A's instant",
     ),
     "G9/missing-entry": (
         G9, "access.py",
@@ -1110,8 +1129,8 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
             '        "Window": {"days", "start_minute", "end_minute"},',
             '        "VisitAllowance": {"count", "per"},',
             '        "Registration": {"pass_id", "vehicle_identity", "effective_day", "end_day"},',
-            '        "Visit": {"pass_id", "vehicle_identity", "entry_lane", "entered_at",',
-            '                  "exited_at", "exit_lane"},',
+            '        "Visit": {"pass_id", "garage_id", "vehicle_identity", "entry_lane",',
+            '                  "entered_at", "exited_at", "exit_lane"},',
             "    }",
             "    return frozenset(listed.get(cls.__name__, set()))",
         ),

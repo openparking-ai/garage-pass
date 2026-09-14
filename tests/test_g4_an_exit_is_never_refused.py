@@ -54,8 +54,8 @@ def exit_answer(garage, pass_, *, at_=NOON_MONDAY, lane="L1", visits=None, ident
     exit asked about is ``identity``'s, which is CAR-1 unless a test asks
     about somebody else."""
     if visits is None:
-        visits = [Visit(pass_id=pass_.id, vehicle_identity="CAR-1", entry_lane="L1",
-                        entered_at=TWO_HOURS_BEFORE)]
+        visits = [Visit(pass_id=pass_.id, garage_id=garage.id, vehicle_identity="CAR-1",
+                        entry_lane="L1", entered_at=TWO_HOURS_BEFORE)]
     return access(
         garage=garage, passes=[pass_], registrations=[registered(pass_, "CAR-1")],
         visits=visits, vehicle_identity=identity, lane=lane, direction=Direction.EXIT, at=at_,
@@ -534,11 +534,13 @@ def test_the_sentence_names_the_class_the_enumeration_closed():
          "Registration.effective_day"),
         (lambda: Registration(pass_id="p", vehicle_identity="C", effective_day=date(2026, 1, 1),
                               end_day="2027-01-01"), "Registration.end_day"),
-        (lambda: Visit(pass_id="p", vehicle_identity=None, entry_lane="L1",
+        (lambda: Visit(pass_id="p", garage_id="g", vehicle_identity=None, entry_lane="L1",
                        entered_at=NOON_MONDAY), "Visit.vehicle_identity"),
-        (lambda: Visit(pass_id="p", vehicle_identity="C", entry_lane=1, entered_at=NOON_MONDAY),
-         "Visit.entry_lane"),
-        (lambda: Visit(pass_id="p", vehicle_identity="C", entry_lane="L1",
+        (lambda: Visit(pass_id="p", garage_id="g", vehicle_identity="C", entry_lane=1,
+                       entered_at=NOON_MONDAY), "Visit.entry_lane"),
+        (lambda: Visit(pass_id="p", garage_id=None, vehicle_identity="C", entry_lane="L1",
+                       entered_at=NOON_MONDAY), "Visit.garage_id"),
+        (lambda: Visit(pass_id="p", garage_id="g", vehicle_identity="C", entry_lane="L1",
                        entered_at=NOON_MONDAY, exit_lane=2), "Visit.exit_lane"),
     ],
     ids=lambda v: v if isinstance(v, str) else "",
@@ -556,4 +558,5 @@ def test_a_registration_or_visit_with_a_wrong_typed_field_cannot_be_constructed(
     with pytest.raises(TypeError, match=what):
         build()
     assert Registration(pass_id="p", vehicle_identity="C", effective_day=date(2026, 1, 1))
-    assert Visit(pass_id="p", vehicle_identity="C", entry_lane="L1", entered_at=NOON_MONDAY)
+    assert Visit(pass_id="p", garage_id="g", vehicle_identity="C", entry_lane="L1",
+                 entered_at=NOON_MONDAY)

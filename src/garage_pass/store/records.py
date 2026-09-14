@@ -955,13 +955,18 @@ def record_exit(
 
 
 def visits_on(cursor: Any, tenant_id: Any, pass_uuid: UUID, pass_external_id: str) -> list[Visit]:
+    # Every garage of the pass, on purpose (C5: the allowance counts the set);
+    # each row carries its garage's external id, so the engine can pick the
+    # stay's entry at the garage it is answering for.
     cursor.execute(
-        "SELECT vehicle_identity, entry_lane, entered_at, exited_at, exit_lane FROM visits "
-        "WHERE tenant_id = %s AND pass_id = %s ORDER BY entered_at",
+        "SELECT g.external_id, v.vehicle_identity, v.entry_lane, v.entered_at, v.exited_at, "
+        "v.exit_lane FROM visits v "
+        "JOIN garages g ON g.tenant_id = v.tenant_id AND g.id = v.garage_id "
+        "WHERE v.tenant_id = %s AND v.pass_id = %s ORDER BY v.entered_at",
         (as_uuid(tenant_id), pass_uuid),
     )
     return [
-        Visit(pass_id=pass_external_id, vehicle_identity=v, entry_lane=el, entered_at=ea,
-              exited_at=xa, exit_lane=xl)
-        for v, el, ea, xa, xl in cursor.fetchall()
+        Visit(pass_id=pass_external_id, garage_id=g, vehicle_identity=v, entry_lane=el,
+              entered_at=ea, exited_at=xa, exit_lane=xl)
+        for g, v, el, ea, xa, xl in cursor.fetchall()
     ]

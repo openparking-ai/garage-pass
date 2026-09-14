@@ -181,9 +181,20 @@ class Registration:
 
 @dataclass(frozen=True)
 class Visit:
-    """One recorded entry on a pass, and its exit once recorded."""
+    """One recorded entry on a pass AT A GARAGE, and its exit once recorded.
+
+    A visit carries its garage, unlike a registration: the ledger is per
+    garage (one open visit per vehicle per pass per garage), a pass names a
+    set of garages, and a stay is measured at the garage the car is leaving
+    -- from the entry recorded THERE, never from one at another garage of the
+    set. Measured before this (the G3a fix round's receipt named it): with no
+    garage on the visit, an exit at garage B measured the stay from an entry
+    recorded at garage A and answered OVER_MAX_STAY quoting A's instant. The
+    allowance is the other question and stays per pass: every garage's
+    entries count (C5)."""
 
     pass_id: str
+    garage_id: str
     vehicle_identity: str
     entry_lane: str
     entered_at: datetime

@@ -28,7 +28,12 @@ of the pass at that garage), and the allowance -- C5 -- still counts the set.
 Controls: the garage predicate planted out of the lookup; the index planted
 back to per pass (the entry at B then meets it as a bare constraint); each key
 planted back to CASCADE, with the visits key measured on a garage that holds
-ONLY a visit so the registrations key cannot stand in for it.
+ONLY a visit so the registrations key cannot stand in for it. AND THE ENGINE'S
+OWN SELECTION (the engine-stay round): a ``Visit`` carries its garage, the store
+hands the engine each row's garage, and the stay at an exit is measured from
+the entry recorded at that garage -- never from one open at another garage of
+the set, which leaves the stay UNMEASURED and named; the garage planted out of
+the engine's selection reddens G9 and the tests here.
 """
 
 from __future__ import annotations
@@ -124,14 +129,63 @@ def test_the_terms_are_one_set_evaluated_at_whichever_garage_the_car_is_at():
 
     pass_ = spanning(A, B, C, terms=simple_terms(
         visit_allowance=VisitAllowance(count=2, per=AllowancePeriod.LIFE)))
-    visits = [Visit(pass_id=pass_.id, vehicle_identity="CAR-1", entry_lane="L1",
+    visits = [Visit(pass_id=pass_.id, garage_id=A.id, vehicle_identity="CAR-1", entry_lane="L1",
                     entered_at=TWO_HOURS_BEFORE),
-              Visit(pass_id=pass_.id, vehicle_identity="CAR-1", entry_lane="L1",
+              Visit(pass_id=pass_.id, garage_id=B.id, vehicle_identity="CAR-1", entry_lane="L1",
                     entered_at=at(date(2026, 5, 31), 9))]
     answer = access(garage=C, passes=[pass_], registrations=[registered(pass_)], visits=visits,
                     vehicle_identity="CAR-1", lane="L1", direction=Direction.ENTRY, at=NOON_MONDAY)
     assert answer.outcome is Outcome.NOT_COVERED and answer.reason == f.OUT_OF_VISITS, answer
     assert "2 of 2 visit(s) used" in answer.detail
+
+
+@pytest.mark.guarantee("G25")
+def test_a_stay_is_measured_at_the_garage_the_car_is_leaving_never_from_another_garages_entry():
+    """THE STAY IS PER GARAGE; THE ALLOWANCE IS PER PASS. Measured on the fix
+    round's head: with no garage on the visit, an exit at B found the entry
+    open at A, measured eleven hours from it and answered OVER_MAX_STAY quoting
+    A's instant -- wrong-silently, at the barrier, chargeable. Now: an entry
+    open at A is not B's entry. The exit at B is answered on every other term,
+    the stay UNMEASURED and NAMED, A's instant nowhere in it (G1's F4 ruling);
+    and the control -- the same entry at B itself -- is OVER_MAX_STAY exactly
+    as before, quoting that entry in the garage's wall clock."""
+    from datetime import timedelta
+
+    from fixtures import TWO_HOURS_BEFORE
+    from garage_pass.passes import Visit
+
+    pass_ = spanning(A, B, terms=simple_terms(max_stay=timedelta(hours=1)))
+    entered_at_a = at(date(2026, 6, 1), 1)   # eleven hours before noon
+    open_at_a = [Visit(pass_id=pass_.id, garage_id=A.id, vehicle_identity="CAR-1",
+                       entry_lane="L1", entered_at=entered_at_a)]
+    at_b = access(garage=B, passes=[pass_], registrations=[registered(pass_)], visits=open_at_a,
+                  vehicle_identity="CAR-1", lane="L1", direction=Direction.EXIT, at=NOON_MONDAY)
+    assert at_b.outcome is Outcome.COVERED, at_b
+    assert at_b.unmeasured and "max_stay" in at_b.unmeasured and "at this garage" in at_b.unmeasured
+    assert "01:00" not in at_b.unmeasured and "01:00" not in (at_b.detail or ""), (
+        "A's entry instant was quoted at B")
+    assert at_b.exit_note
+    # the control: the same entry recorded AT B is B's, and the rule is unchanged
+    open_at_b = [Visit(pass_id=pass_.id, garage_id=B.id, vehicle_identity="CAR-1",
+                       entry_lane="L1", entered_at=entered_at_a)]
+    same = access(garage=B, passes=[pass_], registrations=[registered(pass_)], visits=open_at_b,
+                  vehicle_identity="CAR-1", lane="L1", direction=Direction.EXIT, at=NOON_MONDAY)
+    assert same.outcome is Outcome.NOT_COVERED and same.reason == f.OVER_MAX_STAY, same
+    assert "11:00:00 elapsed" in same.detail and "01:00:00-06:00" in same.detail
+    assert same.exit_note
+    # and the ALLOWANCE still counts A's entry beside B's (C5): a 2-visit
+    # allowance, one entry at each, is spent at B -- the stay fix reaches nothing here
+    from garage_pass.terms import AllowancePeriod, VisitAllowance
+
+    counted = spanning(A, B, terms=simple_terms(
+        visit_allowance=VisitAllowance(count=2, per=AllowancePeriod.LIFE)))
+    both = [Visit(pass_id=counted.id, garage_id=A.id, vehicle_identity="CAR-1", entry_lane="L1",
+                  entered_at=TWO_HOURS_BEFORE),
+            Visit(pass_id=counted.id, garage_id=B.id, vehicle_identity="CAR-1", entry_lane="L1",
+                  entered_at=at(date(2026, 5, 31), 9))]
+    spent = access(garage=B, passes=[counted], registrations=[registered(counted)], visits=both,
+                   vehicle_identity="CAR-1", lane="L1", direction=Direction.ENTRY, at=NOON_MONDAY)
+    assert spent.reason == f.OUT_OF_VISITS and "counted 2 recorded entries" in spent.detail
 
 
 @pytest.mark.guarantee("G25")
@@ -786,6 +840,52 @@ def test_an_open_visit_at_one_garage_neither_refuses_an_entry_nor_closes_an_exit
         answer = access_from_store(app, tenant_id, garage.id, "CAR-1", "L1", Direction.EXIT,
                                    at(date(2026, 6, 1), 13))
         assert answer.outcome is Outcome.COVERED and answer.exit_note
+
+
+@pytest.mark.guarantee("G25")
+@store_test
+def test_the_store_hands_the_engine_each_visits_garage_and_the_stay_is_measured_there(
+    app, owner, tenant_id
+):
+    """The whole path: the ledger's rows carry their garage, ``visits_on``
+    hands the engine every garage's rows with the garage's external id, and
+    the exit at B with an entry open only at A is answered with the stay
+    UNMEASURED and named -- not OVER_MAX_STAY from A's instant. The control:
+    the entry recorded at B is B's, and the exit there is OVER_MAX_STAY. G4
+    at every garage of the set, and G17: the pass's stored terms made
+    unreadable raw, the exit at A and at B still answered."""
+    from datetime import timedelta
+
+    from garage_pass.store.records import visits_on
+
+    seed_garages(app, tenant_id, A, B)
+    pass_ = spanning(A, B, state=State.ACTIVE, terms=simple_terms(max_stay=timedelta(hours=1)))
+    create(app, tenant_id, A, pass_)
+    with tenant(app, tenant_id) as cursor:
+        register_vehicle(cursor, tenant_id, A.id, pass_.id, "CAR-1", date(2026, 1, 1))
+    app.commit()
+    _entry(app, tenant_id, A, pass_, "CAR-1", 1)   # eleven hours before noon, at A
+    (pass_uuid,) = query(app, tenant_id, "SELECT id FROM passes")[0]
+    with tenant(app, tenant_id) as cursor:
+        handed = visits_on(cursor, tenant_id, pass_uuid, pass_.id)
+    app.rollback()
+    assert [(v.garage_id, v.is_open) for v in handed] == [(A.id, True)]
+    at_b = access_from_store(app, tenant_id, B.id, "CAR-1", "L1", Direction.EXIT, NOON_MONDAY)
+    assert at_b.outcome is Outcome.COVERED and at_b.exit_note, at_b
+    assert at_b.unmeasured and "at this garage" in at_b.unmeasured
+    assert "01:00" not in at_b.unmeasured, "A's entry instant was quoted at B"
+    at_a = access_from_store(app, tenant_id, A.id, "CAR-1", "L1", Direction.EXIT, NOON_MONDAY)
+    assert at_a.outcome is Outcome.NOT_COVERED and at_a.reason == f.OVER_MAX_STAY, at_a
+    assert "11:00:00 elapsed" in at_a.detail and at_a.exit_note
+    # G17 at exit at both garages: the stored terms made unreadable raw
+    with owner.cursor() as cursor:
+        cursor.execute("UPDATE passes SET allowance_count = 3, allowance_per = 'window' "
+                       "WHERE tenant_id = %s AND id = %s", (tenant_id, pass_uuid))
+    for garage in (A, B):
+        answer = access_from_store(app, tenant_id, garage.id, "CAR-1", "L1", Direction.EXIT,
+                                   NOON_MONDAY)
+        assert answer.outcome is Outcome.NOT_COVERED and answer.reason == f.PASS_UNREADABLE
+        assert answer.exit_note
 
 
 @pytest.mark.guarantee("G25")

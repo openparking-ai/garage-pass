@@ -189,8 +189,8 @@ def test_a_maximum_longer_than_a_window_is_slack_not_a_contradiction_created_and
     garage = transient_garage()
     pass_ = a_pass(garage_ids={garage.id}, terms=terms)
     monday = date(2026, 6, 1)
-    ledger = [Visit(pass_id=pass_.id, vehicle_identity="CAR-1", entry_lane="L1",
-                    entered_at=at(monday, 9))]
+    ledger = [Visit(pass_id=pass_.id, garage_id=garage.id, vehicle_identity="CAR-1",
+                    entry_lane="L1", entered_at=at(monday, 9))]
 
     def exit_at(hour, minute):
         return access(

@@ -88,8 +88,8 @@ def ask(pass_, direction, garage=GARAGE, identity="CAR-1"):
     return answered(
         access,
         garage=garage, passes=[pass_], registrations=[registered(pass_, "CAR-1")],
-        visits=[Visit(pass_id=pass_.id, vehicle_identity="CAR-1", entry_lane="L1",
-                      entered_at=TWO_HOURS_BEFORE)],
+        visits=[Visit(pass_id=pass_.id, garage_id=garage.id, vehicle_identity="CAR-1",
+                      entry_lane="L1", entered_at=TWO_HOURS_BEFORE)],
         vehicle_identity=identity, lane="L1", direction=direction, at=NOON_MONDAY,
     )
 

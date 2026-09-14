@@ -22,11 +22,22 @@ and the detail showed it beside an exit in the caller's -06:00 -- the instants
 and the duration were right, the rendering was not, and a reader comparing
 the two clocks would have got the stay wrong by nine hours.
 
+**THE STAY IS MEASURED AT THE GARAGE THE CAR IS LEAVING.** A pass names a set
+of garages and the visits handed in span them all -- the allowance counts every
+garage's entries (C5) -- but the entry a stay is measured from is the one
+recorded at the garage answering. Measured before this (the G3a fix round's
+receipt named it, the engine-stay round built it): with no garage on the visit,
+an exit at garage B found the entry open at A, measured eleven hours from it
+and answered OVER_MAX_STAY quoting A's instant -- wrong-silently, at the
+barrier. Now a ``Visit`` carries its garage; an entry open elsewhere is not this
+exit's entry, and the stay is UNMEASURED and named.
+
 Controls: the per-window count planted to count the pass's whole life; the
 denominator sentence planted to a fixed string; the open-visit lookup planted
-to ignore the vehicle identity; the UNMEASURED naming planted away (the stay
-then silently treated as satisfied -- wrong-silently, the failure this exists
-to catch); the rendering planted back to each instant's own offset.
+to ignore the vehicle identity, and planted to ignore the garage; the
+UNMEASURED naming planted away (the stay then silently treated as satisfied --
+wrong-silently, the failure this exists to catch); the rendering planted back
+to each instant's own offset.
 """
 
 from __future__ import annotations
@@ -54,9 +65,10 @@ GARAGE = transient_garage()
 MONDAY = date(2026, 6, 1)
 
 
-def visit(pass_, identity, hour, minute=0, day=MONDAY, exited_hour=None):
+def visit(pass_, identity, hour, minute=0, day=MONDAY, exited_hour=None,
+          garage_id=GARAGE.id):
     return Visit(
-        pass_id=pass_.id, vehicle_identity=identity, entry_lane="L1",
+        pass_id=pass_.id, garage_id=garage_id, vehicle_identity=identity, entry_lane="L1",
         entered_at=at(day, hour, minute),
         exited_at=at(day, exited_hour) if exited_hour else None,
         exit_lane="L1" if exited_hour else None,
@@ -138,6 +150,27 @@ def test_a_stay_is_measured_from_the_open_entry_of_this_vehicle_on_this_pass():
 
 
 @pytest.mark.guarantee("G9")
+def test_a_stay_is_measured_from_the_entry_recorded_at_the_garage_the_car_is_leaving():
+    """A pass names a set of garages and the ledger handed in spans them all
+    (the allowance counts every garage's entries). The STAY does not: it is
+    measured from the entry recorded at the garage answering, and an entry
+    still open at another garage of the set is not this exit's entry -- the
+    stay is then UNMEASURED and named, A's instant nowhere in the answer.
+    Measured before this: the exit at B was OVER_MAX_STAY from A's entry."""
+    pass_ = a_pass(garage_ids={GARAGE.id, "garage-other"},
+                   terms=simple_terms(max_stay=timedelta(hours=1)))
+    elsewhere = [visit(pass_, "CAR-1", 1, garage_id="garage-other")]  # eleven hours ago, elsewhere
+    here = ask(pass_, elsewhere, Direction.EXIT)
+    assert here.outcome is Outcome.COVERED and here.reason is None, here
+    assert here.unmeasured is not None and "at this garage" in here.unmeasured
+    assert "01:00" not in here.unmeasured and "01:00" not in (here.detail or "")
+    # the control: the same entry recorded HERE is this garage's, and it is over
+    same = ask(pass_, [visit(pass_, "CAR-1", 1)], Direction.EXIT)
+    assert same.reason == f.OVER_MAX_STAY and "11:00:00 elapsed" in same.detail
+    assert "entered 2026-06-01T01:00:00-06:00" in same.detail
+
+
+@pytest.mark.guarantee("G9")
 def test_the_stays_instants_are_rendered_in_the_garages_zone_whatever_offset_they_arrived_in():
     """The recorded entry arrives as +03:00 (the same instant as 11:00 -06:00)
     and the exit as UTC; the detail shows both as the garage's wall clock."""
@@ -148,8 +181,8 @@ def test_the_stays_instants_are_rendered_in_the_garages_zone_whatever_offset_the
     entered = at(MONDAY, 11).astimezone(plus_three)  # 20:00+03:00
     assert entered.isoformat().endswith("+03:00")
     exit_utc = at(MONDAY, 13, 30).astimezone(UTC)  # 19:30Z
-    ledger = [Visit(pass_id=pass_.id, vehicle_identity="CAR-1", entry_lane="L1",
-                    entered_at=entered)]
+    ledger = [Visit(pass_id=pass_.id, garage_id=GARAGE.id, vehicle_identity="CAR-1",
+                    entry_lane="L1", entered_at=entered)]
     late = ask(pass_, ledger, Direction.EXIT, when=exit_utc)
     assert late.reason == f.OVER_MAX_STAY and "2:30:00 elapsed" in late.detail
     assert "entered 2026-06-01T11:00:00-06:00, exiting 2026-06-01T13:30:00-06:00" in late.detail

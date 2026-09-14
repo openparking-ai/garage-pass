@@ -180,7 +180,10 @@ it counted, on which pass, over what. **The ledger is per garage**: a pass may
 name several, and one open visit per vehicle per pass is the rule *at each* —
 an entry at one garage of the set is never refused for a visit still open at
 another, and an exit never closes another garage's visit — while the allowance
-counts every garage of the set. Removing a garage from a pass that holds a
+counts every garage of the set. A visit carries its garage, and **a stay is
+measured at the garage the car is leaving**, from the entry recorded there: an
+entry still open at another garage of the set is not this exit's entry, and
+the stay is then unmeasured and named, never measured from the wrong garage. Removing a garage from a pass that holds a
 visit or a registration there fails by name; nothing recorded is erased by it.
 
 ### An exit is never refused

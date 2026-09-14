@@ -485,7 +485,7 @@ def access(
 
         unmeasured: str | None = None
         if is_exit and terms.max_stay is not None:
-            open_visit = _open_visit(visits, pass_, identity)
+            open_visit = _open_visit(visits, garage, pass_, identity)
             if open_visit is None or at < open_visit.entered_at:
                 # UNMEASURED, and said so by name -- never treated as satisfied
                 # silently, never a refusal: the exit is answered on the terms
@@ -497,7 +497,7 @@ def access(
                         f"the open recorded entry is at {rendered(open_visit.entered_at)}, "
                         "later than this exit."
                         if open_visit else
-                        "no open recorded entry of this vehicle on this pass."
+                        "no open recorded entry of this vehicle on this pass at this garage."
                     )
                 )
                 covering.append("max stay UNMEASURED (see unmeasured)")
@@ -690,10 +690,18 @@ def _visits_used(
     )
 
 
-def _open_visit(visits: Sequence[Visit], pass_: Pass, identity: str) -> Visit | None:
-    """The latest still-open recorded entry of this vehicle on this pass."""
+def _open_visit(
+    visits: Sequence[Visit], garage: Garage, pass_: Pass, identity: str
+) -> Visit | None:
+    """The latest still-open recorded entry of this vehicle on this pass AT
+    THIS GARAGE. The garage is part of the key, deliberately: the visits handed
+    in span every garage the pass names (the allowance counts them all), and a
+    stay is measured from the entry recorded where the car is leaving. An
+    entry open at another garage of the set is not this exit's entry -- the
+    stay is then UNMEASURED and named, never measured from the wrong garage."""
     candidates = [
         v for v in visits
-        if v.pass_id == pass_.id and v.vehicle_identity.strip() == identity and v.is_open
+        if v.pass_id == pass_.id and v.garage_id == garage.id
+        and v.vehicle_identity.strip() == identity and v.is_open
     ]
     return max(candidates, key=lambda v: v.entered_at) if candidates else None

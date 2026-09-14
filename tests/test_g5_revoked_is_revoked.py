@@ -66,8 +66,9 @@ def test_the_same_pass_active_is_covered_so_the_red_above_is_about_revocation(na
                    state=State.ACTIVE)
     answer = access(
         garage=garage, passes=[pass_], registrations=[registered(pass_)],
-        visits=[Visit(pass_id=pass_.id, vehicle_identity="CAR-1", entry_lane="L1",
-                      entered_at=TWO_HOURS_BEFORE, exited_at=NOON_MONDAY, exit_lane="L1")],
+        visits=[Visit(pass_id=pass_.id, garage_id=garage.id, vehicle_identity="CAR-1",
+                      entry_lane="L1", entered_at=TWO_HOURS_BEFORE, exited_at=NOON_MONDAY,
+                      exit_lane="L1")],
         vehicle_identity="CAR-1", lane="L1", direction=Direction.ENTRY, at=NOON_MONDAY,
     )
     assert answer.outcome is Outcome.COVERED, answer

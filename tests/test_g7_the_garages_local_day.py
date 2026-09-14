@@ -109,8 +109,8 @@ def test_a_stay_across_the_fall_back_hour_is_measured_in_elapsed_time():
                    terms=simple_terms(max_stay=timedelta(hours=3, minutes=30)))
     answer = access(
         garage=garage, passes=[pass_], registrations=[registered(pass_)],
-        visits=[Visit(pass_id=pass_.id, vehicle_identity="CAR-1", entry_lane="L1",
-                      entered_at=start)],
+        visits=[Visit(pass_id=pass_.id, garage_id=garage.id, vehicle_identity="CAR-1",
+                      entry_lane="L1", entered_at=start)],
         vehicle_identity="CAR-1", lane="L1", direction=Direction.EXIT, at=end,
     )
     assert answer.outcome is Outcome.NOT_COVERED and answer.reason == f.OVER_MAX_STAY

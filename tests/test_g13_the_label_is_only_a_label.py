@@ -59,8 +59,8 @@ def test_passes_differing_only_in_label_answer_identically(name, direction, stat
                            terms=terms_at(garage.id, TERMS_CONFIGURATIONS[name]))
             answer = access(
                 garage=garage, passes=[pass_], registrations=[registered(pass_)],
-                visits=[Visit(pass_id=pass_.id, vehicle_identity="CAR-1", entry_lane="L1",
-                              entered_at=TWO_HOURS_BEFORE)],
+                visits=[Visit(pass_id=pass_.id, garage_id=garage.id, vehicle_identity="CAR-1",
+                              entry_lane="L1", entered_at=TWO_HOURS_BEFORE)],
                 vehicle_identity="CAR-1", lane="L1", direction=direction, at=NOON_MONDAY,
             )
             # The label is REPORTED, and that is the only place it may differ.

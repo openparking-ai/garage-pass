@@ -617,8 +617,8 @@ def _with(document: dict, dotted: str, value: object) -> dict:
 
 
 REGISTRATION = {"pass_id": "pass-1", "vehicle_identity": "CAR-1", "effective_day": "2026-01-01"}
-VISIT = {"pass_id": "pass-1", "vehicle_identity": "CAR-1", "entry_lane": "L1",
-         "entered_at": "2026-06-01T09:00:00-06:00"}
+VISIT = {"pass_id": "pass-1", "garage_id": "garage-downtown", "vehicle_identity": "CAR-1",
+         "entry_lane": "L1", "entered_at": "2026-06-01T09:00:00-06:00"}
 
 #: The L3's census, the cases that were TRACEBACKS or SILENT MISREADS at the
 #: command line: (which document, the dotted key, the wrong value, the refusal).
@@ -1046,6 +1046,18 @@ def test_a_document_the_module_cannot_read_is_answered_at_an_exit_and_refused_at
                                 "--registrations", str(good)], capsys)
     _assert_entry_refused(*entry, f.REFUSAL_TIMEZONE_UNKNOWN)
     _assert_exit_answered(*exit_, f.GARAGE_UNREADABLE, "Mars/Olympus", "garage.timezone")
+    # a visit document without its garage (the field the engine-stay round
+    # added): a stated record refusal at the boundary, no new mechanism --
+    # keys are derived from the dataclass, so the missing key is named
+    for name, broken, code in (
+        ("missing", {k: v for k, v in VISIT.items() if k != "garage_id"}, f.REFUSAL_FIELD_BLANK),
+        ("wrong", {**VISIT, "garage_id": 7}, f.REFUSAL_FIELD_WRONG_TYPE),
+    ):
+        bad = _write(tmp_path, f"v_{name}.json", [broken])
+        entry, exit_ = _either_way(["access", "--garage", str(garage), "--pass", str(pass_),
+                                    "--registrations", str(good), "--visits", str(bad)], capsys)
+        _assert_entry_refused(*entry, code)
+        _assert_exit_answered(*exit_, f.RECORD_UNREADABLE, "visit[0].garage_id")
 
 
 @pytest.mark.guarantee("G4")
@@ -1646,13 +1658,13 @@ def test_an_empty_option_value_is_a_path_that_cannot_be_read_not_an_option_not_g
 #: entry eleven hours before the exit against a maximum stay of ten. Both are read from the
 #: visits; both vanish if the visits document is dropped unread.
 _SPENT_ALLOWANCE = [
-    {"pass_id": "pass-1", "vehicle_identity": "CAR-1", "entry_lane": "L1",
-     "entered_at": f"2026-06-01T0{h}:00:00-06:00", "exited_at": f"2026-06-01T0{h}:30:00-06:00",
-     "exit_lane": "L1"} for h in (7, 8, 9)
+    {"pass_id": "pass-1", "garage_id": "garage-downtown", "vehicle_identity": "CAR-1",
+     "entry_lane": "L1", "entered_at": f"2026-06-01T0{h}:00:00-06:00",
+     "exited_at": f"2026-06-01T0{h}:30:00-06:00", "exit_lane": "L1"} for h in (7, 8, 9)
 ]
 _OPEN_ENTRY_PAST_MAX_STAY = [
-    {"pass_id": "pass-1", "vehicle_identity": "CAR-1", "entry_lane": "L1",
-     "entered_at": "2026-06-01T01:00:00-06:00"},
+    {"pass_id": "pass-1", "garage_id": "garage-downtown", "vehicle_identity": "CAR-1",
+     "entry_lane": "L1", "entered_at": "2026-06-01T01:00:00-06:00"},
 ]
 
 
