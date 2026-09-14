@@ -2,8 +2,13 @@
 
     garage-pass check-terms --pass pass.json
     garage-pass access --garage g.json --pass p.json [--pass ...] \
-        [--registrations r.json] [--visits v.json] \
+        [--registrations r.json] [--visits v.json] [--garages gs.json] \
         --vehicle ID --lane L --direction entry|exit --at 2026-04-01T09:00:00-06:00
+
+``--garages`` is a JSON list of garage documents: the OTHER garages the passes
+name, so that a recorded entry at one of them is read on that garage's clock
+when a per-window allowance is counted (``access.access``). Without it, an
+entry recorded at a garage other than ``--garage`` refuses an ENTRY by name.
 
 Exit status: 0 covered, 1 not covered, 2 refused to answer OR the machine's
 configuration (a sentence on stderr: no DSN, a database that does not connect
@@ -137,6 +142,8 @@ def _parser() -> argparse.ArgumentParser:
     s.add_argument("--pass", dest="passes", action="append", required=True)
     s.add_argument("--registrations", help="JSON list of registrations")
     s.add_argument("--visits", help="JSON list of recorded visits")
+    s.add_argument("--garages", help="JSON list of the other garages the passes name, "
+                   "so a recorded entry at one of them is read on its own clock")
     _movement(s)
 
     s = sub.add_parser("create-garage", help="store a garage document")
@@ -286,11 +293,13 @@ def _access_from_documents(args: argparse.Namespace) -> Answer:
             visits=[load_visit(v) for v in _list(args.visits, "--visits")]
             if args.visits is not None else [],
             vehicle_identity=args.vehicle, lane=args.lane, direction=direction, at=at,
+            garages=[load_garage(g) for g in _list(args.garages, "--garages")]
+            if args.garages is not None else [],
         )
     loaded: list[Any] = [load_or_degrade(Garage, garage_document, "garage")]
     loaded += [load_or_degrade(Pass, d, "pass") for d in pass_documents]
     for option, cls, what in (("registrations", Registration, "registration"),
-                              ("visits", Visit, "visit")):
+                              ("visits", Visit, "visit"), ("garages", Garage, "garages")):
         path = getattr(args, option)
         if path is None:  # the option was not given -- NOT ``if not path``: an empty
             continue      # string is a path that cannot be read, never "not given"
@@ -310,6 +319,7 @@ def _access_from_documents(args: argparse.Namespace) -> Answer:
         registrations=[r for r in loaded if isinstance(r, Registration)],
         visits=[v for v in loaded if isinstance(v, Visit)],
         vehicle_identity=args.vehicle, lane=args.lane, direction=direction, at=at,
+        garages=[g for g in loaded[1:] if isinstance(g, Garage)],
     )
 
 
@@ -355,7 +365,7 @@ def _document(path: str, option: str) -> Any:
     """The document at ``path`` decoded, with a file the boundary cannot read
     refused by name -- never raised. THIS IS THE ONE DECODE BOUNDARY: every
     document argument (``--garage``, ``--pass``, ``--registrations``,
-    ``--visits``, and the store commands' documents) comes through here, so
+    ``--visits``, ``--garages``, and the store commands' documents) comes through here, so
     what is caught here is caught for all of them at once.
 
     **THE CHECK AND THE READ ARE THE SAME FILE.** The path is resolved ONCE,
@@ -446,7 +456,7 @@ def _document(path: str, option: str) -> Any:
 
 
 def _list(path: str, option: str) -> list:
-    """A document that must be a JSON list -- registrations, visits."""
+    """A document that must be a JSON list -- registrations, visits, garages."""
     document = _document(path, option)
     if not isinstance(document, list):
         raise Refused(

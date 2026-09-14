@@ -34,6 +34,24 @@ hands the engine each row's garage, and the stay at an exit is measured from
 the entry recorded at that garage -- never from one open at another garage of
 the set, which leaves the stay UNMEASURED and named; the garage planted out of
 the engine's selection reddens G9 and the tests here.
+
+**AND EACH RECORDED ENTRY IS READ ON THE CLOCK OF THE GARAGE IT WAS RECORDED
+AT** (the G3a merge gate's fourth finding, the gate-fix round). The allowance
+is one count over the set (C5, unchanged -- planted per garage, red); whether
+an entry is "in this window, today" is read in ITS garage's zone, so the
+pass's garages reach the engine (``access(garages=...)``): the store hands in
+every garage of every pass it selected, the command line hands in
+``--garages``. THE FIXTURES NOW HOLD A MIXED-ZONE PASS -- Denver beside Tokyo,
+and Denver beside Phoenix on the fall-back day -- because every multi-garage
+test before this put its garages in one zone, and that absence is why four
+review layers walked past a one-per-window allowance spent twice. An entry at
+a garage whose clock is not here is refused by name at an entry: not handed
+in, handed in unreadable, handed in twice -- never read on this garage's clock,
+never dropped, never raised; an exit never reaches it (no exit counts an
+allowance). And a REVOCATION ends each garage's registrations on THAT
+garage's day of the instant (the gate's same-class finding): the day a car is
+free again at a garage is that garage's, not the day at whichever garage the
+operator typed the command from.
 """
 
 from __future__ import annotations
@@ -43,11 +61,16 @@ from datetime import date
 import pytest
 
 from fixtures import (
+    FALL_BACK_2026,
+    FAR_ZONE,
+    FIXED_ZONE,
     HOLDER,
     NOON_MONDAY,
     SHIFTING_ZONE,
     a_pass,
     at,
+    far_garage,
+    fixed_garage,
     lanes_at,
     registered,
     simple_terms,
@@ -64,6 +87,11 @@ C = Garage(id="garage-c", timezone=SHIFTING_ZONE, transient_available=True, enro
 ELSEWHERE = Garage(id="garage-elsewhere", timezone=SHIFTING_ZONE, transient_available=True,
                    enrols_at="entry")
 THREE = (A, B, C)
+#: The mixed-zone pass's other garages: Tokyo (another calendar day for most
+#: of Denver's working day), and Phoenix (Denver's winter clock all year, for
+#: the fall-back edge). G14 proves each has the property it is here for.
+FAR = far_garage()
+FIXED = fixed_garage()
 
 
 def spanning(*garages: Garage, id: str = "pass-span", **overrides) -> Pass:
@@ -222,6 +250,190 @@ def test_a_pass_handed_in_twice_that_names_another_garage_is_not_this_garages_bu
     answer = access(garage=A, passes=copies, registrations=[registered(copies[0])], visits=[],
                     vehicle_identity="CAR-1", lane="L1", direction=Direction.ENTRY, at=NOON_MONDAY)
     assert answer.outcome is Outcome.NOT_COVERED and answer.reason == f.NO_PASS, answer
+
+
+# ---------------------------------------------------------------------------
+# Each recorded entry is read on the clock of the garage it was recorded at.
+# ---------------------------------------------------------------------------
+
+from datetime import timedelta  # noqa: E402
+
+from garage_pass.passes import Visit  # noqa: E402
+from garage_pass.terms import AllowancePeriod, VisitAllowance, Window  # noqa: E402
+
+EVERY_DAY = frozenset(range(1, 8))
+
+
+def per_window(count: int, window: Window, *garages: Garage, id: str = "pass-span") -> Pass:
+    return spanning(*garages, id=id, terms=simple_terms(
+        windows=(window,), visit_allowance=VisitAllowance(count, AllowancePeriod.WINDOW)))
+
+
+def entry_at(garage: Garage, pass_: Pass, visits, when, handed_in=(), identity="CAR-1"):
+    return access(garage=garage, garages=list(handed_in), passes=[pass_],
+                  registrations=[registered(pass_, identity)], visits=visits,
+                  vehicle_identity=identity, lane="L1", direction=Direction.ENTRY, at=when)
+
+
+def recorded(pass_: Pass, garage: Garage, entered_at, identity="CAR-1", open_=False) -> Visit:
+    return Visit(pass_id=pass_.id, garage_id=garage.id, vehicle_identity=identity,
+                 entry_lane="L1", entered_at=entered_at,
+                 exited_at=None if open_ else entered_at + timedelta(minutes=30),
+                 exit_lane=None if open_ else "L1")
+
+
+@pytest.mark.guarantee("G25")
+def test_a_per_window_allowance_reads_each_entry_in_the_local_day_of_its_own_garage():
+    """The gate's case, on the fixture's mixed-zone pass, read BOTH ways. A
+    visit at Tokyo at 09:00 Monday Tokyo time is in Monday's window there; at
+    Denver that instant is 18:00 Sunday. Asked at Denver on Monday morning:
+    counted, spent. The mirror: a visit at Denver at 18:00 SUNDAY Denver time
+    -- 09:00 Monday in Tokyo -- asked about at Tokyo on Monday afternoon: NOT
+    counted, covered, because at the door it drove through it was Sunday
+    evening, outside Mon-Fri 08:00-18:00. Same rule, each direction; and the
+    sentence names the clock each entry was read on."""
+    window = Window(days=frozenset({1, 2, 3, 4, 5}), start_minute=8 * 60, end_minute=18 * 60)
+    pass_ = per_window(1, window, A, FAR)
+    monday = date(2026, 6, 1)
+    tokyo_visit = recorded(pass_, FAR, at(monday, 9, timezone=FAR_ZONE))
+    at_denver = entry_at(A, pass_, [tokyo_visit], at(monday, 9), handed_in=[FAR])
+    assert at_denver.reason == f.OUT_OF_VISITS, at_denver
+    assert "1 of 1 visit(s) used" in at_denver.detail
+    assert "each read in the local day of the garage it was recorded at (garage-far: 1)" in (
+        at_denver.detail)
+    # the mirror: a Sunday-evening Denver visit is Monday morning in Tokyo, and
+    # is NOT in Monday's window because it was Sunday where it was recorded
+    sunday_evening = at(date(2026, 5, 31), 18)
+    assert sunday_evening == at(monday, 9, timezone=FAR_ZONE), "one instant, two days"
+    denver_visit = recorded(pass_, A, sunday_evening)
+    at_tokyo = entry_at(FAR, pass_, [denver_visit], at(monday, 17, timezone=FAR_ZONE),
+                        handed_in=[A])
+    assert at_tokyo.outcome is Outcome.COVERED, at_tokyo
+    assert "visit 1 of 1; counted 0 recorded entries" in at_tokyo.covering_term
+    assert "recorded at (none)" in at_tokyo.covering_term
+    # the same-zone control: A and B share a clock, and the reading is the
+    # single-clock reading exactly -- a Monday-morning B visit counts at A
+    twin = per_window(1, window, A, B)
+    b_visit = recorded(twin, B, at(monday, 9))
+    at_a = entry_at(A, twin, [b_visit], at(monday, 10), handed_in=[B])
+    assert at_a.reason == f.OUT_OF_VISITS and "(garage-b: 1)" in at_a.detail, at_a
+
+
+@pytest.mark.guarantee("G25")
+def test_the_allowance_is_still_one_count_over_the_set_on_a_mixed_zone_pass():
+    """C5, THE CONTROL ON THE FIX'S REACH: a 20-visit-per-window allowance
+    on Denver + Tokyo, 12 entries at Denver and 8 at Tokyo each inside
+    Monday's window on its own clock, is 20 of 20 at both garages and the
+    21st is refused at either. A per-garage count would read 12 of 20 at
+    Denver and 8 at Tokyo; the plant that makes it one reddens this."""
+    window = Window(days=EVERY_DAY, start_minute=0, end_minute=24 * 60)
+    pass_ = per_window(20, window, A, FAR)
+    monday = date(2026, 6, 1)
+    ledger = [recorded(pass_, A, at(monday, 1, 5 * i), identity=f"CAR-{i}") for i in range(12)]
+    ledger += [recorded(pass_, FAR, at(monday, 9, 5 * i, timezone=FAR_ZONE),
+                        identity=f"CAR-{i}") for i in range(8)]
+    for garage, when in ((A, at(monday, 12)), (FAR, at(monday, 12, timezone=FAR_ZONE))):
+        answer = entry_at(garage, pass_, ledger, when, handed_in=[A, FAR])
+        assert answer.reason == f.OUT_OF_VISITS, (garage.id, answer)
+        assert "20 of 20 visit(s) used; counted 20 recorded entries" in answer.detail
+        assert "(garage-a: 12, garage-far: 8)" in answer.detail, answer.detail
+    nineteen = ledger[:19]
+    assert entry_at(A, pass_, nineteen, at(monday, 12), handed_in=[A, FAR]).outcome is (
+        Outcome.COVERED)
+
+
+@pytest.mark.guarantee("G25")
+def test_the_dst_edge_two_denver_entries_that_read_as_one_wall_clock_are_two_on_denvers_day():
+    """THE DST EDGE, at one garage and not the other. On 2026-11-01 Denver's
+    day is 25 hours long: 01:30 happens twice (MDT, then MST). Phoenix does
+    not shift. Two entries recorded at Denver, one in each 01:30 -- 07:30 and
+    08:30 UTC -- both fall in a 01:00-03:00 window ON DENVER'S CLOCK. Read on
+    Phoenix's clock they are 00:30 and 01:30: only one in the window. So an
+    entry at Phoenix at 02:30 on a 2-per-window allowance is OUT_OF_VISITS --
+    both Denver entries counted, on Denver's day -- where the asking clock
+    would have admitted it as visit 2 of 2. The control: the same two instants
+    recorded at Phoenix itself ARE 00:30 and 01:30 there, one counted, covered."""
+    window = Window(days=EVERY_DAY, start_minute=1 * 60, end_minute=3 * 60)
+    pass_ = per_window(2, window, A, FIXED)
+    first_0130 = at(FALL_BACK_2026, 1, 30, fold=0)   # 01:30 MDT = 07:30 UTC
+    second_0130 = at(FALL_BACK_2026, 1, 30, fold=1)  # 01:30 MST = 08:30 UTC
+    assert (second_0130 - first_0130).total_seconds() == 0, "same wall clock, by PEP 495"
+    from garage_pass.localday import elapsed
+    assert elapsed(first_0130, second_0130) == timedelta(hours=1), "one hour apart in fact"
+    at_denver = [recorded(pass_, A, first_0130, identity="CAR-2"),
+                 recorded(pass_, A, second_0130, identity="CAR-3")]
+    asked_at = at(FALL_BACK_2026, 2, 30, timezone=FIXED_ZONE)  # 09:30 UTC, after both
+    spent = entry_at(FIXED, pass_, at_denver, asked_at, handed_in=[A])
+    assert spent.reason == f.OUT_OF_VISITS, spent
+    assert "2 of 2 visit(s) used; counted 2 recorded entries" in spent.detail
+    assert "on 2026-11-01, each read in the local day of the garage it was recorded at " in (
+        spent.detail) and "(garage-a: 2)" in spent.detail
+    # the control: the same two instants recorded at Phoenix are 00:30 and 01:30 there
+    at_phoenix = [recorded(pass_, FIXED, first_0130, identity="CAR-2"),
+                  recorded(pass_, FIXED, second_0130, identity="CAR-3")]
+    admitted = entry_at(FIXED, pass_, at_phoenix, asked_at, handed_in=[A])
+    assert admitted.outcome is Outcome.COVERED, admitted
+    assert "visit 2 of 2; counted 1 recorded entry" in admitted.covering_term
+    assert "(garage-fixed: 1)" in admitted.covering_term
+    # and asked at Denver in its own doubled hour, both count there too
+    at_home = entry_at(A, pass_, at_denver, at(FALL_BACK_2026, 2, 45, fold=1), handed_in=[FIXED])
+    assert at_home.reason == f.OUT_OF_VISITS, at_home
+
+
+@pytest.mark.guarantee("G25")
+def test_an_entry_at_a_garage_whose_clock_is_not_here_is_refused_by_name_never_read_on_this_one():
+    """The three ways the clock can be missing, each refused at an ENTRY
+    naming the garage, and each bearing on the answer ONLY when an entry
+    recorded there must be read: not handed in; handed in unreadable (the
+    asking garage's own path, one garage over); handed in twice under one id
+    (never resolved by order -- the two orders give one answer). Where no
+    entry was recorded there, a missing or doubled garage bears on nothing.
+    An exit reaches none of them: no exit counts an allowance."""
+    from garage_pass.findings import Unreadable
+    from garage_pass.garage import garage_from_stored
+
+    window = Window(days=frozenset({1, 2, 3, 4, 5}), start_minute=8 * 60, end_minute=18 * 60)
+    pass_ = per_window(1, window, A, FAR)
+    monday = date(2026, 6, 1)
+    tokyo_visit = recorded(pass_, FAR, at(monday, 9, timezone=FAR_ZONE))
+    when = at(monday, 9)
+    # 1. not handed in
+    answer = entry_at(A, pass_, [tokyo_visit], when)
+    assert answer.outcome is Outcome.REFUSED_TO_ANSWER, answer
+    assert answer.missing == f.MISSING_GARAGE_HANDED_IN and answer.pass_id == pass_.id
+    assert "garage 'garage-far' was not handed in (handed in: none; asking: 'garage-a')" in (
+        answer.detail)
+    assert "2026-06-01T09:00:00+09:00" in answer.detail, "the entry it could not read, named"
+    assert "on that garage's clock" in answer.detail
+    # 2. handed in unreadable: the same refusal the asking garage gets, naming the far one
+    stale = garage_from_stored(FAR.id, "Mars/Olympus", True, "entry")
+    assert isinstance(stale.unreadable, Unreadable)
+    answer = entry_at(A, pass_, [tokyo_visit], when, handed_in=[stale])
+    assert answer.outcome is Outcome.REFUSED_TO_ANSWER and answer.missing == f.MISSING_TIMEZONE
+    assert "garage 'garage-far': REFUSAL_TIMEZONE_UNKNOWN [garage.timezone]" in answer.detail
+    # 3. handed in twice, whether or not the copies agree, in either order
+    twice = [FAR, Garage(id=FAR.id, timezone=SHIFTING_ZONE, transient_available=True)]
+    answers = {entry_at(A, pass_, [tokyo_visit], when, handed_in=order)
+               for order in (twice, list(reversed(twice)), [FAR, FAR])}
+    assert len(answers) == 1, "the answer depended on the order the copies arrived in"
+    (answer,) = answers
+    assert answer.outcome is Outcome.REFUSED_TO_ANSWER and answer.missing == f.DUPLICATED_GARAGE_ID
+    assert "garage 'garage-far' was handed in 2 times" in answer.detail
+    # bears on nothing without an entry recorded there: the same three, no Tokyo visit
+    denver_visit = recorded(pass_, A, at(monday, 8, 30))
+    for handed_in in ([], [stale], twice):
+        answer = entry_at(A, pass_, [denver_visit], when, handed_in=handed_in)
+        assert answer.reason == f.OUT_OF_VISITS, (handed_in, answer)
+    # the asking garage is the `garage` parameter whatever `garages` carries under its id
+    answer = entry_at(A, pass_, [denver_visit], when, handed_in=[Garage(
+        id=A.id, timezone=FAR_ZONE, transient_available=True)])
+    assert answer.reason == f.OUT_OF_VISITS and "(garage-a: 1)" in answer.detail, answer
+    # an exit never reaches any of it
+    for handed_in in ([], [stale], twice):
+        exit_ = access(garage=A, garages=handed_in, passes=[pass_],
+                       registrations=[registered(pass_)], visits=[tokyo_visit],
+                       vehicle_identity="CAR-1", lane="L1", direction=Direction.EXIT, at=when)
+        assert exit_.outcome is Outcome.COVERED and exit_.exit_note, (handed_in, exit_)
 
 
 # ---------------------------------------------------------------------------
@@ -743,7 +955,6 @@ from garage_pass.store.records import (  # noqa: E402
     record_entry,
     record_exit,
 )
-from garage_pass.terms import AllowancePeriod, VisitAllowance  # noqa: E402
 
 
 def _entry(app, tenant_id, garage: Garage, pass_: Pass, identity: str, hour: int) -> dict:
@@ -916,6 +1127,198 @@ def test_the_allowance_still_counts_every_garage_of_the_set_after_the_ledger_is_
     third = access_from_store(app, tenant_id, A.id, "CAR-2", "L1", Direction.ENTRY,
                               at(date(2026, 6, 1), 12))
     assert third.reason == f.NO_PASS
+
+
+def _record(app, tenant_id, garage: Garage, pass_: Pass, identity: str, entered_at) -> None:
+    """An entry and, half an hour later, its exit -- at ``garage``, at an instant
+    given in full (the mixed-zone tests need the zone stated per entry)."""
+    with tenant(app, tenant_id) as cursor:
+        record_entry(cursor, tenant_id, garage.id, pass_.id, identity, "L1", entered_at)
+        record_exit(cursor, tenant_id, garage.id, pass_.id, identity, "L1",
+                    entered_at + timedelta(minutes=30))
+    app.commit()
+
+
+@pytest.mark.guarantee("G25")
+@store_test
+def test_the_store_hands_the_engine_every_garage_of_the_pass_and_each_entry_is_read_there(
+    app, owner, tenant_id
+):
+    """The whole path on the mixed-zone pass: the ledger's Tokyo row, read by
+    the store at Denver, is read on TOKYO'S clock -- the gate's case through
+    ``access_from_store``, OUT_OF_VISITS at Denver on Monday morning with the
+    sentence naming garage-far; and the mirror, a Sunday-evening Denver entry
+    asked about at Tokyo on Monday, not counted. Then the far garage's stored
+    zone made unreadable RAW (a stale row under a tzdata that lost the name):
+    the entry at Denver is REFUSED naming garage-far and its field -- the
+    store handed the engine an unreadable garage, the engine would not read
+    Tokyo's entry on Denver's clock -- and the exit at Denver is still
+    answered (G4). The repair makes it answer again."""
+    from garage_pass.store.records import set_garage_timezone
+
+    seed_garages(app, tenant_id, A, FAR)
+    window = Window(days=frozenset({1, 2, 3, 4, 5}), start_minute=8 * 60, end_minute=18 * 60)
+    pass_ = per_window(1, window, A, FAR, id="pass-mixed")
+    create(app, tenant_id, A, pass_)
+    with tenant(app, tenant_id) as cursor:
+        register_vehicle(cursor, tenant_id, A.id, pass_.id, "CAR-1", date(2026, 1, 1))
+    app.commit()
+    monday = date(2026, 6, 1)
+    _record(app, tenant_id, FAR, pass_, "CAR-1", at(monday, 9, timezone=FAR_ZONE))
+    spent = access_from_store(app, tenant_id, A.id, "CAR-1", "L1", Direction.ENTRY, at(monday, 9))
+    assert spent.reason == f.OUT_OF_VISITS, spent
+    assert "1 of 1 visit(s) used; counted 1 recorded entry" in spent.detail
+    assert "(garage-far: 1)" in spent.detail, spent.detail
+    # the mirror, on its own pass: CAR-2's Sunday-evening Denver entry is
+    # Monday 09:00 in Tokyo and is NOT in Monday's window, because it was
+    # Sunday at the door it drove through
+    mirror = per_window(1, window, A, FAR, id="pass-mirror")
+    create(app, tenant_id, A, mirror)
+    with tenant(app, tenant_id) as cursor:
+        register_vehicle(cursor, tenant_id, A.id, mirror.id, "CAR-2", date(2026, 1, 1))
+    app.commit()
+    _record(app, tenant_id, A, mirror, "CAR-2", at(date(2026, 5, 31), 18))
+    free = access_from_store(app, tenant_id, FAR.id, "CAR-2", "L1", Direction.ENTRY,
+                             at(monday, 17, timezone=FAR_ZONE))
+    assert free.outcome is Outcome.COVERED, free
+    assert "visit 1 of 1; counted 0 recorded entries" in free.covering_term
+    # the same-zone reading, unchanged: asked at Denver, that entry is Sunday's
+    sunday = access_from_store(app, tenant_id, A.id, "CAR-2", "L1", Direction.ENTRY,
+                               at(monday, 9))
+    assert sunday.outcome is Outcome.COVERED and "counted 0 recorded entries" in (
+        sunday.covering_term)
+    # G17, one garage over: the far garage's zone made unreadable raw
+    with owner.cursor() as cursor:
+        cursor.execute("UPDATE garages SET timezone = 'Mars/Olympus' WHERE tenant_id = %s "
+                       "AND external_id = %s", (tenant_id, FAR.id))
+        assert cursor.rowcount == 1
+    refused = access_from_store(app, tenant_id, A.id, "CAR-1", "L1", Direction.ENTRY,
+                                at(monday, 9))
+    assert refused.outcome is Outcome.REFUSED_TO_ANSWER, refused
+    assert refused.missing == f.MISSING_TIMEZONE, refused
+    assert "garage 'garage-far': REFUSAL_TIMEZONE_UNKNOWN [garage.timezone]" in refused.detail
+    assert "'Mars/Olympus'" in refused.detail
+    exit_ = access_from_store(app, tenant_id, A.id, "CAR-1", "L1", Direction.EXIT, at(monday, 9))
+    assert exit_.outcome is Outcome.COVERED and exit_.exit_note, exit_
+    # repaired, it answers again
+    with tenant(app, tenant_id) as cursor:
+        set_garage_timezone(cursor, tenant_id, FAR.id, FAR_ZONE, by="owner", at=at(monday, 9),
+                            reason="tzdata restored")
+    app.commit()
+    again = access_from_store(app, tenant_id, A.id, "CAR-1", "L1", Direction.ENTRY, at(monday, 9))
+    assert again.reason == f.OUT_OF_VISITS, again
+
+
+@pytest.mark.guarantee("G25")
+@pytest.mark.guarantee("G5")
+@store_test
+def test_a_revocation_ends_each_garages_registrations_on_that_garages_day(app, tenant_id):
+    """W2: one instant, 2026-06-01T20:00-06:00, is June 1 in Denver and June 2
+    in Tokyo. Revoked FROM DENVER, the Denver row ends on June 1 and the Tokyo
+    row on June 2; revoked FROM TOKYO with the same instant, the same -- the
+    day is each garage's, never the asking garage's. The same-zone pass (A and
+    B, both Denver) ends on June 1 at both, as before. And THE FREED-IDENTITY
+    DAY, asserted directly: CAR-1 registers onto a fresh pass at Denver from
+    June 1 and at Tokyo from June 2, and is refused at Tokyo from June 1 by
+    name, naming the day the revoked registration ends there."""
+    from garage_pass.store.records import ENDED_BY_REVOCATION, change_state
+
+    seed_garages(app, tenant_id, A, B, FAR)
+    revoke_at = at(date(2026, 6, 1), 20)
+    assert at(date(2026, 6, 2), 11, timezone=FAR_ZONE) == revoke_at, "June 2 in Tokyo"
+
+    def ended_days(pass_id: str) -> list[tuple]:
+        return query(app, tenant_id,
+                     "SELECT g.external_id, r.vehicle_identity, r.end_day, r.ended_reason "
+                     "FROM vehicle_registrations r JOIN garages g ON g.id = r.garage_id "
+                     "JOIN passes p ON p.id = r.pass_id WHERE p.external_id = %s ORDER BY 1, 2",
+                     (pass_id,))
+
+    for asked_from, pass_id in ((A, "from-denver"), (FAR, "from-tokyo")):
+        pass_ = spanning(A, FAR, id=pass_id, state=State.ACTIVE)
+        create(app, tenant_id, A, pass_)
+        with tenant(app, tenant_id) as cursor:
+            register_vehicle(cursor, tenant_id, A.id, pass_id, f"CAR-{pass_id}",
+                             date(2026, 1, 1))
+            out = change_state(cursor, tenant_id, asked_from.id, pass_id, State.REVOKED,
+                               by="owner", at=revoke_at, reason="divorced")
+        app.commit()
+        assert out["registrations_ended"] == 2, out
+        assert ended_days(pass_id) == [
+            (A.id, f"CAR-{pass_id}", date(2026, 6, 1), ENDED_BY_REVOCATION),
+            (FAR.id, f"CAR-{pass_id}", date(2026, 6, 2), ENDED_BY_REVOCATION),
+        ], (asked_from.id, ended_days(pass_id))
+    # the same-zone control: unchanged, June 1 at both
+    same = spanning(A, B, id="same-zone", state=State.ACTIVE)
+    create(app, tenant_id, A, same)
+    with tenant(app, tenant_id) as cursor:
+        register_vehicle(cursor, tenant_id, A.id, same.id, "CAR-same", date(2026, 1, 1))
+        change_state(cursor, tenant_id, B.id, same.id, State.REVOKED, by="owner", at=revoke_at,
+                     reason="divorced")
+    app.commit()
+    assert [row[2] for row in ended_days(same.id)] == [date(2026, 6, 1), date(2026, 6, 1)]
+    # the freed-identity day, directly: where is CAR-from-denver free from when?
+    fresh = spanning(A, FAR, id="fresh", state=State.ACTIVE)
+    create(app, tenant_id, A, fresh)
+    with tenant(app, tenant_id) as cursor:
+        with pytest.raises(f.Refused) as refused:
+            register_vehicle(cursor, tenant_id, FAR.id, fresh.id, "CAR-from-denver",
+                             date(2026, 6, 1))
+    app.rollback()
+    assert refused.value.code == f.REFUSAL_VEHICLE_ON_ANOTHER_PASS
+    assert "'garage-far'" in refused.value.detail and "2026-06-02" in refused.value.detail, (
+        refused.value.detail)
+    with tenant(app, tenant_id) as cursor:
+        out = register_vehicle(cursor, tenant_id, FAR.id, fresh.id, "CAR-from-denver",
+                               date(2026, 6, 2))
+    app.commit()
+    assert sorted(out["garages"]) == [A.id, FAR.id], out
+
+
+@pytest.mark.guarantee("G25")
+@pytest.mark.guarantee("G5")
+@store_test
+def test_a_revocation_with_a_garage_of_the_pass_unreadable_is_refused_by_name_and_writes_nothing(
+    app, owner, tenant_id
+):
+    """Every garage's day is derived BEFORE the first row changes: the far
+    garage's stored zone made unreadable raw, the revocation from Denver is
+    refused naming garage-far and the repair, and NOTHING moved -- the pass
+    is still active, no history row, every registration open. The same-zone
+    control in the same test: with the far garage repaired, it goes through."""
+    from garage_pass.store.records import change_state, set_garage_timezone
+
+    seed_garages(app, tenant_id, A, FAR)
+    pass_ = spanning(A, FAR, state=State.ACTIVE)
+    create(app, tenant_id, A, pass_)
+    with tenant(app, tenant_id) as cursor:
+        register_vehicle(cursor, tenant_id, A.id, pass_.id, "CAR-1", date(2026, 1, 1))
+    app.commit()
+    with owner.cursor() as cursor:
+        cursor.execute("UPDATE garages SET timezone = 'Mars/Olympus' WHERE tenant_id = %s "
+                       "AND external_id = %s", (tenant_id, FAR.id))
+    before = (query(app, tenant_id, "SELECT state FROM passes"),
+              query(app, tenant_id, "SELECT count(*) FROM pass_state_changes"),
+              registration_rows(app, tenant_id))
+    with tenant(app, tenant_id) as cursor:
+        with pytest.raises(f.Refused) as refused:
+            change_state(cursor, tenant_id, A.id, pass_.id, State.REVOKED, by="owner",
+                         at=at(date(2026, 6, 1), 20), reason="divorced")
+    app.rollback()
+    assert refused.value.code == f.REFUSAL_TIMEZONE_UNKNOWN, refused.value
+    assert "'garage-far'" in refused.value.detail and "set-garage-timezone" in (
+        refused.value.detail)
+    assert (query(app, tenant_id, "SELECT state FROM passes"),
+            query(app, tenant_id, "SELECT count(*) FROM pass_state_changes"),
+            registration_rows(app, tenant_id)) == before, "a refusal writes nothing"
+    assert before[0] == [("active",)] and all(row[4] is None for row in before[2])
+    with tenant(app, tenant_id) as cursor:
+        set_garage_timezone(cursor, tenant_id, FAR.id, FAR_ZONE, by="owner",
+                            at=at(date(2026, 6, 1), 20), reason="tzdata restored")
+        out = change_state(cursor, tenant_id, A.id, pass_.id, State.REVOKED, by="owner",
+                           at=at(date(2026, 6, 1), 20), reason="divorced")
+    app.commit()
+    assert out["registrations_ended"] == 2
 
 
 @pytest.mark.guarantee("G25")
@@ -1342,4 +1745,88 @@ def test_the_product_walk_over_a_three_garage_pass_through_the_command_line(
     for name, (_status, out) in refusals.items():
         assert any(out["detail"] == d for d, _stack in rendered), f"{name} was not collected"
     status, result = sweep.judge_rendered(list(rendered))
+    assert result["unjudged"] == [] and result["false"] == [], sweep.report_rendered(result)
+
+
+# ---------------------------------------------------------------------------
+# The documents door: --garages hands the engine the other garages' clocks.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.guarantee("G25")
+@pytest.mark.guarantee("G18")
+def test_the_documents_door_reads_each_entry_on_its_own_garages_clock_with_garages_handed_in(
+    tmp_path, capsys
+):
+    """The gate's case through ``garage-pass access``: a Denver garage
+    document, a pass document naming Denver and Tokyo with one visit per
+    window, a visits document holding the Tokyo entry at 09:00 Monday Tokyo
+    time. With ``--garages`` handing in the Tokyo document, the entry at
+    Denver on Monday morning is OUT_OF_VISITS, exit 1, the sentence naming
+    garage-far. WITHOUT it, the entry is refused to answer naming ``garages``
+    (exit 2) -- never read on Denver's clock -- and the EXIT without it is
+    answered, covered, exit 0 (G4: no exit counts an allowance). A malformed
+    member of ``--garages`` is the same door as ``--garage``: refused at an
+    entry, answered RECORD_UNREADABLE at an exit; not a JSON list, the same
+    two readings naming the option -- exactly ``--registrations``' door."""
+    import json
+
+    import sweep_route_sentences as sweep
+
+    from _rendered_sentences import rendered_so_far
+    from fixtures import pass_document
+    from garage_pass.cli import main
+
+    started = len(rendered_so_far())
+
+    def write(name: str, document: object) -> str:
+        (tmp_path / name).write_text(json.dumps(document))
+        return str(tmp_path / name)
+
+    denver = write("denver.json", {"id": A.id, "timezone": SHIFTING_ZONE,
+                                   "transient_available": True})
+    tokyo = write("tokyo.json", [{"id": FAR.id, "timezone": FAR_ZONE, "transient_available": True}])
+    pass_ = write("pass.json", pass_document(
+        id="pass-span", garage_ids=[A.id, FAR.id],
+        terms={**pass_document()["terms"], "allowed_lanes": None,
+               "windows": [{"days": [1, 2, 3, 4, 5], "start_minute": 480, "end_minute": 1080}],
+               "visit_allowance": {"count": 1, "per": "window"}, "max_stay_minutes": None}))
+    registrations = write("r.json", [{"pass_id": "pass-span", "vehicle_identity": "CAR-1",
+                                      "effective_day": "2026-01-01"}])
+    visits = write("v.json", [{"pass_id": "pass-span", "garage_id": FAR.id,
+                               "vehicle_identity": "CAR-1", "entry_lane": "L1",
+                               "entered_at": "2026-06-01T09:00:00+09:00",
+                               "exited_at": "2026-06-01T10:00:00+09:00", "exit_lane": "L1"}])
+    base = ["access", "--garage", denver, "--pass", pass_, "--registrations", registrations,
+            "--visits", visits, "--vehicle", "CAR-1", "--lane", "L1"]
+    entry = ["--direction", "entry", "--at", "2026-06-01T09:00:00-06:00"]
+    exit_ = ["--direction", "exit", "--at", "2026-06-01T09:00:00-06:00"]
+    status, out = _run(main, capsys, [*base, "--garages", tokyo, *entry])
+    assert status == 1 and out["reason"] == f.OUT_OF_VISITS, out
+    assert "(garage-far: 1)" in out["detail"], out["detail"]
+    status, out = _run(main, capsys, [*base, *entry])
+    assert status == 2 and out["outcome"] == "refused_to_answer", out
+    assert out["missing"] == f.MISSING_GARAGE_HANDED_IN and "'garage-far'" in out["detail"]
+    status, out = _run(main, capsys, [*base, *exit_])
+    assert status == 0 and out["outcome"] == "covered" and out["exit_note"], out
+    # a member of --garages the module cannot read: the --garage door, one garage over
+    stale = write("stale.json", [{"id": FAR.id, "timezone": "Mars/Olympus",
+                                  "transient_available": True}])
+    status, out = _run(main, capsys, [*base, "--garages", stale, *entry])
+    assert status == 3 and out["refused"] == f.REFUSAL_TIMEZONE_UNKNOWN, out
+    status, out = _run(main, capsys, [*base, "--garages", stale, *exit_])
+    assert status == 0 and out["outcome"] == "covered", out  # unreadable, and not needed
+    malformed = write("malformed.json", [{"id": FAR.id}])
+    status, out = _run(main, capsys, [*base, "--garages", malformed, *entry])
+    assert status == 3 and out["refused"] == f.REFUSAL_FIELD_BLANK, out
+    status, out = _run(main, capsys, [*base, "--garages", malformed, *exit_])
+    assert status == 1 and out["reason"] == f.RECORD_UNREADABLE, out
+    assert "garages[0].timezone" in out["detail"], out["detail"]
+    not_a_list = write("dict.json", {"id": FAR.id})
+    status, out = _run(main, capsys, [*base, "--garages", not_a_list, *entry])
+    assert status == 3 and out["field"] == "--garages" and "JSON list" in out["detail"], out
+    status, out = _run(main, capsys, [*base, "--garages", not_a_list, *exit_])
+    assert status == 1 and out["reason"] == f.RECORD_UNREADABLE and "--garages" in out["detail"]
+    # every refusal this printed was collected and judged
+    status, result = sweep.judge_rendered(list(rendered_so_far()[started:]))
     assert result["unjudged"] == [] and result["false"] == [], sweep.report_rendered(result)

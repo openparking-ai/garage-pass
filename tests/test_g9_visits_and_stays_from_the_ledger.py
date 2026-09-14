@@ -32,12 +32,26 @@ and answered OVER_MAX_STAY quoting A's instant -- wrong-silently, at the
 barrier. Now a ``Visit`` carries its garage; an entry open elsewhere is not this
 exit's entry, and the stay is UNMEASURED and named.
 
+**EACH RECORDED ENTRY IS READ ON THE CLOCK OF THE GARAGE IT WAS RECORDED AT.**
+The allowance counts every garage of the pass (C5); whether an entry fell "in
+this window, today" is read in the zone of the garage it was recorded at, and
+the pass's garages reach the engine (``garages``) so it can. Measured before
+this (the G3a merge gate): the per-window count read every garage's entries
+on the ASKING garage's clock, so on a pass over Denver and Tokyo a visit at
+Tokyo at 09:00 Monday read at Denver as 18:00 Sunday, counted nothing, and a
+one-per-window allowance was spent twice -- with every test green, because no
+test put two garages of one pass in two zones. The tests below do, with the
+same-zone reading as the control, and the denominator sentence says on whose
+clock each entry was read. An entry at a garage whose clock is not here is
+REFUSED by name at an entry, never read on the wrong clock (G25 measures the
+refusals; the LIFE allowance reads no clock and is unchanged).
+
 Controls: the per-window count planted to count the pass's whole life; the
-denominator sentence planted to a fixed string; the open-visit lookup planted
-to ignore the vehicle identity, and planted to ignore the garage; the
-UNMEASURED naming planted away (the stay then silently treated as satisfied --
-wrong-silently, the failure this exists to catch); the rendering planted back
-to each instant's own offset.
+denominator sentence planted to a fixed string; every entry planted back onto
+the asking garage's clock; the open-visit lookup planted to ignore the vehicle
+identity, and planted to ignore the garage; the UNMEASURED naming planted away
+(the stay then silently treated as satisfied -- wrong-silently, the failure
+this exists to catch); the rendering planted back to each instant's own offset.
 """
 
 from __future__ import annotations
@@ -47,10 +61,12 @@ from datetime import date, timedelta
 import pytest
 
 from fixtures import (
+    FAR_ZONE,
     NOON_MONDAY,
     SIX_TO_EIGHT,
     a_pass,
     at,
+    far_garage,
     lanes_at,
     registered,
     simple_terms,
@@ -122,6 +138,100 @@ def test_an_allowance_per_window_counts_only_this_windows_entries_and_names_the_
     third = ask(pass_, ledger + [visit(pass_, "CAR-3", 10, exited_hour=11)])
     assert third.reason == f.OUT_OF_VISITS
     assert "counted 2 recorded entries" in third.detail and "on 2026-06-01" in third.detail
+
+
+@pytest.mark.guarantee("G9")
+def test_a_per_window_count_reads_each_entry_on_the_clock_of_the_garage_it_was_recorded_at():
+    """THE MIXED-ZONE PASS: Denver and Tokyo, one visit per window, Mon-Fri
+    06:00-20:00. ONE INSTANT, 2026-06-01T09:00+09:00 -- Monday 09:00 in Tokyo,
+    Sunday 18:00 in Denver -- recorded at Tokyo counts against Monday's window
+    (it is Monday 09:00 where the car drove in), and recorded at Denver does
+    not (it is Sunday there). The gate's own case, flipped: the entry at Denver
+    at 09:00 Monday is OUT_OF_VISITS with Tokyo's visit counted, and the
+    denominator says the entry was read in the local day of the garage it was
+    recorded at, naming that garage. The control is the same instant recorded
+    at Denver itself: counted 0, covered -- the reading a single clock gives,
+    right only because the entry's garage IS the asking garage."""
+    denver, tokyo = GARAGE, far_garage()
+    pass_ = a_pass(garage_ids={denver.id, tokyo.id}, terms=simple_terms(
+        windows=(SIX_TO_EIGHT,), visit_allowance=VisitAllowance(1, AllowancePeriod.WINDOW)))
+    monday_9_tokyo = at(MONDAY, 9, timezone=FAR_ZONE)
+    read_at_denver = monday_9_tokyo.astimezone(at(MONDAY, 0).tzinfo).isoformat()
+    assert read_at_denver == "2026-05-31T18:00:00-06:00"
+
+    def entry_at_denver(visits):
+        return access(garage=denver, garages=[tokyo], passes=[pass_],
+                      registrations=[registered(pass_)], visits=visits, vehicle_identity="CAR-1",
+                      lane="L1", direction=Direction.ENTRY, at=at(MONDAY, 9))
+
+    at_tokyo = Visit(pass_id=pass_.id, garage_id=tokyo.id, vehicle_identity="CAR-1",
+                     entry_lane="L1", entered_at=monday_9_tokyo,
+                     exited_at=monday_9_tokyo + timedelta(hours=1), exit_lane="L1")
+    spent = entry_at_denver([at_tokyo])
+    assert spent.outcome is Outcome.NOT_COVERED and spent.reason == f.OUT_OF_VISITS, spent
+    assert (
+        "1 of 1 visit(s) used; counted 1 recorded entry on pass 'pass-1' in window "
+        "Mon,Tue,Wed,Thu,Fri 06:00-20:00 on 2026-06-01, each read in the local day of the "
+        "garage it was recorded at (garage-far: 1)"
+    ) in spent.detail, spent.detail
+    # the control: the SAME instant recorded at Denver is Sunday evening there
+    at_denver = Visit(pass_id=pass_.id, garage_id=denver.id, vehicle_identity="CAR-1",
+                      entry_lane="L1", entered_at=monday_9_tokyo,
+                      exited_at=monday_9_tokyo + timedelta(hours=1), exit_lane="L1")
+    free = entry_at_denver([at_denver])
+    assert free.outcome is Outcome.COVERED, free
+    assert "visit 1 of 1; counted 0 recorded entries" in free.covering_term
+    assert "recorded at (none)" in free.covering_term
+    # and the count is still ONE COUNT OVER THE SET (C5): a two-visit allowance,
+    # one entry at each garage in Monday's window on its own clock, is spent
+    two = a_pass(garage_ids={denver.id, tokyo.id}, terms=simple_terms(
+        windows=(SIX_TO_EIGHT,), visit_allowance=VisitAllowance(2, AllowancePeriod.WINDOW)))
+    both = [
+        Visit(pass_id=two.id, garage_id=tokyo.id, vehicle_identity="CAR-1", entry_lane="L1",
+              entered_at=monday_9_tokyo, exited_at=monday_9_tokyo + timedelta(hours=1),
+              exit_lane="L1"),
+        visit(two, "CAR-1", 7, exited_hour=8),   # Monday 07:00 at Denver
+    ]
+    spent_both = access(garage=denver, garages=[tokyo], passes=[two],
+                        registrations=[registered(two)], visits=both, vehicle_identity="CAR-1",
+                        lane="L1", direction=Direction.ENTRY, at=at(MONDAY, 9))
+    assert spent_both.reason == f.OUT_OF_VISITS, spent_both
+    assert "counted 2 recorded entries" in spent_both.detail
+    assert "(garage-downtown: 1, garage-far: 1)" in spent_both.detail, spent_both.detail
+    # the same-zone reading is EXACTLY as before: two Denver garages, the
+    # sentence and the count unchanged but for naming the garage
+    twin = transient_garage()
+    twin = type(twin)(id="garage-twin", timezone=twin.timezone, transient_available=True)
+    same_zone = a_pass(garage_ids={denver.id, twin.id}, terms=simple_terms(
+        windows=(SIX_TO_EIGHT,), visit_allowance=VisitAllowance(2, AllowancePeriod.WINDOW)))
+    ledger = [visit(same_zone, "CAR-1", 7, exited_hour=8, garage_id=twin.id)]
+    second = access(garage=denver, garages=[twin], passes=[same_zone],
+                    registrations=[registered(same_zone)], visits=ledger, vehicle_identity="CAR-1",
+                    lane="L1", direction=Direction.ENTRY, at=NOON_MONDAY)
+    assert second.outcome is Outcome.COVERED and "visit 2 of 2" in second.covering_term
+    assert "counted 1 recorded entry on pass 'pass-1' in window" in second.covering_term
+    assert "(garage-twin: 1)" in second.covering_term
+
+
+@pytest.mark.guarantee("G9")
+def test_the_life_allowance_reads_no_clock_and_counts_every_garages_entries_unchanged():
+    """The LIFE branch has no clock and gains none: on the mixed-zone pass the
+    same entries count wherever they were recorded, and with NO garages handed
+    in at all -- nothing to read them on, and nothing needs to."""
+    denver, tokyo = GARAGE, far_garage()
+    pass_ = a_pass(garage_ids={denver.id, tokyo.id}, terms=simple_terms(
+        visit_allowance=VisitAllowance(2, AllowancePeriod.LIFE)))
+    ledger = [
+        Visit(pass_id=pass_.id, garage_id=tokyo.id, vehicle_identity="CAR-1", entry_lane="L1",
+              entered_at=at(MONDAY, 9, timezone=FAR_ZONE)),
+        visit(pass_, "CAR-2", 7, exited_hour=8),
+    ]
+    for handed_in in ([], [tokyo]):
+        answer = access(garage=denver, garages=handed_in, passes=[pass_],
+                        registrations=[registered(pass_)], visits=ledger, vehicle_identity="CAR-1",
+                        lane="L1", direction=Direction.ENTRY, at=NOON_MONDAY)
+        assert answer.reason == f.OUT_OF_VISITS, (handed_in, answer)
+        assert "counted 2 recorded entries on pass 'pass-1' over its life" in answer.detail
 
 
 @pytest.mark.guarantee("G9")

@@ -269,7 +269,8 @@ def test_a_registrations_document_that_is_not_a_list_is_a_json_refusal(tmp_path,
 
 
 @pytest.mark.guarantee("G18")
-@pytest.mark.parametrize("option", ["--garage", "--pass", "--registrations", "--visits"])
+@pytest.mark.parametrize("option", ["--garage", "--pass", "--registrations", "--visits",
+                                    "--garages"])
 def test_a_document_nested_past_the_decoder_is_the_json_refusal_on_every_document_argument(
     tmp_path, capsys, option
 ):
@@ -297,8 +298,8 @@ def test_a_document_nested_past_the_decoder_is_the_json_refusal_on_every_documen
         base[option] = str(path)
         out = ["access", "--garage", base["--garage"], "--pass", base["--pass"],
                "--registrations", base["--registrations"]]
-        if option == "--visits":
-            out += ["--visits", str(path)]
+        if option in ("--visits", "--garages"):
+            out += [option, str(path)]
         return out
 
     for direction in ("entry", "exit"):
@@ -1188,6 +1189,17 @@ def test_every_malformed_case_reads_entry_refuses_and_exit_answers_or_both_refus
         *base, "--registrations", str(_write(tmp_path, "rn.json", [7]))]
     cases["visits: an entry is a list"] = [
         *base, "--registrations", str(good), "--visits", str(_write(tmp_path, "vl.json", [[]]))]
+    # --garages: the other garages of the passes, a JSON list of garage documents
+    cases["garages: JSON but not a list"] = [
+        *base, "--registrations", str(good), "--garages", str(_write(tmp_path, "gd.json", {}))]
+    cases["garages: an entry is a number"] = [
+        *base, "--registrations", str(good), "--garages", str(_write(tmp_path, "gn.json", [7]))]
+    cases["garages: a member's timezone unknown"] = [
+        *base, "--registrations", str(good), "--garages", str(_write(tmp_path, "gz.json", [
+            {"id": "garage-far", "timezone": "Mars/Olympus", "transient_available": True}]))]
+    cases["garages: a member missing its timezone"] = [
+        *base, "--registrations", str(good), "--garages", str(_write(tmp_path, "gm.json", [
+            {"id": "garage-far", "transient_available": True}]))]
     # no record at all, or no instant: refuses both ways
     cases["missing --garage file"] = ["access", "--garage", str(tmp_path / "nope.json"),
                                      "--pass", str(pass_)]

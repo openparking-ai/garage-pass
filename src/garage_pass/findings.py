@@ -621,6 +621,8 @@ MISSING_TIMEZONE = "garage.timezone"
 UNREADABLE_TERMS = "pass.terms"
 MISSING_PASS_HANDED_IN = "passes"
 DUPLICATED_PASS_ID = "passes[].id"
+MISSING_GARAGE_HANDED_IN = "garages"
+DUPLICATED_GARAGE_ID = "garages[].id"
 
 REFUSED_TO_ANSWER: dict[str, str] = {
     MISSING_TRANSIENT_MODE: (
@@ -673,5 +675,22 @@ REFUSED_TO_ANSWER: dict[str, str] = {
         "the list won silently, so the same inputs in a different order admitted or "
         "refused the same car. Hand in each pass once. (At an exit every copy is "
         "evaluated and the vehicle is covered if any covers it, the duplication named.)"
+    ),
+    MISSING_GARAGE_HANDED_IN: (
+        "A per-window visit allowance counts each recorded entry in the local day of "
+        "THE GARAGE IT WAS RECORDED AT -- a pass names a set of garages, and two of "
+        "them can stand in different zones -- and an entry on this pass was recorded at "
+        "a garage that is not among the garages handed in, so its day and window cannot "
+        "be read. The module will not read it on this garage's clock instead: measured "
+        "before this, a visit at a Tokyo garage read on a Denver clock fell on the day "
+        "before and a one-per-window allowance was spent twice. Hand in every garage the "
+        "pass names. (Only an ENTRY counts the allowance, so no exit reaches this.)"
+    ),
+    DUPLICATED_GARAGE_ID: (
+        "The garage an entry on this pass was recorded at was handed in more than once "
+        "under one id, at an ENTRY that must read that entry on that garage's clock -- "
+        "whether or not the copies agree, since the caller who sent one id twice does "
+        "not know which they meant. Hand in each garage once. (Only an ENTRY counts the "
+        "allowance, so no exit reaches this.)"
     ),
 }

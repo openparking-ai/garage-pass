@@ -9,7 +9,7 @@ the answer itself — no database and no dependencies at all.
 ```
 $ garage-pass check-terms --pass pass.json
 $ garage-pass access --garage garage.json --pass pass.json \
-      --registrations registrations.json --visits visits.json \
+      --registrations registrations.json --visits visits.json [--garages others.json] \
       --vehicle CAR-1 --lane L1 --direction entry --at 2026-06-01T12:00:00-06:00
 ```
 
@@ -180,11 +180,19 @@ it counted, on which pass, over what. **The ledger is per garage**: a pass may
 name several, and one open visit per vehicle per pass is the rule *at each* —
 an entry at one garage of the set is never refused for a visit still open at
 another, and an exit never closes another garage's visit — while the allowance
-counts every garage of the set. A visit carries its garage, and **a stay is
-measured at the garage the car is leaving**, from the entry recorded there: an
-entry still open at another garage of the set is not this exit's entry, and
-the stay is then unmeasured and named, never measured from the wrong garage. Removing a garage from a pass that holds a
-visit or a registration there fails by name; nothing recorded is erased by it.
+counts every garage of the set, **each entry read on the clock of the garage
+it was recorded at**: a pass's garages can stand in different zones, and
+whether an entry fell in this window today is a question about the wall clock
+on the door it drove through, not the one at the garage asking now — so the
+pass's garages reach the engine (the store hands them in; the command line takes
+`--garages`), and an entry at a garage whose clock is not there is refused by
+name at an entry, never read on the wrong clock. A visit carries its garage, and
+**a stay is measured at the garage the car is leaving**, from the entry recorded
+there: an entry still open at another garage of the set is not this exit's
+entry, and the stay is then unmeasured and named, never measured from the wrong
+garage. Revoking a pass ends its registrations at each garage on *that*
+garage's day of the instant. Removing a garage from a pass that holds a visit
+or a registration there fails by name; nothing recorded is erased by it.
 
 ### An exit is never refused
 

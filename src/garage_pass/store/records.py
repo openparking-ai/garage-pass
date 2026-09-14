@@ -24,11 +24,12 @@ of the set BEFORE the first row is written, so a car held by another pass at
 any one of them refuses the whole registration by name -- naming that garage,
 the pass that holds the identity and the day that registration ends -- and a
 partial fan-out is never an outcome. The EXCLUDE is the backstop at each
-garage. ``change_state`` to ``revoked`` ends the pass's
-registrations on the revocation day, so the identity is free from that day
-(``they got divorced``). A registration on a pass whose ``valid_to`` has passed
-is released -- ended on the day after ``valid_to`` -- by the next registration
-attempt that meets it, because expiry is derived and nobody writes it.
+garage. ``change_state`` to ``revoked`` ends the pass's registrations on the
+revocation day -- AT EACH GARAGE, THAT GARAGE'S DAY of the instant -- so the
+identity is free from that day (``they got divorced``). A registration on a
+pass whose ``valid_to`` has passed is released -- ended on the day after
+``valid_to`` -- by the next registration attempt that meets it, because expiry
+is derived and nobody writes it.
 
 **THE TARGET PASS'S STATE IS READ, AND A PASS THAT IS NOT REGISTRABLE IS
 REFUSED BY NAME, NAMING THE STATE.** Registrable: ``draft``,
@@ -552,7 +553,16 @@ def change_state(
     *, by: str, at: datetime, reason: str,
 ) -> dict:
     """Move a pass, record who/when/why, and -- on revocation -- end its
-    registrations on the revocation day in the garage's local calendar.
+    registrations on the revocation day in the local calendar of EACH GARAGE
+    THE PASS NAMES: the rows at garage A end on A's day of the instant, the
+    rows at B on B's. Measured before this (the G3a merge gate): one instant,
+    ``2026-06-01T20:00-06:00``, ended both garages' rows on Jun 1 when revoked
+    from a Denver garage and on Jun 2 when revoked from a Tokyo one -- the day
+    a car became re-registrable at a garage depended on which garage the
+    operator happened to type. Every garage's day is derived BEFORE the first
+    row changes, so a garage of the set whose stored zone cannot be read
+    refuses the whole revocation by name (with the repair), and nothing is
+    half-ended.
 
     Takes ``LOCK_ORDER``: the pass row is locked FIRST and the pass re-read
     under that lock, so the transition is judged on the row as it stands, not
@@ -563,12 +573,19 @@ def change_state(
     cancelled credential under the lock and refuses by name; redeem-first,
     this write reads the committed registration and ends it."""
     tenant_uuid = as_uuid(tenant_id)
-    garage_uuid, garage = load_readable_garage(cursor, tenant_uuid, garage_external_id)
+    garage_uuid, _garage = load_readable_garage(cursor, tenant_uuid, garage_external_id)
     pass_uuid, _stale = load_pass(cursor, tenant_uuid, garage_uuid, pass_external_id)
     lock_pass_row(cursor, tenant_uuid, pass_uuid)
     # re-read under the lock: a check made before the lock is a check on a stale row
     pass_uuid, pass_ = load_pass(cursor, tenant_uuid, garage_uuid, pass_external_id)
     moved, change = transition(pass_, to, by=by, at=at, reason=reason)
+    # the revocation day AT EACH GARAGE of the pass, derived before any write:
+    # a garage this module cannot read refuses here, and nothing below runs
+    days_at: list[tuple[UUID, date]] = []
+    if to is State.REVOKED:
+        for external_id, uuid in garages_of(cursor, tenant_uuid, pass_uuid):
+            _uuid, at_garage = load_readable_garage(cursor, tenant_uuid, external_id)
+            days_at.append((uuid, day_of(at, zone(at_garage.timezone))))
     cursor.execute(
         "UPDATE passes SET state = %s WHERE tenant_id = %s AND id = %s",
         (moved.state.value, tenant_uuid, pass_uuid),
@@ -582,7 +599,6 @@ def change_state(
     ended = 0
     cancelled = {"enrolments": 0, "holder_links": 0}
     if to is State.REVOKED:
-        today = day_of(at, zone(garage.timezone))
         # LOCK_ORDER, second and third: the credentials, then the registrations
         # -- the pass row is already held above, so no redemption is mid-flight
         # on this pass and a committed one is visible to the statements below.
@@ -601,13 +617,17 @@ def change_state(
                  CANCELLED_BY_REVOCATION, tenant_uuid, pass_uuid, CredentialState.ISSUED.value),
             )
             cancelled[table] = cursor.rowcount
-        cursor.execute(
-            "UPDATE vehicle_registrations SET end_day = GREATEST(%s, effective_day), "
-            "ended_reason = %s WHERE tenant_id = %s AND pass_id = %s "
-            "AND (end_day IS NULL OR end_day > GREATEST(%s, effective_day))",
-            (today, ENDED_BY_REVOCATION, tenant_uuid, pass_uuid, today),
-        )
-        ended = cursor.rowcount
+        # one UPDATE per garage of the pass, in the fan-out's one order, each
+        # on THAT garage's day of the revocation instant
+        for garage_of_pass, today_there in days_at:
+            cursor.execute(
+                "UPDATE vehicle_registrations SET end_day = GREATEST(%s, effective_day), "
+                "ended_reason = %s WHERE tenant_id = %s AND pass_id = %s AND garage_id = %s "
+                "AND (end_day IS NULL OR end_day > GREATEST(%s, effective_day))",
+                (today_there, ENDED_BY_REVOCATION, tenant_uuid, pass_uuid, garage_of_pass,
+                 today_there),
+            )
+            ended += cursor.rowcount
     return {
         "pass": pass_external_id, "from": change.from_state.value, "to": change.to_state.value,
         "changed_by": change.changed_by, "changed_at": change.changed_at,

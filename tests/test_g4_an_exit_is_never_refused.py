@@ -455,6 +455,7 @@ WRONG_TYPED: dict[str, tuple[object, ...]] = {
     "lane": (None, 1, ["L1"]),
     "direction": ("exit", None, 1),
     "at": ("2026-06-01T12:00:00-06:00", None, NOON_MONDAY.date(), NOON_MONDAY.replace(tzinfo=None)),
+    "garages": ("garage-far", None, [{"id": "garage-far"}], [None]),
 }
 
 

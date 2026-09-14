@@ -260,8 +260,14 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
     ),
     "G5/revocation-ends": (
         G12, "store/records.py",
-        "    if to is State.REVOKED:",
-        "    if False:  # PLANTED: revocation leaves registrations open",
+        source(
+            "    if to is State.REVOKED:",
+            "        # LOCK_ORDER, second and third: the credentials, then the registrations",
+        ),
+        source(
+            "    if False:  # PLANTED: revocation leaves registrations open",
+            "        # LOCK_ORDER, second and third: the credentials, then the registrations",
+        ),
         "a revoked pass keeps holding its vehicles; they cannot be registered elsewhere",
     ),
     "G6": (
@@ -319,8 +325,8 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
     ),
     "G9/per-window": (
         G9, "access.py",
-        "        if day_of(v.entered_at, tz) == today",
-        "        if True or day_of(v.entered_at, tz) == today  # PLANTED: the whole life",
+        "            day_of(v.entered_at, clock) == today",
+        "            True or day_of(v.entered_at, clock) == today  # PLANTED: the whole life",
         "a per-window allowance counts every entry the pass ever recorded",
     ),
     "G9/denominator": (
@@ -472,6 +478,14 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
         'SHIFTING_ZONE = "America/Phoenix"  # PLANTED: the DST fixture stops shifting',
         "the zone the DST guarantee is measured against no longer observes daylight "
         "saving, so every transition-day assertion is measuring a fixture with nothing in it",
+    ),
+    "G14/far-zone": (
+        "tests/test_fixture_axes.py", "tests/fixtures.py",
+        'FAR_ZONE = "Asia/Tokyo"',
+        'FAR_ZONE = "America/Denver"  # PLANTED: the mixed-zone fixture is not mixed',
+        "the far garage of the mixed-zone pass sits in the shifting zone itself, so every "
+        "per-garage-clock assertion is measuring a pass whose garages share one clock -- "
+        "the absence the G3a merge gate found",
     ),
     "G15/count": (
         "tests/test_contract_is_generated.py", "scripts/generate_contract.py",
@@ -1994,6 +2008,86 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
         ),
         "the catalogue read of a table's children is planted empty, so a DELETE grant on a "
         "table with children is named as a leaf again",
+    ),
+    # --- each recorded entry is read on its own garage's clock (the G3a gate-fix round)
+    "G9/asking-clock": (
+        G9, "access.py",
+        source(
+            "        if garage_id == garage.id:",
+            "            return tz",
+        ),
+        source(
+            "        if True:  # PLANTED: every entry read on the asking garage's clock",
+            "            return tz",
+        ),
+        "the per-window count reads every garage's entries on the asking garage's clock "
+        "again: a Tokyo visit at 09:00 Monday reads at Denver as 18:00 Sunday, counts "
+        "nothing, and a one-per-window allowance is spent twice",
+    ),
+    "G25/asking-clock": (
+        G25, "access.py",
+        source(
+            "        if garage_id == garage.id:",
+            "            return tz",
+        ),
+        source(
+            "        if True:  # PLANTED: every entry read on the asking garage's clock",
+            "            return tz",
+        ),
+        "the same plant, measured on the mixed-zone pass's DST edge and through the store: "
+        "two Denver entries in the doubled hour read at Phoenix as one in the window",
+    ),
+    "G25/allowance-per-garage": (
+        G25, "access.py",
+        "            counted = _visits_used(visits, pass_, window, today, clock_at)",
+        "            counted = _visits_used([v for v in visits if v.garage_id == garage.id], "
+        "pass_, window, today, clock_at)  # PLANTED: per garage",
+        "THE OVER-REACH: the allowance is counted per garage -- 12 at A and 8 at B read 12 "
+        "of 20 at A -- a silent reversal of C5, the product rule the fix must not touch",
+    ),
+    "G25/garage-not-handed-in": (
+        G25, "access.py",
+        "        copies = handed_in_garages.get(garage_id, [])",
+        "        copies = handed_in_garages.get(garage_id) or [garage]"
+        "  # PLANTED: the asking garage stands in",
+        "an entry at a garage that was not handed in is read on the asking garage's clock "
+        "instead of refused by name",
+    ),
+    "G25/store-hands-in-garages": (
+        G25, "store/access.py",
+        "        garages=list(garages.values()),",
+        "        garages=[],  # PLANTED: the store hands the engine no garage",
+        "the store no longer hands the engine the pass's garages: an entry at Denver with a "
+        "Tokyo visit on the ledger is refused to answer instead of counted on Tokyo's clock",
+    ),
+    "G25/cli-garages": (
+        G25, "cli.py",
+        source(
+            '            garages=[load_garage(g) for g in _list(args.garages, "--garages")]',
+            "            if args.garages is not None else [],",
+        ),
+        source(
+            "            garages=[],  # PLANTED: --garages read and dropped",
+            "            # if args.garages is not None else [],",
+        ),
+        "the documents door drops --garages at an entry: the gate's case through the "
+        "command line is refused to answer with the Tokyo document handed in",
+    ),
+    "G5/revocation-day-per-garage": (
+        G25, "store/records.py",
+        "            days_at.append((uuid, day_of(at, zone(at_garage.timezone))))",
+        "            days_at.append((uuid, day_of(at, zone(_garage.timezone))))"
+        "  # PLANTED: the asking garage's day everywhere",
+        "a revocation ends every garage's registrations on the asking garage's day again: "
+        "2026-06-01T20:00-06:00 ends the Tokyo row on June 1 from Denver and June 2 from Tokyo",
+    ),
+    "G5/revocation-unreadable-garage-named": (
+        G25, "store/records.py",
+        "            _uuid, at_garage = load_readable_garage(cursor, tenant_uuid, external_id)",
+        "            _uuid, at_garage = load_garage(cursor, tenant_uuid, external_id)"
+        "  # PLANTED: unreadable loads as stored",
+        "a garage of the pass whose zone cannot be read no longer refuses the revocation by "
+        "name with the repair; the zone read raises the bare timezone refusal instead",
     ),
 }
 

@@ -15,6 +15,15 @@ access answer actually turns on, read from ``access.py`` rather than imagined:
 * each term present and absent: valid range, windows, max stay, allowance, lanes
 * the timezone -- one that shifts and one that does not
 * the instant -- inside a window, outside it, on each transition day
+* THE ZONES OF ONE PASS'S GARAGES -- all one zone, and MIXED. A pass names a
+  set of garages, and a per-window count reads each recorded entry on the
+  clock of the garage it was recorded at. Measured before this (the G3a merge
+  gate): every multi-garage test put A, B and C in one zone, so a count that
+  read every garage's entries on the asking garage's clock stayed green
+  through four review layers. ``far_garage`` (Tokyo: no daylight saving, and
+  on another calendar day for most of Denver's working day) and
+  ``fixed_garage`` (Phoenix: the shifting zone's neighbour that does not
+  shift, for the DST edge) exist so that a mixed-zone pass CAN appear here.
 """
 
 from __future__ import annotations
@@ -39,6 +48,11 @@ from garage_pass.terms import (
 #: about the zone rather than about the arithmetic being wrong everywhere.
 SHIFTING_ZONE = "America/Denver"
 FIXED_ZONE = "America/Phoenix"
+#: A zone on ANOTHER CALENDAR DAY for most of the shifting zone's working day
+#: (UTC+9 against UTC-6/-7), and one that never shifts. The mixed-zone pass's
+#: other garage: the same instant is a different day and a different window
+#: minute there, which is what the per-garage clock reading is measured on.
+FAR_ZONE = "Asia/Tokyo"
 
 #: 2026 US transitions. Named so a test asserts against a date rather than a
 #: comment, and so the fixture control can prove they really are transitions.
@@ -62,6 +76,21 @@ def no_transient_garage(timezone: str = SHIFTING_ZONE) -> Garage:
 
 def unstated_garage(timezone: str = SHIFTING_ZONE) -> Garage:
     return Garage(id="garage-unstated", timezone=timezone, transient_available=None)
+
+
+def far_garage() -> Garage:
+    """The other garage of a MIXED-ZONE pass: Tokyo, beside a Denver one."""
+    return Garage(id="garage-far", timezone=FAR_ZONE, transient_available=True,
+                  enrols_at="entry")
+
+
+def fixed_garage() -> Garage:
+    """The other garage of a mixed-zone pass for the DST EDGE: Phoenix, which
+    keeps the shifting zone's winter clock all year, so on the fall-back day
+    the two read the same instant an hour apart for one hour and the same
+    for the rest of the day."""
+    return Garage(id="garage-fixed", timezone=FIXED_ZONE, transient_available=True,
+                  enrols_at="entry")
 
 
 def simple_terms(**overrides: object) -> Terms:
@@ -169,6 +198,22 @@ def assert_fixed_zone_really_does_not_shift() -> None:
     for day in (SPRING_FORWARD_2026, FALL_BACK_2026):
         length = elapsed(day_start(day, tz), day_start(day + timedelta(days=1), tz))
         assert length == timedelta(hours=24), f"{FIXED_ZONE} shifted on {day}: {length}"
+
+
+def assert_the_far_zone_is_on_another_day_at_noon_monday() -> None:
+    """The mixed-zone fixture measures something only if the far garage reads
+    the shifting zone's NOON_MONDAY as a different day: otherwise a count that
+    reads every entry on the asking garage's clock stays green against it."""
+    from garage_pass.localday import day_of
+
+    here, there = day_of(NOON_MONDAY, zone(SHIFTING_ZONE)), day_of(NOON_MONDAY, zone(FAR_ZONE))
+    assert here != there, (
+        f"{FAR_ZONE} was chosen because it is on another calendar day at {NOON_MONDAY}; it "
+        f"reads {there}, the same day as {SHIFTING_ZONE}'s {here}."
+    )
+    length = elapsed(day_start(FALL_BACK_2026, zone(FAR_ZONE)),
+                     day_start(FALL_BACK_2026 + timedelta(days=1), zone(FAR_ZONE)))
+    assert length == timedelta(hours=24), f"{FAR_ZONE} shifted on {FALL_BACK_2026}: {length}"
 
 
 def assert_the_everything_terms_carry_every_term() -> None:
