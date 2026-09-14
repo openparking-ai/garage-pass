@@ -16,11 +16,18 @@ from datetime import date, timedelta
 
 import pytest
 
-from fixtures import BOTH, SIX_TO_EIGHT, WEEKDAYS, simple_terms
+from fixtures import BOTH, SIX_TO_EIGHT, WEEKDAYS, lanes_at, simple_terms
 from garage_pass import findings as f
 from garage_pass.access import Outcome, access
 from garage_pass.passes import Visit
-from garage_pass.terms import AllowancePeriod, Direction, Terms, VisitAllowance, Window
+from garage_pass.terms import (
+    AllowancePeriod,
+    Direction,
+    GarageLanes,
+    Terms,
+    VisitAllowance,
+    Window,
+)
 
 CASES = [
     (
@@ -78,13 +85,28 @@ CASES = [
     ),
     (
         "lanes stated but empty",
-        dict(allowed_lanes=frozenset()),
+        dict(allowed_lanes=()),
         f.REFUSAL_LANES_STATED_BUT_EMPTY, "allowed_lanes",
     ),
     (
+        "lanes stated but empty at a garage",
+        dict(allowed_lanes=(GarageLanes("garage-downtown", frozenset()),)),
+        f.REFUSAL_LANES_STATED_BUT_EMPTY, "allowed_lanes[0].lanes",
+    ),
+    (
         "a blank lane name",
-        dict(allowed_lanes=frozenset({"L1", " "})),
-        f.REFUSAL_LANE_NAME_BLANK, "allowed_lanes",
+        dict(allowed_lanes=lanes_at("garage-downtown", "L1", " ")),
+        f.REFUSAL_LANE_NAME_BLANK, "allowed_lanes[0].lanes",
+    ),
+    (
+        "a blank garage in the lane set",
+        dict(allowed_lanes=(GarageLanes(" ", frozenset({"L1"})),)),
+        f.REFUSAL_FIELD_BLANK, "allowed_lanes[0].garage_id",
+    ),
+    (
+        "a garage's lanes stated twice",
+        dict(allowed_lanes=lanes_at("garage-downtown", "L1") + lanes_at("garage-downtown", "L2")),
+        f.REFUSAL_LANES_GARAGE_REPEATED, "allowed_lanes[1].garage_id",
     ),
 ]
 
@@ -125,7 +147,7 @@ def test_the_same_terms_without_the_contradiction_are_accepted():
         valid_from=date(2026, 1, 1), valid_to=date(2026, 12, 31),
         windows=(SIX_TO_EIGHT,), max_stay=timedelta(hours=10),
         visit_allowance=VisitAllowance(count=3, per=AllowancePeriod.WINDOW),
-        directions=BOTH, allowed_lanes=frozenset({"L1"}),
+        directions=BOTH, allowed_lanes=lanes_at("garage-downtown", "L1"),
     )
     assert terms.max_stay == timedelta(hours=10)
     assert simple_terms(directions=frozenset({Direction.EXIT})).directions == {Direction.EXIT}
@@ -165,10 +187,10 @@ def test_a_maximum_longer_than_a_window_is_slack_not_a_contradiction_created_and
         terms.max_stay > w.length for w in terms.windows
     ), "the premise: the maximum is longer than every window"
     garage = transient_garage()
-    pass_ = a_pass(garage_id=garage.id, terms=terms)
+    pass_ = a_pass(garage_ids={garage.id}, terms=terms)
     monday = date(2026, 6, 1)
-    ledger = [Visit(pass_id=pass_.id, vehicle_identity="CAR-1", entry_lane="L1",
-                    entered_at=at(monday, 9))]
+    ledger = [Visit(pass_id=pass_.id, garage_id=garage.id, vehicle_identity="CAR-1",
+                    entry_lane="L1", entered_at=at(monday, 9))]
 
     def exit_at(hour, minute):
         return access(

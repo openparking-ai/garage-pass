@@ -31,7 +31,7 @@ from enrolment_harness import (
     registrations,
     seeded,
 )
-from fixtures import NOON_MONDAY, at, simple_terms
+from fixtures import NOON_MONDAY, at, lanes_at, simple_terms
 from garage_pass import findings as f
 from garage_pass.access import Answer, Outcome
 from garage_pass.enrolment import where_enrolment_happens
@@ -128,7 +128,8 @@ def pass_expired(app, owner, tenant_id, garage):
 
 
 def lane_outside_the_terms(app, owner, tenant_id, garage):
-    pass_ = seeded(app, tenant_id, garage, terms=simple_terms(allowed_lanes=frozenset({"L1"})))
+    pass_ = seeded(app, tenant_id, garage,
+                   terms=simple_terms(allowed_lanes=lanes_at(garage.id, "L1")))
     token = issue(app, tenant_id, garage, pass_)["token"]
     return token, "CAR-1", "L9", NOON_MONDAY, f.REFUSAL_LANE_OUTSIDE_THE_PASS_TERMS
 
@@ -148,7 +149,7 @@ def identity_on_another_pass(app, owner, tenant_id, garage):
     from garage_pass.store.records import create_pass
 
     pass_ = seeded(app, tenant_id, garage)
-    holder = a_pass(id="pass-other", garage_id=garage.id, state=State.ACTIVE)
+    holder = a_pass(id="pass-other", garage_ids={garage.id}, state=State.ACTIVE)
     with tenant(app, tenant_id) as cursor:
         create_pass(cursor, tenant_id, garage.id, holder, by="seed", at=NOON_MONDAY)
         register_vehicle(cursor, tenant_id, garage.id, holder.id, "CAR-1", date(2026, 1, 1))
@@ -278,7 +279,7 @@ def garage_mismatch(app, owner, tenant_id, garage):
     seeded(app, tenant_id, garage)
     elsewhere = Garage(id="garage-elsewhere", timezone=garage.timezone, transient_available=True,
                        enrols_at="entry")
-    other = a_pass(id="pass-elsewhere", garage_id=elsewhere.id)
+    other = a_pass(id="pass-elsewhere", garage_ids={elsewhere.id})
     seed(app, tenant_id, elsewhere, (other,))
     token = issue(app, tenant_id, elsewhere, other, "qr-elsewhere")["token"]
     return token, "CAR-1", "L1", NOON_MONDAY, f.REFUSAL_GARAGE_MISMATCH

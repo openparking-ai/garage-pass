@@ -59,17 +59,23 @@ def pass_row(app, tenant_id, pass_) -> dict:
         row["_windows"] = cursor.fetchall()
         cursor.execute("SELECT lane FROM pass_lanes WHERE pass_id = %s ORDER BY lane", (row["id"],))
         row["_lanes"] = cursor.fetchall()
+        # the garages the pass names live beside the row since 0004; "not the
+        # garages" is measured here, not assumed
+        cursor.execute("SELECT garage_id FROM pass_garages WHERE pass_id = %s ORDER BY 1",
+                       (row["id"],))
+        row["_garages"] = cursor.fetchall()
     app.rollback()
     return row
 
 
 @pytest.mark.guarantee("G24")
 def test_the_redemption_writes_the_two_columns_and_every_other_column_is_unchanged(app, tenant_id):
-    pass_ = seeded(app, tenant_id, TRANSIENT_ENTRY, terms=everything_terms())
+    pass_ = seeded(app, tenant_id, TRANSIENT_ENTRY, terms=everything_terms(TRANSIENT_ENTRY.id))
     link = issue_link(app, tenant_id, TRANSIENT_ENTRY, pass_)
     before = pass_row(app, tenant_id, pass_)
     assert before["holder_name"] == "A Holder" and before["holder_email"] == "holder@example.com"
-    assert len(before) >= 20 and before["_windows"] and before["_lanes"], "a real row, fully termed"
+    assert len(before) >= 20 and before["_windows"] and before["_lanes"] and before["_garages"], (
+        "a real row, fully termed")
     out = redeem_link(app, tenant_id, TRANSIENT_ENTRY, link["token"], name="Her Own Name",
                       phone="+1 555 0199", vehicle_description="silver Toyota")
     after = pass_row(app, tenant_id, pass_)

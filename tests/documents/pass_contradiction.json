@@ -1,6 +1,6 @@
 {
   "id": "pass-contradiction",
-  "garage_id": "garage-downtown",
+  "garage_ids": ["garage-downtown"],
   "label": "Vendor",
   "holder": {"email": "vendor@example.com"},
   "terms": {

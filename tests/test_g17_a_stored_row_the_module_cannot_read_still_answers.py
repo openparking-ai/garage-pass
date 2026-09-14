@@ -80,7 +80,7 @@ STRANDED = f.Unreadable(
 
 def unreadable_pass(state: State = State.ACTIVE, id: str = "pass-1") -> Pass:
     """What the store's load path builds for a row it refuses to read."""
-    return Pass(id=id, garage_id=GARAGE.id, label="Employee", holder=None, terms=None,
+    return Pass(id=id, garage_ids={GARAGE.id}, label="Employee", holder=None, terms=None,
                 state=state, unreadable=STRANDED)
 
 
@@ -88,8 +88,8 @@ def ask(pass_, direction, garage=GARAGE, identity="CAR-1"):
     return answered(
         access,
         garage=garage, passes=[pass_], registrations=[registered(pass_, "CAR-1")],
-        visits=[Visit(pass_id=pass_.id, vehicle_identity="CAR-1", entry_lane="L1",
-                      entered_at=TWO_HOURS_BEFORE)],
+        visits=[Visit(pass_id=pass_.id, garage_id=garage.id, vehicle_identity="CAR-1",
+                      entry_lane="L1", entered_at=TWO_HOURS_BEFORE)],
         vehicle_identity=identity, lane="L1", direction=direction, at=NOON_MONDAY,
     )
 
@@ -145,11 +145,11 @@ def test_a_pass_is_never_built_unreadable_by_a_caller():
     """Only the load path sets it: a caller must hand in readable terms and a
     holder, and the value refuses the half-built shapes."""
     with pytest.raises(TypeError, match="terms must be a Terms"):
-        Pass(id="p", garage_id="g", label="x", holder=a_pass().holder, terms=None)
+        Pass(id="p", garage_ids={"g"}, label="x", holder=a_pass().holder, terms=None)
     with pytest.raises(TypeError, match="holder must be a Holder"):
-        Pass(id="p", garage_id="g", label="x", holder=None, terms=simple_terms())
+        Pass(id="p", garage_ids={"g"}, label="x", holder=None, terms=simple_terms())
     with pytest.raises(TypeError, match="unreadable must be an Unreadable"):
-        Pass(id="p", garage_id="g", label="x", holder=None, terms=None, unreadable="broken")
+        Pass(id="p", garage_ids={"g"}, label="x", holder=None, terms=None, unreadable="broken")
 
 
 # ---------------------------------------------------------------------------
@@ -171,7 +171,7 @@ def test_a_stored_garage_with_an_unknown_timezone_answers_first_naming_the_field
     nothing else can be evaluated. Exit not-covered, entry refused."""
     garage = answered(garage_from_stored, "g-badtz", "Mars/Olympus", stated)
     assert garage.unreadable is not None and garage.unreadable.field == "garage.timezone"
-    pass_ = a_pass(garage_id="g-badtz")
+    pass_ = a_pass(garage_ids={"g-badtz"})
     exit_ = ask(pass_, Direction.EXIT, garage=garage)
     assert exit_.outcome is Outcome.NOT_COVERED and exit_.reason == f.GARAGE_UNREADABLE
     assert exit_.means == f.MEANS_EXIT_OUT_OF_TERMS and "Mars/Olympus" in exit_.detail
@@ -202,9 +202,10 @@ from store_harness import query, seed, store_test  # noqa: E402
 
 
 def _raw_pass(owner, app, tenant_id, **columns):
-    """A pass row written as the OWNER, past the module, with a registration."""
+    """A pass row written as the OWNER, past the module, naming the one
+    garage (``pass_garages``), with a registration there."""
     (garage_uuid,) = query(app, tenant_id, "SELECT id FROM garages")[0]
-    base = dict(tenant_id=tenant_id, garage_id=garage_uuid, external_id="raw", label="Raw",
+    base = dict(tenant_id=tenant_id, external_id="raw", label="Raw",
                 holder_email="h@example.com", entry_allowed=True, exit_allowed=True,
                 lanes_stated=False, state="active")
     base.update(columns)
@@ -215,6 +216,10 @@ def _raw_pass(owner, app, tenant_id, **columns):
             tuple(base.values()),
         )
         (pass_uuid,) = cursor.fetchone()
+        cursor.execute(
+            "INSERT INTO pass_garages (tenant_id, pass_id, garage_id) VALUES (%s, %s, %s)",
+            (tenant_id, pass_uuid, garage_uuid),
+        )
         cursor.execute(
             "INSERT INTO vehicle_registrations (tenant_id, garage_id, pass_id, vehicle_identity, "
             "effective_day) VALUES (%s, %s, %s, 'CAR-1', '2026-01-01')",
@@ -419,7 +424,7 @@ def test_every_write_against_an_unreadable_garage_is_refused_by_name_and_the_rep
     from garage_pass.store.records import change_state, end_registration, record_exit
 
     _raw_bad_garage(owner, tenant_id)
-    pass_ = a_pass(garage_id="g-badtz")
+    pass_ = a_pass(garage_ids={"g-badtz"})
     calls = {
         "create_pass": lambda c: records.create_pass(c, tenant_id, "g-badtz", pass_, by="owner",
                                                      at=NOON_MONDAY),

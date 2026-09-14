@@ -104,22 +104,24 @@ G21 = "tests/test_g21_a_redemption_refusal_is_never_an_exit_refusal.py"
 G22 = "tests/test_g22_the_vehicle_description_decides_nothing.py"
 G23 = "tests/test_g23_the_token_is_never_stored_and_never_rendered.py"
 G24 = "tests/test_g24_a_holder_link_writes_two_columns_and_nothing_else.py"
+G25 = "tests/test_g25_a_pass_answers_only_at_the_garages_it_names.py"
 MIGRATION = "migrations/0001_garages_passes_registrations_and_rls.sql"
 MIGRATION_0002 = "migrations/0002_garage_changes_are_recorded.sql"
 MIGRATION_0003 = "migrations/0003_enrolments_holder_links_and_where_a_garage_enrols.sql"
+MIGRATION_0004 = "migrations/0004_a_pass_spans_many_garages.sql"
 
 #: control id -> (test target, source file, anchor, replacement, what breaks)
 CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
     "G1/refusal": (
         G1, "store/records.py",
         source(
-            "        raise Refused(",
-            "            REFUSAL_VEHICLE_ON_ANOTHER_PASS,",
+            "            raise Refused(",
+            "                REFUSAL_VEHICLE_ON_ANOTHER_PASS,",
         ),
         source(
-            "        continue  # PLANTED: the second pass takes the vehicle",
-            "        raise Refused(",
-            "            REFUSAL_VEHICLE_ON_ANOTHER_PASS,",
+            "            continue  # PLANTED: the second pass takes the vehicle",
+            "            raise Refused(",
+            "                REFUSAL_VEHICLE_ON_ANOTHER_PASS,",
         ),
         "the module no longer refuses by name; the INSERT reaches the EXCLUDE and "
         "the caller gets a constraint, not the surviving pass and the day it ends",
@@ -258,8 +260,14 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
     ),
     "G5/revocation-ends": (
         G12, "store/records.py",
-        "    if to is State.REVOKED:",
-        "    if False:  # PLANTED: revocation leaves registrations open",
+        source(
+            "    if to is State.REVOKED:",
+            "        # LOCK_ORDER, second and third: the credentials, then the registrations",
+        ),
+        source(
+            "    if False:  # PLANTED: revocation leaves registrations open",
+            "        # LOCK_ORDER, second and third: the credentials, then the registrations",
+        ),
         "a revoked pass keeps holding its vehicles; they cannot be registered elsewhere",
     ),
     "G6": (
@@ -317,8 +325,8 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
     ),
     "G9/per-window": (
         G9, "access.py",
-        "        if day_of(v.entered_at, tz) == today",
-        "        if True or day_of(v.entered_at, tz) == today  # PLANTED: the whole life",
+        "            day_of(v.entered_at, clock) == today",
+        "            True or day_of(v.entered_at, clock) == today  # PLANTED: the whole life",
         "a per-window allowance counts every entry the pass ever recorded",
     ),
     "G9/denominator": (
@@ -329,9 +337,28 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
     ),
     "G9/open-visit": (
         G9, "access.py",
-        "        if v.pass_id == pass_.id and v.vehicle_identity.strip() == identity and v.is_open",
-        "        if v.pass_id == pass_.id and v.is_open  # PLANTED: any vehicle's entry",
+        source(
+            "        if v.pass_id == pass_.id and v.garage_id == garage.id",
+            "        and v.vehicle_identity.strip() == identity and v.is_open",
+        ),
+        source(
+            "        if v.pass_id == pass_.id and v.garage_id == garage.id",
+            "        and v.is_open  # PLANTED: any vehicle's entry",
+        ),
         "a stay is measured from whichever vehicle on the pass entered last",
+    ),
+    "G9/open-visit-any-garage": (
+        G9, "access.py",
+        source(
+            "        if v.pass_id == pass_.id and v.garage_id == garage.id",
+            "        and v.vehicle_identity.strip() == identity and v.is_open",
+        ),
+        source(
+            "        if v.pass_id == pass_.id",
+            "        and v.vehicle_identity.strip() == identity and v.is_open  # PLANTED: anywhere",
+        ),
+        "the stay's entry is chosen from every garage of the pass again: an exit at B is measured "
+        "from an entry recorded at A and answered OVER_MAX_STAY quoting A's instant",
     ),
     "G9/missing-entry": (
         G9, "access.py",
@@ -451,6 +478,14 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
         'SHIFTING_ZONE = "America/Phoenix"  # PLANTED: the DST fixture stops shifting',
         "the zone the DST guarantee is measured against no longer observes daylight "
         "saving, so every transition-day assertion is measuring a fixture with nothing in it",
+    ),
+    "G14/far-zone": (
+        "tests/test_fixture_axes.py", "tests/fixtures.py",
+        'FAR_ZONE = "Asia/Tokyo"',
+        'FAR_ZONE = "America/Denver"  # PLANTED: the mixed-zone fixture is not mixed',
+        "the far garage of the mixed-zone pass sits in the shifting zone itself, so every "
+        "per-garage-clock assertion is measuring a pass whose garages share one clock -- "
+        "the absence the G3a merge gate found",
     ),
     "G15/count": (
         "tests/test_contract_is_generated.py", "scripts/generate_contract.py",
@@ -839,10 +874,12 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
     # ---- the merge gate's five findings ------------------------------------
     "G1/holder-skip": (
         G1, "store/records.py",
-        "    for _rid, other, label, state, other_valid_to, other_from, other_end in holders:\n",
-        "    for _rid, other, label, state, other_valid_to, other_from, other_end in holders:\n"
-        "        if state == State.REVOKED.value:\n"
-        "            continue  # PLANTED: holders on revoked passes are skipped\n",
+        "        for _rid, other, label, state, other_valid_to, other_from, other_end in "
+        "holders:\n",
+        "        for _rid, other, label, state, other_valid_to, other_from, other_end in "
+        "holders:\n"
+        "            if state == State.REVOKED.value:\n"
+        "                continue  # PLANTED: holders on revoked passes are skipped\n",
         "the overlap check skips holders on revoked passes again, so a registration a raw "
         "write left open on a revoked pass is invisible: the live pass meets the EXCLUDE "
         "and the caller is told to roll back and read again, where there is no race",
@@ -952,21 +989,21 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
     "G1/deadlock-cause": (
         G1, "store/records.py",
         source(
-            '        detail = (deadlock.diag.message_detail or "").strip()',
-            "        raise Refused(",
-            '            REFUSAL_CONSTRAINT, "vehicle_identity",',
-            '            f"constraint {ONE_PASS_PER_GARAGE}: the database detected a deadlock '
+            '            detail = (deadlock.diag.message_detail or "").strip()',
+            "            raise Refused(",
+            '                REFUSAL_CONSTRAINT, "vehicle_identity",',
+            '                f"constraint {ONE_PASS_PER_GARAGE}: the database detected a deadlock '
             'while this "',
-            '            f"registration of {identity!r} waited on another transaction, and '
+            '                f"registration of {identity!r} waited on another transaction, and '
             'rolled this "',
         ),
         source(
-            '        detail = ""  # PLANTED: the DETAIL dropped, a cause asserted',
-            "        raise Refused(",
-            '            REFUSAL_CONSTRAINT, "vehicle_identity",',
-            '            f"constraint {ONE_PASS_PER_GARAGE}: two registrations of {identity!r} '
+            '            detail = ""  # PLANTED: the DETAIL dropped, a cause asserted',
+            "            raise Refused(",
+            '                REFUSAL_CONSTRAINT, "vehicle_identity",',
+            '                f"constraint {ONE_PASS_PER_GARAGE}: two registrations of {identity!r} '
             'raced and "',
-            '            "the database rolled this one back (deadlock detected). "',
+            '                "the database rolled this one back (deadlock detected). "',
         ),
         "the deadlock refusal names a cause it did not observe ('two registrations raced') "
         "and throws PostgreSQL's DETAIL away -- under a deadlock from a raw FOR UPDATE the "
@@ -1024,7 +1061,7 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
             "    duplicated = {",
             "        pid: sorted(ps, key=_copy_order)",
             "        for pid, ps in copies.items()",
-            "        if len(ps) > 1 and any(p.garage_id == garage.id for p in ps)",
+            "        if len(ps) > 1 and any(garage.id in p.garage_ids for p in ps)",
             "    }",
         ),
         source(
@@ -1098,15 +1135,16 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
         source(
             "    listed = {  # PLANTED: the keys are a hand-written list again",
             '        "Garage": {"id", "timezone", "transient_available"},',
-            '        "Pass": {"id", "garage_id", "label", "holder", "terms", "state"},',
+            '        "Pass": {"id", "garage_ids", "label", "holder", "terms", "state"},',
             '        "Holder": {"email", "name", "phone"},',
             '        "Terms": {"valid_from", "valid_to", "windows", "max_stay_minutes",',
             '                  "visit_allowance", "directions", "allowed_lanes"},',
+            '        "GarageLanes": {"garage_id", "lanes"},',
             '        "Window": {"days", "start_minute", "end_minute"},',
             '        "VisitAllowance": {"count", "per"},',
             '        "Registration": {"pass_id", "vehicle_identity", "effective_day", "end_day"},',
-            '        "Visit": {"pass_id", "vehicle_identity", "entry_lane", "entered_at",',
-            '                  "exited_at", "exit_lane"},',
+            '        "Visit": {"pass_id", "garage_id", "vehicle_identity", "entry_lane",',
+            '                  "entered_at", "exited_at", "exit_lane"},',
             "    }",
             "    return frozenset(listed.get(cls.__name__, set()))",
         ),
@@ -1530,18 +1568,20 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
     ),
     "G21/rendered-garage-mismatch": (
         G21, "store/enrolments.py",
-        '                f"not at garage {garage_external_id!r}.",',
-        '                f"not at garage {garage_external_id!r}. " + "The pass is " + "stored"'
-        ' + " raw.",  # PLANTED: a run-time spelling of a route falsehood',
+        '                f"garages {list(pass_garages.external_ids)}, not '
+        '{garage_external_id!r}.",',
+        '                f"garages {list(pass_garages.external_ids)}, not '
+        '{garage_external_id!r}. " + "The pass is " + "stored" + " raw.",'
+        '  # PLANTED: a run-time spelling of a route falsehood',
         "a falsehood assembled at run time in the GARAGE_MISMATCH refusal detail -- the door the "
         "rendered collector was blind to at the L3 -- must read UNJUDGED in the test that drives "
         "that door through the command line in-process",
     ),
     "G21/rendered-lane-outside": (
         G21, "store/enrolments.py",
-        '                f"not {lane_name!r}.",',
-        '                f"not {lane_name!r}. " + "The lane is " + "stored" + " raw.",'
-        "  # PLANTED: a run-time spelling of a route falsehood",
+        '                f"{garage_external_id!r}, not {lane_name!r}.",',
+        '                f"{garage_external_id!r}, not {lane_name!r}. " + "The lane is " + "stored"'
+        ' + " raw.",  # PLANTED: a run-time spelling of a route falsehood',
         "the same, in the LANE_OUTSIDE refusal detail",
     ),
     "G24/control-characters": (
@@ -1754,6 +1794,321 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
         '    _spend(cursor, HOLDER_LINK, tenant_uuid, uuid, "redeemed_at = %s", (at,))',
         '    pass  # PLANTED: the link is never spent',
         "a holder link is redeemed and stays issued: usable again",
+    ),
+    # --- G3a: a pass spans many garages. EVERY site that reads the set has a
+    # control, and the fan-out's two halves are each measured alone. ---------
+    "G25/access-by-id-membership": (
+        G25, "access.py",
+        "    by_id = {p.id: p for p in passes if garage.id in p.garage_ids and p.id not in "
+        "duplicated}",
+        "    by_id = {p.id: p for p in passes if p.id not in duplicated}"
+        "  # PLANTED: every pass is every garage's business",
+        "the by-id map no longer reads membership: a pass naming {A, B} covers at C",
+    ),
+    "G25/access-duplicated-membership": (
+        G25, "access.py",
+        "        if len(ps) > 1 and any(garage.id in p.garage_ids for p in ps)",
+        "        if len(ps) > 1  # PLANTED: duplicated wherever it is, named or not",
+        "the duplicated-id grouping no longer reads membership: two copies of a pass naming "
+        "only B, handed in at A, refuse the entry at A naming an id A never reads",
+    ),
+    "G25/store-membership": (
+        G25, "store/records.py",
+        "    if garage_external_id not in pass_.garage_ids:",
+        "    if False and garage_external_id not in pass_.garage_ids:  # PLANTED",
+        "a pass naming {A} is stored at B without a refusal",
+    ),
+    "G25/load-membership": (
+        G25, "store/records.py",
+        "    if as_uuid(garage_uuid) not in garage_uuids:",
+        "    if False:  # PLANTED: any garage loads any pass",
+        "a pass naming {A, B} loads at C: the refusal every caller relies on never fires",
+    ),
+    "G25/enrolment-membership": (
+        G25, "store/enrolments.py",
+        "        if garage_uuid not in pass_garages.uuids:  # the QR's pass",
+        "        if False:  # PLANTED: a QR redeems at any garage",
+        "the QR's membership test is gone; what remains is load_pass's refusal, and the lane "
+        "hears PASS_NOT_FOUND instead of GARAGE_MISMATCH naming the set",
+    ),
+    "G25/holder-link-membership": (
+        G25, "store/enrolments.py",
+        "    if garage_uuid not in pass_garages.uuids:  # the link's pass",
+        "    if False:  # PLANTED: a link redeems at any garage",
+        "the holder link's membership test is gone (the same shape, the other credential)",
+    ),
+    "G25/lanes-at-this-garage": (
+        G25, "access.py",
+        "        lanes_here = terms.lanes_at(garage.id)",
+        "        lanes_here = None if terms.allowed_lanes is None else frozenset(  # PLANTED\n"
+        "            lane for entry in terms.allowed_lanes for lane in entry.lanes)",
+        "the lane check reads the UNION of every garage's lanes: a lane valid at A covers at B",
+    ),
+    "G25/lanes-every-garage": (
+        G25, "passes.py",
+        "    for garage_id in sorted(garage_ids - stated):",
+        "    for garage_id in ():  # PLANTED: a garage with no stated lane is accepted",
+        "a pass over {A, B} with lanes stated at A only is created; B has an implicit empty set",
+    ),
+    "G25/garage-set-empty": (
+        G25, "passes.py",
+        "    if not value:\n        raise Refused(\n"
+        "            REFUSAL_PASS_NAMES_NO_GARAGE, field,",
+        "    if False:  # PLANTED: the empty set is accepted\n        raise Refused(\n"
+        "            REFUSAL_PASS_NAMES_NO_GARAGE, field,",
+        "a pass naming no garage is constructed: it would answer nowhere, silently",
+    ),
+    "G1/fan-out": (
+        G25, "store/records.py",
+        "    for garage_ext, uuid in garages:\n        try:",
+        "    for garage_ext, uuid in garages[:1]:  # PLANTED: one row, the first garage\n"
+        "        try:",
+        "a registration is written at the FIRST garage of the pass only: one redemption on a "
+        "three-garage pass writes one row, and the car is uncovered at the other two",
+    ),
+    "G1/fan-out-collision": (
+        G25, "store/records.py",
+        "        for garage_ext, uuid in garages\n    ]",
+        "        for garage_ext, uuid in garages[:1]  # PLANTED: holders read at the first only\n"
+        "    ]",
+        "the collision check reads the first garage only: a car held at the SECOND garage "
+        "reaches the EXCLUDE there as a bare constraint, not the named refusal naming the garage "
+        "and the survivor",
+    ),
+    "G10/predicate-pass_garages": (
+        G10, MIGRATION_0004,
+        source(
+            "CREATE POLICY pass_garages_tenant_isolation ON pass_garages",
+            "  USING      (tenant_id = current_tenant_id())",
+            "  WITH CHECK (tenant_id = current_tenant_id());",
+        ),
+        source(
+            "CREATE POLICY pass_garages_tenant_isolation ON pass_garages",
+            "  USING      (true)",
+            "  WITH CHECK (true);  -- PLANTED: the tenant predicate stripped",
+        ),
+        "the policy on pass_garages still EXISTS -- the catalogue is satisfied -- but "
+        "isolates nothing",
+    ),
+    "G12/delete-grant-pass_garages": (
+        G12, MIGRATION_0004,
+        "GRANT SELECT, INSERT, UPDATE ON pass_garages TO garage_pass_app;",
+        "GRANT SELECT, INSERT, UPDATE, DELETE ON pass_garages TO garage_pass_app;"
+        "  -- PLANTED: DELETE on the set",
+        "DELETE granted on the pass-to-garage set: the whole-schema assertion names it",
+    ),
+    "G25/backfill-passes": (
+        G25, MIGRATION_0004,
+        "INSERT INTO pass_garages (tenant_id, pass_id, garage_id)\n"
+        "SELECT tenant_id, id, garage_id FROM passes;",
+        "-- PLANTED: no backfill; every existing pass names no garage",
+        "an existing pass keeps no garage: 0004 fails at the lane key (the seeded-at-0003 test "
+        "reports the failure as its own) -- and on an empty cluster nothing would have said so",
+    ),
+    "G25/backfill-lanes": (
+        G25, MIGRATION_0004,
+        "UPDATE pass_lanes l\n   SET garage_id = p.garage_id\n  FROM passes p\n"
+        " WHERE p.tenant_id = l.tenant_id AND p.id = l.pass_id;",
+        "-- PLANTED: lane rows are not stamped with their pass's garage",
+        "an existing lane row carries no garage: the orphan check refuses every seeded lane",
+    ),
+    "G25/orphan-dropped": (
+        G25, MIGRATION_0004,
+        "    RAISE EXCEPTION 'migration 0004 refuses to run: % pass_lanes row(s) name a pass "
+        "that '",
+        "    DELETE FROM pass_lanes WHERE garage_id IS NULL; RAISE NOTICE '% dropped, PLANTED: '",
+        "a lane row the migration cannot place is DROPPED silently instead of stopping the "
+        "migration by name",
+    ),
+    "G25/unique-winner": (
+        G25, MIGRATION_0004,
+        "    RAISE EXCEPTION 'migration 0004 refuses to run: a pass''s external id becomes "
+        "unique per '",
+        "    DELETE FROM passes p USING passes q WHERE p.tenant_id = q.tenant_id "
+        "AND p.external_id = q.external_id AND p.id > q.id; RAISE NOTICE 'PLANTED: winner picked '",
+        "the UNIQUE tightening picks a winner and drops the other pass instead of failing by name",
+    ),
+    # --- the G3a fix round: the ledger per garage (X1), the keys RESTRICT (X2),
+    #     the G12 classification from the catalogue (X3). Every anchor below is
+    #     multi-line on purpose: a second line's indentation is inside the match,
+    #     so a deeper re-indent of the code reads DEAD here rather than planting
+    #     at the wrong depth (the L3's F3, dead by grade, still worth not buying).
+    "G25/open-visit-any-garage": (
+        G25, "store/records.py",
+        source(
+            '        "SELECT id, entered_at FROM visits WHERE tenant_id = %s AND garage_id = %s "',
+            '        "AND pass_id = %s AND vehicle_identity = %s AND exited_at IS NULL",',
+        ),
+        source(
+            '        "SELECT id, entered_at FROM visits WHERE tenant_id = %s AND %s::uuid IS NOT '
+            'NULL "',
+            '        "AND pass_id = %s AND vehicle_identity = %s AND exited_at IS NULL",  '
+            '# PLANTED',
+
+        ),
+        "the open-visit lookup ignores the garage again: an entry at B is refused for a visit "
+        "open at A, and an exit at B closes A's visit",
+    ),
+    "G25/open-visit-index-per-pass": (
+        G25, MIGRATION_0004,
+        source(
+            "CREATE UNIQUE INDEX visits_one_open_per_vehicle_per_garage",
+            "  ON visits (tenant_id, pass_id, garage_id, vehicle_identity) WHERE exited_at IS "
+            "NULL;",
+        ),
+        source(
+            "CREATE UNIQUE INDEX visits_one_open_per_vehicle_per_garage",
+            "  ON visits (tenant_id, pass_id, vehicle_identity) WHERE exited_at IS NULL;  "
+            "-- PLANTED",
+        ),
+        "the database's backstop is keyed per pass again: with the module's check per garage, "
+        "the entry at B while A is open meets the index as a bare constraint",
+    ),
+    "G25/visits-cascade": (
+        G25, MIGRATION_0004,
+        source(
+            "  ADD CONSTRAINT visits_garage_of_pass",
+            "    FOREIGN KEY (tenant_id, pass_id, garage_id)",
+            "    REFERENCES pass_garages (tenant_id, pass_id, garage_id) ON DELETE RESTRICT;",
+        ),
+        source(
+            "  ADD CONSTRAINT visits_garage_of_pass",
+            "    FOREIGN KEY (tenant_id, pass_id, garage_id)",
+            "    REFERENCES pass_garages (tenant_id, pass_id, garage_id) ON DELETE CASCADE;  "
+            "-- PLANTED",
+        ),
+        "removing a garage from a pass silently erases that garage's visits again",
+    ),
+    "G25/registrations-cascade": (
+        G25, MIGRATION_0004,
+        source(
+            "  ADD CONSTRAINT vehicle_registrations_garage_of_pass",
+            "    FOREIGN KEY (tenant_id, pass_id, garage_id)",
+            "    REFERENCES pass_garages (tenant_id, pass_id, garage_id) ON DELETE RESTRICT;",
+        ),
+        source(
+            "  ADD CONSTRAINT vehicle_registrations_garage_of_pass",
+            "    FOREIGN KEY (tenant_id, pass_id, garage_id)",
+            "    REFERENCES pass_garages (tenant_id, pass_id, garage_id) ON DELETE CASCADE;  "
+            "-- PLANTED",
+        ),
+        "removing a garage from a pass silently erases that garage's registrations again",
+    ),
+    "G12/leaf-by-assumption": (
+        G12, "store/postgres.py",
+        source(
+            "            (table,),",
+            "        )",
+            "        return frozenset(row[0] for row in cursor.fetchall())",
+        ),
+        source(
+            "            (table,),",
+            "        )",
+            "        return frozenset()  # PLANTED: every table is a leaf",
+        ),
+        "the catalogue read of a table's children is planted empty, so a DELETE grant on a "
+        "table with children is named as a leaf again",
+    ),
+    # --- each recorded entry is read on its own garage's clock (the G3a gate-fix round)
+    "G9/asking-clock": (
+        G9, "access.py",
+        source(
+            "        if garage_id == garage.id:",
+            "            return tz",
+        ),
+        source(
+            "        if True:  # PLANTED: every entry read on the asking garage's clock",
+            "            return tz",
+        ),
+        "the per-window count reads every garage's entries on the asking garage's clock "
+        "again: a Tokyo visit at 09:00 Monday reads at Denver as 18:00 Sunday, counts "
+        "nothing, and a one-per-window allowance is spent twice",
+    ),
+    "G25/asking-clock": (
+        G25, "access.py",
+        source(
+            "        if garage_id == garage.id:",
+            "            return tz",
+        ),
+        source(
+            "        if True:  # PLANTED: every entry read on the asking garage's clock",
+            "            return tz",
+        ),
+        "the same plant, measured on the mixed-zone pass's DST edge and through the store: "
+        "two Denver entries in the doubled hour read at Phoenix as one in the window",
+    ),
+    "G25/refusal-instant-session-zone": (
+        G25, "access.py",
+        '{v.garage_id!r} at {absolute(v.entered_at)} must be read on that garage',
+        '{v.garage_id!r} at {v.entered_at.isoformat()} must be read on that garage',
+        "the clock-not-here refusal quotes the entry in whatever offset the value arrived with "
+        "-- through the store the DATABASE SESSION's zone, under a Denver session the asking "
+        "clock's day, inside the sentence that says the entry is not read on the asking clock; "
+        "visible only when three zones are compared, never in one reading",
+    ),
+    "G25/visit-garage-id-normalised": (
+        G25, "passes.py",
+        '        object.__setattr__(self, "garage_id", require_text(self.garage_id, '
+        '"visit.garage_id"))',
+        "        pass  # PLANTED: the visit's garage id is type-checked only -- never stripped, "
+        "never refused",
+        "the visit's garage id skips the module's one text validator: an entry recorded under "
+        "'garage-far ' (a scanner's trailing space) never matches the readable garage handed in "
+        "as 'garage-far', so the entry is 'not handed in' at every door and every per-window "
+        "answer on the pass is refused -- fail-closed, never counted; and a blank or "
+        "control-character id constructs instead of being refused by name",
+    ),
+    "G25/allowance-per-garage": (
+        G25, "access.py",
+        "            counted = _visits_used(visits, pass_, window, today, clock_at)",
+        "            counted = _visits_used([v for v in visits if v.garage_id == garage.id], "
+        "pass_, window, today, clock_at)  # PLANTED: per garage",
+        "THE OVER-REACH: the allowance is counted per garage -- 12 at A and 8 at B read 12 "
+        "of 20 at A -- a silent reversal of C5, the product rule the fix must not touch",
+    ),
+    "G25/garage-not-handed-in": (
+        G25, "access.py",
+        "        copies = handed_in_garages.get(garage_id, [])",
+        "        copies = handed_in_garages.get(garage_id) or [garage]"
+        "  # PLANTED: the asking garage stands in",
+        "an entry at a garage that was not handed in is read on the asking garage's clock "
+        "instead of refused by name",
+    ),
+    "G25/store-hands-in-garages": (
+        G25, "store/access.py",
+        "        garages=list(garages.values()),",
+        "        garages=[],  # PLANTED: the store hands the engine no garage",
+        "the store no longer hands the engine the pass's garages: an entry at Denver with a "
+        "Tokyo visit on the ledger is refused to answer instead of counted on Tokyo's clock",
+    ),
+    "G25/cli-garages": (
+        G25, "cli.py",
+        source(
+            '            garages=[load_garage(g) for g in _list(args.garages, "--garages")]',
+            "            if args.garages is not None else [],",
+        ),
+        source(
+            "            garages=[],  # PLANTED: --garages read and dropped",
+            "            # if args.garages is not None else [],",
+        ),
+        "the documents door drops --garages at an entry: the gate's case through the "
+        "command line is refused to answer with the Tokyo document handed in",
+    ),
+    "G5/revocation-day-per-garage": (
+        G25, "store/records.py",
+        "            days_at.append((uuid, day_of(at, zone(at_garage.timezone))))",
+        "            days_at.append((uuid, day_of(at, zone(_garage.timezone))))"
+        "  # PLANTED: the asking garage's day everywhere",
+        "a revocation ends every garage's registrations on the asking garage's day again: "
+        "2026-06-01T20:00-06:00 ends the Tokyo row on June 1 from Denver and June 2 from Tokyo",
+    ),
+    "G5/revocation-unreadable-garage-named": (
+        G25, "store/records.py",
+        "            _uuid, at_garage = load_readable_garage(cursor, tenant_uuid, external_id)",
+        "            _uuid, at_garage = load_garage(cursor, tenant_uuid, external_id)"
+        "  # PLANTED: unreadable loads as stored",
+        "a garage of the pass whose zone cannot be read no longer refuses the revocation by "
+        "name with the repair; the zone read raises the bare timezone refusal instead",
     ),
 }
 

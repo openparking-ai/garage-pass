@@ -66,6 +66,37 @@ cannot be built) and refused by name at an entry. A pass handed in twice under
 one id is inconsistent data like the dangling registration: never resolved by
 order, every copy evaluated, the duplication named.
 
+**A PASS ANSWERS ONLY AT THE GARAGES IT NAMES.** A pass carries a set of
+garages (``Pass.garage_ids``); which passes this call SELECTS is decided by
+membership -- ``garage.id in p.garage_ids`` -- at both places a pass is read
+for its garage (the duplicated-id grouping and ``by_id``), and a pass that
+does not name this garage is not this garage's business: a registration on it
+is skipped, never dangling. The terms are one set, evaluated here at whichever
+garage the car is at; only the lanes are read per garage
+(``Terms.lanes_at``). Membership changes WHICH passes are selected, never WHEN
+anything is checked.
+
+**EACH RECORDED ENTRY IS READ ON THE CLOCK OF THE GARAGE IT WAS RECORDED AT.**
+The allowance is one count over every garage of the pass (C5), but whether
+an entry fell "in this window, today" is a question about a wall clock, and
+the wall clock is the one on the door the car drove through -- not the one at
+the garage asking now. So the pass's garages reach this call (``garages``):
+a per-window count resolves each entry's garage by id, reads that entry's day
+and minute in THAT garage's zone, and compares the day to the asking garage's
+``today``. Measured before this (the G3a merge gate): a pass over Denver and
+Tokyo, one visit per window; a visit at Tokyo at 09:00 Monday read on
+Denver's clock as 18:00 Sunday, counted nothing, and the allowance was spent
+twice. Zero effect while every garage of a pass shares one zone. The
+``LIFE`` allowance reads no clock and gains none. An entry recorded at a
+garage that was not handed in -- inconsistent data, the dangling-registration
+shape -- is REFUSED at the entry naming the garage, never read on the wrong
+clock and never raised; a handed-in garage this module cannot read refuses
+naming its field, the same path the asking garage takes; one handed in twice
+under one id refuses naming the duplication, never resolved by order. The
+asking garage is the ``garage`` parameter, whatever ``garages`` also carries
+under its id: the caller said which garage the question is about. Only an
+ENTRY counts an allowance, so no exit reaches any of those refusals.
+
 **THE ORDER OF THE CHECKS IS PART OF THE CONTRACT.** An unreadable garage
 answers first (without a clock nothing else can be read). Then the blank
 identity and lane. Then, at entry, the transient mode. Then which pass. Per
@@ -78,15 +109,17 @@ reason; nothing after it is evaluated or reported.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import UTC, date, datetime
 from enum import Enum
+from zoneinfo import ZoneInfo
 
 from garage_pass.findings import (
     BLANK_IDENTITY,
     BLANK_LANE,
     DIRECTION_NOT_ALLOWED,
+    DUPLICATED_GARAGE_ID,
     DUPLICATED_PASS_ID,
     EXIT_IS_NEVER_REFUSED,
     EXPIRED,
@@ -95,6 +128,7 @@ from garage_pass.findings import (
     MEANS_EXIT_OUT_OF_TERMS,
     MEANS_NOTHING_TO_ADMIT_AS,
     MEANS_TRANSIENT_STAY,
+    MISSING_GARAGE_HANDED_IN,
     MISSING_LANE,
     MISSING_ONE_PASS,
     MISSING_PASS_HANDED_IN,
@@ -179,8 +213,16 @@ def access(
     lane: str,
     direction: Direction,
     at: datetime,
+    garages: Sequence[Garage] = (),
 ) -> Answer:
-    _require_inputs(garage, passes, registrations, visits, vehicle_identity, lane, direction, at)
+    """``garages``: the garages the passes name, so that a recorded entry at
+    another garage of a pass is read on ITS clock (the module docstring). The
+    store hands in every garage of every pass it selected; the command line
+    hands in ``--garages``. Absent means not handed in -- an entry recorded at
+    a garage that is not here is then refused by name at an entry with a
+    per-window allowance, and nothing else reads the sequence."""
+    _require_inputs(garage, passes, registrations, visits, vehicle_identity, lane, direction, at,
+                    garages)
     identity = vehicle_identity.strip()
     lane_name = lane.strip()
     is_exit = direction is Direction.EXIT
@@ -267,6 +309,37 @@ def access(
         rendering was not."""
         return local(instant, tz).isoformat()
 
+    handed_in_garages: dict[str, list[Garage]] = {}
+    for g in garages:
+        handed_in_garages.setdefault(g.id, []).append(g)
+
+    def clock_at(garage_id: str) -> ZoneInfo | tuple[str, str]:
+        """The zone a recorded entry's day and minute are read in: the zone of
+        the garage it was recorded at. The asking garage's is ``tz`` (already
+        known readable above). Any other garage is resolved from ``garages``
+        by id, and what cannot be resolved is a (missing, detail) pair the
+        caller turns into a refusal -- never a guess at ``tz``."""
+        if garage_id == garage.id:
+            return tz
+        copies = handed_in_garages.get(garage_id, [])
+        if not copies:
+            named = ", ".join(sorted(repr(gid) for gid in handed_in_garages)) or "none"
+            return (
+                MISSING_GARAGE_HANDED_IN,
+                f"garage {garage_id!r} was not handed in (handed in: {named}; asking: "
+                f"{garage.id!r}).",
+            )
+        if len(copies) > 1:
+            return (
+                DUPLICATED_GARAGE_ID,
+                f"garage {garage_id!r} was handed in {len(copies)} times, which one id, one "
+                "garage forbids.",
+            )
+        other = copies[0]
+        if other.unreadable is not None:
+            return MISSING_TIMEZONE, f"garage {other.id!r}: {other.unreadable.describe()}"
+        return zone(other.timezone)
+
     if not identity:
         if is_exit:
             return not_covered(BLANK_IDENTITY, f"vehicle_identity is {vehicle_identity!r}.")
@@ -299,9 +372,9 @@ def access(
     duplicated = {
         pid: sorted(ps, key=_copy_order)
         for pid, ps in copies.items()
-        if len(ps) > 1 and any(p.garage_id == garage.id for p in ps)
+        if len(ps) > 1 and any(garage.id in p.garage_ids for p in ps)
     }
-    by_id = {p.id: p for p in passes if p.garage_id == garage.id and p.id not in duplicated}
+    by_id = {p.id: p for p in passes if garage.id in p.garage_ids and p.id not in duplicated}
     here = []
     # A registration naming a pass that was NOT handed in is INCONSISTENT DATA
     # -- the registrations and the passes disagree -- and it is answered, not
@@ -321,7 +394,7 @@ def access(
             continue
         if registration.pass_id not in by_id:
             if any(p.id == registration.pass_id for p in passes):
-                continue  # a pass at another garage; not this garage's business
+                continue  # a pass that does not name this garage; not this garage's business
             if registration.covers(today):
                 dangling.append(registration)
             continue
@@ -433,10 +506,11 @@ def access(
                 f"not {direction.value!r}.",
                 pass_,
             )
-        if terms.allowed_lanes is not None and lane_name not in terms.allowed_lanes:
+        lanes_here = terms.lanes_at(garage.id)
+        if lanes_here is not None and lane_name not in lanes_here:
             return not_covered(
                 WRONG_LANE,
-                f"pass {pass_.id!r} allows lanes {sorted(terms.allowed_lanes)}, "
+                f"pass {pass_.id!r} allows lanes {sorted(lanes_here)} at garage {garage.id!r}, "
                 f"not {lane_name!r}.",
                 pass_,
             )
@@ -464,7 +538,12 @@ def access(
             covering.append(f"in window {window.describe()} on {today}")
 
         if not is_exit and terms.visit_allowance is not None:
-            used, denominator = _visits_used(visits, pass_, window, at, tz)
+            counted = _visits_used(visits, pass_, window, today, clock_at)
+            if isinstance(counted, NoClock):
+                # an entry on this pass at a garage whose clock is not here:
+                # refused by name, never read on this garage's clock instead
+                return refused(counted.missing, counted.detail, pass_)
+            used, denominator = counted
             allowed = terms.visit_allowance.count
             if used >= allowed:
                 return not_covered(
@@ -474,7 +553,7 @@ def access(
 
         unmeasured: str | None = None
         if is_exit and terms.max_stay is not None:
-            open_visit = _open_visit(visits, pass_, identity)
+            open_visit = _open_visit(visits, garage, pass_, identity)
             if open_visit is None or at < open_visit.entered_at:
                 # UNMEASURED, and said so by name -- never treated as satisfied
                 # silently, never a refusal: the exit is answered on the terms
@@ -486,7 +565,7 @@ def access(
                         f"the open recorded entry is at {rendered(open_visit.entered_at)}, "
                         "later than this exit."
                         if open_visit else
-                        "no open recorded entry of this vehicle on this pass."
+                        "no open recorded entry of this vehicle on this pass at this garage."
                     )
                 )
                 covering.append("max stay UNMEASURED (see unmeasured)")
@@ -580,7 +659,7 @@ def _duplication(pass_id: str, copies: Sequence[Pass]) -> str:
 
 def _require_inputs(
     garage: object, passes: object, registrations: object, visits: object,
-    vehicle_identity: object, lane: object, direction: object, at: object,
+    vehicle_identity: object, lane: object, direction: object, at: object, garages: object,
 ) -> None:
     """Every parameter of ``access()`` has the type its signature declares, or a
     ``TypeError`` naming the parameter -- raised on the first touch, before an
@@ -597,6 +676,7 @@ def _require_inputs(
         ("passes", passes, Pass),
         ("registrations", registrations, Registration),
         ("visits", visits, Visit),
+        ("garages", garages, Garage),
     ):
         if isinstance(value, str | bytes) or not isinstance(value, Sequence):
             raise TypeError(f"{name} must be a sequence of {element.__name__}, not {value!r}")
@@ -652,11 +732,40 @@ def _day_name(weekday: int) -> str:
     return DAY_NAMES[weekday]
 
 
+def absolute(instant: datetime) -> str:
+    """An instant the call holds NO garage clock to read on, as UTC and said
+    so -- never in the offset it happened to arrive with. Measured before
+    this: the ``NoClock`` refusal quoted ``entered_at.isoformat()``, which
+    through the store is the DATABASE SESSION's zone -- under
+    ``PGTZ=America/Denver`` the asking clock's day, inside a sentence whose
+    whole point is that the entry must not be read on the asking clock. The
+    garage's own wall clock cannot be rendered here (the refusal exists
+    because that clock is not held), so the sentence renders the absolute
+    instant and says the local one is unrendered, rather than pretending."""
+    at_utc = require_aware(instant).astimezone(UTC).isoformat().replace("+00:00", "Z")
+    return f"{at_utc} (UTC; unrendered on that garage's wall clock, which is not here)"
+
+
+@dataclass(frozen=True)
+class NoClock:
+    """A recorded entry whose garage's clock the call does not hold: which
+    refusal (a key of ``findings.REFUSED_TO_ANSWER``) and the sentence."""
+
+    missing: str
+    detail: str
+
+
 def _visits_used(
-    visits: Sequence[Visit], pass_: Pass, window: Window | None, at: datetime, tz
-) -> tuple[int, str]:
+    visits: Sequence[Visit], pass_: Pass, window: Window | None, today: date,
+    clock_at: Callable[[str], ZoneInfo | tuple[str, str]],
+) -> tuple[int, str] | NoClock:
     """How many recorded entries count against the allowance, and the sentence
-    that names the denominator -- what was counted, on what, over what."""
+    that names the denominator -- what was counted, on what, over what, and
+    on whose clock. The count is over EVERY garage of the pass (C5); each
+    entry's day and minute are read in the zone of the garage it was recorded
+    at (``clock_at``), and compared to the asking garage's ``today``. An entry
+    whose garage's clock is not here is a ``NoClock``, never counted on the
+    wrong clock and never dropped."""
     on_pass = [v for v in visits if v.pass_id == pass_.id]
     assert pass_.terms is not None
     allowance = pass_.terms.visit_allowance
@@ -667,22 +776,44 @@ def _visits_used(
             f"pass {pass_.id!r} over its life"
         )
     assert window is not None  # per-window allowance without windows is refused at creation
-    today = day_of(at, tz)
-    in_window = [
-        v for v in on_pass
-        if day_of(v.entered_at, tz) == today
-        and window.start_minute <= minute_of_day(v.entered_at, tz) < window.end_minute
-    ]
+    in_window: list[Visit] = []
+    for v in on_pass:
+        clock = clock_at(v.garage_id)
+        if not isinstance(clock, ZoneInfo):
+            missing, detail = clock
+            return NoClock(missing, (
+                f"entry of {v.vehicle_identity!r} on pass {pass_.id!r} recorded at garage "
+                f"{v.garage_id!r} at {absolute(v.entered_at)} must be read on that garage's "
+                f"clock to count it against the allowance, and {detail}"
+            ))
+        if (
+            day_of(v.entered_at, clock) == today
+            and window.start_minute <= minute_of_day(v.entered_at, clock) < window.end_minute
+        ):
+            in_window.append(v)
+    per_garage: dict[str, int] = {}
+    for v in in_window:
+        per_garage[v.garage_id] = per_garage.get(v.garage_id, 0) + 1
+    at_each = ", ".join(f"{gid}: {n}" for gid, n in sorted(per_garage.items())) or "none"
     return len(in_window), (
         f"counted {len(in_window)} recorded entr{'y' if len(in_window) == 1 else 'ies'} on "
-        f"pass {pass_.id!r} in window {window.describe()} on {today}"
+        f"pass {pass_.id!r} in window {window.describe()} on {today}, each read in the local "
+        f"day of the garage it was recorded at ({at_each})"
     )
 
 
-def _open_visit(visits: Sequence[Visit], pass_: Pass, identity: str) -> Visit | None:
-    """The latest still-open recorded entry of this vehicle on this pass."""
+def _open_visit(
+    visits: Sequence[Visit], garage: Garage, pass_: Pass, identity: str
+) -> Visit | None:
+    """The latest still-open recorded entry of this vehicle on this pass AT
+    THIS GARAGE. The garage is part of the key, deliberately: the visits handed
+    in span every garage the pass names (the allowance counts them all), and a
+    stay is measured from the entry recorded where the car is leaving. An
+    entry open at another garage of the set is not this exit's entry -- the
+    stay is then UNMEASURED and named, never measured from the wrong garage."""
     candidates = [
         v for v in visits
-        if v.pass_id == pass_.id and v.vehicle_identity.strip() == identity and v.is_open
+        if v.pass_id == pass_.id and v.garage_id == garage.id
+        and v.vehicle_identity.strip() == identity and v.is_open
     ]
     return max(candidates, key=lambda v: v.entered_at) if candidates else None

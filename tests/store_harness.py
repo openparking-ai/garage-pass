@@ -163,7 +163,7 @@ def seed_full_graph(app: Any, tenant_id: UUID) -> None:
     from garage_pass.store.records import record_entry, register_vehicle, set_garage_timezone
 
     garage = transient_garage()
-    pass_ = a_pass(garage_id=garage.id, terms=everything_terms())
+    pass_ = a_pass(garage_ids={garage.id}, terms=everything_terms(garage.id))
     seed(app, tenant_id, garage, (pass_,))
     with tenant(app, tenant_id) as cursor:
         register_vehicle(cursor, tenant_id, garage.id, pass_.id, "CAR-1", date(2026, 1, 1))

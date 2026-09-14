@@ -9,7 +9,16 @@ anywhere in this file:
    may be longer than any window: windows bind instants, not stays.
 4. **visit_allowance** -- a count, over the pass's life or per window.
 5. **directions** -- entry, exit, or both. Stated, because nothing is implicit.
-6. **allowed_lanes** -- a named set; absent means every lane of the garage.
+6. **allowed_lanes** -- a named set, stated PER GARAGE: a lane name is a
+   barrier at a garage, and ``A1`` at two garages is two barriers. Absent means
+   every lane at every garage the pass names; stated, every garage the pass
+   names has its own set (``Pass`` refuses one that has none), and the access
+   call reads the set of the garage the car is at and no other.
+
+**THE TERMS ARE ONE SET, ON THE PASS, EVALUATED AT WHICHEVER GARAGE THE CAR IS
+AT.** A pass may name several garages; a 20-visit allowance is 20 on the pass,
+not 20 per garage, and a Mon-Fri window is Mon-Fri everywhere. Only the lanes
+are per garage, because only a lane means a different thing at each.
 
 **THE VALIDATOR REFUSES CONTRADICTIONS AT CREATION, NAMING THE FIELD.** The gate
 is never where a contradiction is discovered: a ``Terms`` value that fails
@@ -24,7 +33,9 @@ from enum import Enum
 
 from garage_pass.findings import (
     REFUSAL_ALLOWANCE_PER_WINDOW_WITHOUT_WINDOWS,
+    REFUSAL_FIELD_BLANK,
     REFUSAL_LANE_NAME_BLANK,
+    REFUSAL_LANES_GARAGE_REPEATED,
     REFUSAL_LANES_STATED_BUT_EMPTY,
     REFUSAL_MAX_STAY_NOT_POSITIVE,
     REFUSAL_NO_DIRECTIONS,
@@ -83,6 +94,20 @@ class VisitAllowance:
 
 
 @dataclass(frozen=True)
+class GarageLanes:
+    """The lanes a pass may use at ONE garage. A lane name is a barrier at a
+    garage -- ``A1`` at two garages is two different barriers -- so a stated
+    lane set is stated per garage, and the access call reads the set of the
+    garage the car is at and no other."""
+
+    garage_id: str
+    lanes: frozenset[str]
+
+    def describe(self) -> str:
+        return f"{self.garage_id}:{','.join(sorted(self.lanes))}"
+
+
+@dataclass(frozen=True)
 class Terms:
     valid_from: date | None = None
     valid_to: date | None = None
@@ -90,11 +115,29 @@ class Terms:
     max_stay: timedelta | None = None
     visit_allowance: VisitAllowance | None = None
     directions: frozenset[Direction] = field(default_factory=frozenset)
-    #: None means every lane of the garage. An empty set is refused.
-    allowed_lanes: frozenset[str] | None = None
+    #: None means every lane at every garage the pass names. Stated, it is one
+    #: entry per garage; an empty tuple, an entry with no lane, a blank lane
+    #: or a garage named twice is refused. Whether every garage the pass names
+    #: has an entry is the pass's to check (``passes.refuse_lanes_off_the_pass``):
+    #: the terms alone do not know the pass's garages.
+    allowed_lanes: tuple[GarageLanes, ...] | None = None
 
     def __post_init__(self) -> None:
         check_terms(self)
+
+    def lanes_at(self, garage_id: str) -> frozenset[str] | None:
+        """The stated lanes at one garage: ``None`` when lanes are not stated
+        at all (every lane); the garage's own set when they are -- and the
+        EMPTY set for a garage with no entry, which is no lane at all, never
+        every lane. A pass whose lanes are stated names no garage without an
+        entry (refused where the pass is built), so the empty set is reached
+        only by asking about a garage the pass does not name."""
+        if self.allowed_lanes is None:
+            return None
+        for entry in self.allowed_lanes:
+            if entry.garage_id == garage_id:
+                return entry.lanes
+        return frozenset()
 
     def describe(self) -> str:
         """The terms in one line, for an answer and for the command line."""
@@ -111,7 +154,9 @@ class Terms:
             )
         parts.append("directions " + "+".join(sorted(d.value for d in self.directions)))
         if self.allowed_lanes is not None:
-            parts.append("lanes " + ",".join(sorted(self.allowed_lanes)))
+            parts.append("lanes " + "; ".join(
+                entry.describe() for entry in sorted(self.allowed_lanes, key=lambda e: e.garage_id)
+            ))
         return "; ".join(parts)
 
 
@@ -214,6 +259,30 @@ def check_terms(terms: Terms) -> None:
             raise Refused(
                 REFUSAL_LANES_STATED_BUT_EMPTY, "allowed_lanes", "allowed_lanes is an empty set."
             )
-        for lane in terms.allowed_lanes:
-            if not isinstance(lane, str) or not lane.strip():
-                raise Refused(REFUSAL_LANE_NAME_BLANK, "allowed_lanes", f"a lane is {lane!r}.")
+        seen: set[str] = set()
+        for index, entry in enumerate(terms.allowed_lanes):
+            where = f"allowed_lanes[{index}]"
+            if not isinstance(entry, GarageLanes):
+                raise TypeError(f"{where} must be a GarageLanes, not {entry!r}")
+            if not isinstance(entry.garage_id, str) or not entry.garage_id.strip():
+                raise Refused(
+                    REFUSAL_FIELD_BLANK, f"{where}.garage_id",
+                    f"{where}.garage_id must be non-blank text, not {entry.garage_id!r}.",
+                )
+            if entry.garage_id in seen:
+                raise Refused(
+                    REFUSAL_LANES_GARAGE_REPEATED, f"{where}.garage_id",
+                    f"{where} names garage {entry.garage_id!r} again.",
+                )
+            seen.add(entry.garage_id)
+            if not entry.lanes:
+                raise Refused(
+                    REFUSAL_LANES_STATED_BUT_EMPTY, f"{where}.lanes",
+                    f"{where} states no lane at garage {entry.garage_id!r}.",
+                )
+            for lane in entry.lanes:
+                if not isinstance(lane, str) or not lane.strip():
+                    raise Refused(
+                        REFUSAL_LANE_NAME_BLANK, f"{where}.lanes",
+                        f"a lane at garage {entry.garage_id!r} is {lane!r}.",
+                    )

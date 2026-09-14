@@ -7,13 +7,29 @@ refusal has committed nothing -- except where a constraint fires as the
 backstop for two writers racing, which aborts the transaction and is reported
 by its constraint name, and the caller rolls back.
 
-**ONE CAR, ONE PASS PER GARAGE.** ``register_vehicle`` refuses by name, naming
-the pass that holds the identity and the day that registration ends, before
-the database's EXCLUDE has to. ``change_state`` to ``revoked`` ends the pass's
-registrations on the revocation day, so the identity is free from that day
-(``they got divorced``). A registration on a pass whose ``valid_to`` has passed
-is released -- ended on the day after ``valid_to`` -- by the next registration
-attempt that meets it, because expiry is derived and nobody writes it.
+**A PASS NAMES A SET OF GARAGES, AND THE STORE READS THE SET AT EVERY DOOR.**
+``create_pass`` writes the set (``pass_garages``) and the lanes per garage in
+the same transaction as the pass, and refuses by name to store a pass at a
+garage it does not name; ``load_pass`` loads by ``(tenant, external id)``,
+returns the pass with its full set, and KEEPS ITS GARAGE ARGUMENT -- it refuses
+when that garage is not in the set, so every caller's existing refusal still
+fires. Everything below that takes a garage takes one the pass names.
+
+**ONE CAR, ONE PASS PER GARAGE -- AT EVERY GARAGE THE PASS NAMES, TOGETHER OR
+NOT AT ALL.** ``register_vehicle`` writes ONE ``vehicle_registrations`` row per
+garage of the pass, in one transaction: the EXCLUDE keeps its exact per-garage
+meaning and its backstop role, and a pass that spans three garages holds the
+car at all three from one enrolment. The collision check runs at EVERY garage
+of the set BEFORE the first row is written, so a car held by another pass at
+any one of them refuses the whole registration by name -- naming that garage,
+the pass that holds the identity and the day that registration ends -- and a
+partial fan-out is never an outcome. The EXCLUDE is the backstop at each
+garage. ``change_state`` to ``revoked`` ends the pass's registrations on the
+revocation day -- AT EACH GARAGE, THAT GARAGE'S DAY of the instant -- so the
+identity is free from that day (``they got divorced``). A registration on a
+pass whose ``valid_to`` has passed is released -- ended on the day after
+``valid_to`` -- by the next registration attempt that meets it, because expiry
+is derived and nobody writes it.
 
 **THE TARGET PASS'S STATE IS READ, AND A PASS THAT IS NOT REGISTRABLE IS
 REFUSED BY NAME, NAMING THE STATE.** Registrable: ``draft``,
@@ -69,10 +85,17 @@ from garage_pass.garage import (
 from garage_pass.localday import day_of, require_aware, zone
 from garage_pass.passes import EXPIRED, Holder, Pass, Registration, State, Visit
 from garage_pass.states import effective_state, transition
-from garage_pass.terms import AllowancePeriod, Direction, Terms, VisitAllowance, Window
+from garage_pass.terms import (
+    AllowancePeriod,
+    Direction,
+    GarageLanes,
+    Terms,
+    VisitAllowance,
+    Window,
+)
 
 ONE_PASS_PER_GARAGE = "vehicle_registrations_one_pass_per_garage"
-ONE_OPEN_VISIT = "visits_one_open_per_vehicle_per_pass"
+ONE_OPEN_VISIT = "visits_one_open_per_vehicle_per_garage"
 ENDED_BY_REVOCATION = "pass revoked"
 ENDED_BY_EXPIRY = "pass valid_to passed"
 ENDED_BY_OWNER = "ended"
@@ -268,32 +291,42 @@ def create_pass(
             REFUSAL_FIELD_BLANK, "pass.terms",
             f"pass {pass_.id!r} carries no readable terms; only the load path builds such a value.",
         )
-    garage_uuid, _garage = load_readable_garage(cursor, tenant_uuid, garage_external_id)
-    if pass_.garage_id != garage_external_id:
+    _garage_uuid, _garage = load_readable_garage(cursor, tenant_uuid, garage_external_id)
+    # MEMBERSHIP: the garage this is stored at is one the pass names. Refused
+    # by name before anything is written, naming the garage and the set.
+    if garage_external_id not in pass_.garage_ids:
         raise Refused(
             REFUSAL_GARAGE_MISMATCH,
-            "pass.garage_id",
-            f"pass {pass_.id!r} names garage {pass_.garage_id!r}; asked to store it at "
+            "pass.garage_ids",
+            f"pass {pass_.id!r} names garages {sorted(pass_.garage_ids)}; asked to store it at "
             f"{garage_external_id!r}.",
         )
+    # every garage of the set exists and is readable: a pass cannot name a
+    # garage nobody stored, and nothing is written against a clock nobody can read
+    garage_uuids = {
+        garage_id: load_readable_garage(cursor, tenant_uuid, garage_id)[0]
+        for garage_id in sorted(pass_.garage_ids)
+    }
+    # the id is unique per TENANT: a pass that spans garages cannot be
+    # identified by one of them (the UNIQUE is the backstop for a race)
     cursor.execute(
-        "SELECT 1 FROM passes WHERE tenant_id = %s AND garage_id = %s AND external_id = %s",
-        (tenant_uuid, garage_uuid, pass_.id),
+        "SELECT 1 FROM passes WHERE tenant_id = %s AND external_id = %s",
+        (tenant_uuid, pass_.id),
     )
     if cursor.fetchone():
         raise Refused(REFUSAL_PASS_ALREADY_EXISTS, "pass.id", f"pass {pass_.id!r}.")
     terms = pass_.terms
     cursor.execute(
         """
-        INSERT INTO passes (tenant_id, garage_id, external_id, label, holder_email, holder_name,
+        INSERT INTO passes (tenant_id, external_id, label, holder_email, holder_name,
                             holder_phone, valid_from, valid_to, max_stay_minutes,
                             allowance_count, allowance_per, entry_allowed, exit_allowed,
                             lanes_stated, state)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         RETURNING id
         """,
         (
-            tenant_uuid, garage_uuid, pass_.id, pass_.label, pass_.holder.email,
+            tenant_uuid, pass_.id, pass_.label, pass_.holder.email,
             pass_.holder.name, pass_.holder.phone, terms.valid_from, terms.valid_to,
             int(terms.max_stay.total_seconds() // 60) if terms.max_stay else None,
             terms.visit_allowance.count if terms.visit_allowance else None,
@@ -303,6 +336,12 @@ def create_pass(
         ),
     )
     pass_uuid = as_uuid(cursor.fetchone()[0])
+    # THE SET, in the same transaction as the pass: one row per garage it names
+    for garage_id in sorted(pass_.garage_ids):
+        cursor.execute(
+            "INSERT INTO pass_garages (tenant_id, pass_id, garage_id) VALUES (%s, %s, %s)",
+            (tenant_uuid, pass_uuid, garage_uuids[garage_id]),
+        )
     for position, window in enumerate(terms.windows):
         cursor.execute(
             "INSERT INTO pass_windows (tenant_id, pass_id, days, start_minute, end_minute, "
@@ -310,11 +349,15 @@ def create_pass(
             (tenant_uuid, pass_uuid, sorted(window.days), window.start_minute,
              window.end_minute, position),
         )
-    for lane in sorted(terms.allowed_lanes or ()):
-        cursor.execute(
-            "INSERT INTO pass_lanes (tenant_id, pass_id, lane) VALUES (%s, %s, %s)",
-            (tenant_uuid, pass_uuid, lane),
-        )
+    # the lanes PER GARAGE: every entry names a garage of the set (the Pass
+    # refused one that did not), and the database's key says so again
+    for entry in sorted(terms.allowed_lanes or (), key=lambda e: e.garage_id):
+        for lane in sorted(entry.lanes):
+            cursor.execute(
+                "INSERT INTO pass_lanes (tenant_id, pass_id, garage_id, lane) "
+                "VALUES (%s, %s, %s, %s)",
+                (tenant_uuid, pass_uuid, garage_uuids[entry.garage_id], lane),
+            )
     cursor.execute(
         "INSERT INTO pass_state_changes (tenant_id, pass_id, from_state, to_state, changed_by, "
         "changed_at, reason) VALUES (%s, %s, NULL, %s, %s, %s, 'created')",
@@ -323,23 +366,51 @@ def create_pass(
     return pass_uuid
 
 
+#: The pass row with its garage set beside it: the set's external ids and its
+#: uuids, aggregated in one order, so the two arrays line up.
+_PASS_COLUMNS = """
+        SELECT p.id, p.label, p.holder_email, p.holder_name, p.holder_phone,
+               p.valid_from, p.valid_to, p.max_stay_minutes, p.allowance_count,
+               p.allowance_per, p.entry_allowed, p.exit_allowed, p.lanes_stated, p.state,
+               (SELECT array_agg(g.external_id ORDER BY g.external_id)
+                  FROM pass_garages pg
+                  JOIN garages g ON g.tenant_id = pg.tenant_id AND g.id = pg.garage_id
+                 WHERE pg.tenant_id = p.tenant_id AND pg.pass_id = p.id),
+               (SELECT array_agg(g.id ORDER BY g.external_id)
+                  FROM pass_garages pg
+                  JOIN garages g ON g.tenant_id = pg.tenant_id AND g.id = pg.garage_id
+                 WHERE pg.tenant_id = p.tenant_id AND pg.pass_id = p.id)
+        FROM passes p
+"""
+
+
 def load_pass(
     cursor: Any, tenant_id: Any, garage_uuid: UUID, external_id: str
 ) -> tuple[UUID, Pass]:
+    """The pass by ``(tenant, external id)``, with its full garage set -- AT
+    THE GARAGE ASKED FOR: a pass that does not name that garage is refused by
+    name, naming the set, with the refusal every caller already handles."""
     tenant_uuid = as_uuid(tenant_id)
     cursor.execute(
-        """
-        SELECT p.id, g.external_id, p.label, p.holder_email, p.holder_name, p.holder_phone,
-               p.valid_from, p.valid_to, p.max_stay_minutes, p.allowance_count,
-               p.allowance_per, p.entry_allowed, p.exit_allowed, p.lanes_stated, p.state
-        FROM passes p JOIN garages g ON g.tenant_id = p.tenant_id AND g.id = p.garage_id
-        WHERE p.tenant_id = %s AND p.garage_id = %s AND p.external_id = %s
-        """,
-        (tenant_uuid, garage_uuid, external_id),
+        _PASS_COLUMNS + "WHERE p.tenant_id = %s AND p.external_id = %s",
+        (tenant_uuid, external_id),
     )
     row = cursor.fetchone()
     if row is None:
         raise Refused(REFUSAL_PASS_NOT_FOUND, "pass.id", f"no pass {external_id!r}.")
+    garage_exts, garage_uuids = row[-2] or [], [as_uuid(u) for u in (row[-1] or [])]
+    # MEMBERSHIP: the garage asked for is one the pass names
+    if as_uuid(garage_uuid) not in garage_uuids:
+        cursor.execute(
+            "SELECT external_id FROM garages WHERE tenant_id = %s AND id = %s",
+            (tenant_uuid, garage_uuid),
+        )
+        asked = cursor.fetchone()
+        raise Refused(
+            REFUSAL_PASS_NOT_FOUND, "pass.id",
+            f"pass {external_id!r} names garages {sorted(garage_exts)}, not "
+            f"{asked[0] if asked else str(garage_uuid)!r}.",
+        )
     return as_uuid(row[0]), _pass_from_row(cursor, tenant_uuid, external_id, row)
 
 
@@ -358,18 +429,18 @@ def _pass_from_row(cursor: Any, tenant_uuid: UUID, external_id: str, row: tuple)
     try:
         return _readable_pass_from_row(cursor, tenant_uuid, external_id, row)
     except Refused as refusal:
-        (pass_uuid, garage_ext, label, *_rest, state) = row
+        (pass_uuid, label, *_rest, state, garage_exts, _garage_uuids) = row
         return Pass(
-            id=external_id, garage_id=garage_ext, label=label, holder=None, terms=None,
-            state=State(state), unreadable=refusal.as_unreadable(),
+            id=external_id, garage_ids=frozenset(garage_exts), label=label, holder=None,
+            terms=None, state=State(state), unreadable=refusal.as_unreadable(),
         )
 
 
 def _readable_pass_from_row(
     cursor: Any, tenant_uuid: UUID, external_id: str, row: tuple
 ) -> Pass:
-    (pass_uuid, garage_ext, label, email, name, phone, valid_from, valid_to, max_stay,
-     count, per, entry, exit_, lanes_stated, state) = row
+    (pass_uuid, label, email, name, phone, valid_from, valid_to, max_stay,
+     count, per, entry, exit_, lanes_stated, state, garage_exts, _garage_uuids) = row
     cursor.execute(
         "SELECT days, start_minute, end_minute FROM pass_windows "
         "WHERE tenant_id = %s AND pass_id = %s ORDER BY position",
@@ -380,11 +451,22 @@ def _readable_pass_from_row(
     )
     lanes = None
     if lanes_stated:
+        # PER GARAGE, as stored; a garage of the set with no lane rows gets no
+        # entry, and the Pass refuses that as it refuses it at creation -- the
+        # row loads UNREADABLE and still answers (G17)
         cursor.execute(
-            "SELECT lane FROM pass_lanes WHERE tenant_id = %s AND pass_id = %s",
+            "SELECT g.external_id, l.lane FROM pass_lanes l "
+            "JOIN garages g ON g.tenant_id = l.tenant_id AND g.id = l.garage_id "
+            "WHERE l.tenant_id = %s AND l.pass_id = %s ORDER BY g.external_id, l.lane",
             (tenant_uuid, pass_uuid),
         )
-        lanes = frozenset(r[0] for r in cursor.fetchall())
+        by_garage: dict[str, set[str]] = {}
+        for garage_ext, lane in cursor.fetchall():
+            by_garage.setdefault(garage_ext, set()).add(lane)
+        lanes = tuple(
+            GarageLanes(garage_id=garage_ext, lanes=frozenset(names))
+            for garage_ext, names in sorted(by_garage.items())
+        )
     directions = set()
     if entry:
         directions.add(Direction.ENTRY)
@@ -392,7 +474,7 @@ def _readable_pass_from_row(
         directions.add(Direction.EXIT)
     return Pass(
         id=external_id,
-        garage_id=garage_ext,
+        garage_ids=frozenset(garage_exts),
         label=label,
         holder=Holder(email=email, name=name, phone=phone),
         terms=Terms(
@@ -471,7 +553,16 @@ def change_state(
     *, by: str, at: datetime, reason: str,
 ) -> dict:
     """Move a pass, record who/when/why, and -- on revocation -- end its
-    registrations on the revocation day in the garage's local calendar.
+    registrations on the revocation day in the local calendar of EACH GARAGE
+    THE PASS NAMES: the rows at garage A end on A's day of the instant, the
+    rows at B on B's. Measured before this (the G3a merge gate): one instant,
+    ``2026-06-01T20:00-06:00``, ended both garages' rows on Jun 1 when revoked
+    from a Denver garage and on Jun 2 when revoked from a Tokyo one -- the day
+    a car became re-registrable at a garage depended on which garage the
+    operator happened to type. Every garage's day is derived BEFORE the first
+    row changes, so a garage of the set whose stored zone cannot be read
+    refuses the whole revocation by name (with the repair), and nothing is
+    half-ended.
 
     Takes ``LOCK_ORDER``: the pass row is locked FIRST and the pass re-read
     under that lock, so the transition is judged on the row as it stands, not
@@ -482,12 +573,19 @@ def change_state(
     cancelled credential under the lock and refuses by name; redeem-first,
     this write reads the committed registration and ends it."""
     tenant_uuid = as_uuid(tenant_id)
-    garage_uuid, garage = load_readable_garage(cursor, tenant_uuid, garage_external_id)
+    garage_uuid, _garage = load_readable_garage(cursor, tenant_uuid, garage_external_id)
     pass_uuid, _stale = load_pass(cursor, tenant_uuid, garage_uuid, pass_external_id)
     lock_pass_row(cursor, tenant_uuid, pass_uuid)
     # re-read under the lock: a check made before the lock is a check on a stale row
     pass_uuid, pass_ = load_pass(cursor, tenant_uuid, garage_uuid, pass_external_id)
     moved, change = transition(pass_, to, by=by, at=at, reason=reason)
+    # the revocation day AT EACH GARAGE of the pass, derived before any write:
+    # a garage this module cannot read refuses here, and nothing below runs
+    days_at: list[tuple[UUID, date]] = []
+    if to is State.REVOKED:
+        for external_id, uuid in garages_of(cursor, tenant_uuid, pass_uuid):
+            _uuid, at_garage = load_readable_garage(cursor, tenant_uuid, external_id)
+            days_at.append((uuid, day_of(at, zone(at_garage.timezone))))
     cursor.execute(
         "UPDATE passes SET state = %s WHERE tenant_id = %s AND id = %s",
         (moved.state.value, tenant_uuid, pass_uuid),
@@ -501,7 +599,6 @@ def change_state(
     ended = 0
     cancelled = {"enrolments": 0, "holder_links": 0}
     if to is State.REVOKED:
-        today = day_of(at, zone(garage.timezone))
         # LOCK_ORDER, second and third: the credentials, then the registrations
         # -- the pass row is already held above, so no redemption is mid-flight
         # on this pass and a committed one is visible to the statements below.
@@ -520,13 +617,17 @@ def change_state(
                  CANCELLED_BY_REVOCATION, tenant_uuid, pass_uuid, CredentialState.ISSUED.value),
             )
             cancelled[table] = cursor.rowcount
-        cursor.execute(
-            "UPDATE vehicle_registrations SET end_day = GREATEST(%s, effective_day), "
-            "ended_reason = %s WHERE tenant_id = %s AND pass_id = %s "
-            "AND (end_day IS NULL OR end_day > GREATEST(%s, effective_day))",
-            (today, ENDED_BY_REVOCATION, tenant_uuid, pass_uuid, today),
-        )
-        ended = cursor.rowcount
+        # one UPDATE per garage of the pass, in the fan-out's one order, each
+        # on THAT garage's day of the revocation instant
+        for garage_of_pass, today_there in days_at:
+            cursor.execute(
+                "UPDATE vehicle_registrations SET end_day = GREATEST(%s, effective_day), "
+                "ended_reason = %s WHERE tenant_id = %s AND pass_id = %s AND garage_id = %s "
+                "AND (end_day IS NULL OR end_day > GREATEST(%s, effective_day))",
+                (today_there, ENDED_BY_REVOCATION, tenant_uuid, pass_uuid, garage_of_pass,
+                 today_there),
+            )
+            ended += cursor.rowcount
     return {
         "pass": pass_external_id, "from": change.from_state.value, "to": change.to_state.value,
         "changed_by": change.changed_by, "changed_at": change.changed_at,
@@ -561,16 +662,34 @@ def _holders(
     return cursor.fetchall()
 
 
+def garages_of(cursor: Any, tenant_uuid: UUID, pass_uuid: UUID) -> list[tuple[str, UUID]]:
+    """The garages a stored pass names, as (external id, uuid), in external-id
+    order -- THE ONE ORDER every fan-out walks, so two writers on one pass
+    meet the same garages in the same sequence."""
+    cursor.execute(
+        "SELECT g.external_id, g.id FROM pass_garages pg "
+        "JOIN garages g ON g.tenant_id = pg.tenant_id AND g.id = pg.garage_id "
+        "WHERE pg.tenant_id = %s AND pg.pass_id = %s ORDER BY g.external_id",
+        (tenant_uuid, pass_uuid),
+    )
+    return [(ext, as_uuid(uuid)) for ext, uuid in cursor.fetchall()]
+
+
 def register_vehicle(
     cursor: Any, tenant_id: Any, garage_external_id: str, pass_external_id: str,
     vehicle_identity: str, effective_day: date, end_day: date | None = None,
 ) -> dict:
-    """Bind a vehicle identity to a pass from ``effective_day``, refusing by
-    name if another pass at the garage holds it on any of those days."""
+    """Bind a vehicle identity to a pass from ``effective_day`` AT EVERY GARAGE
+    THE PASS NAMES -- one row per garage, in this one transaction, all or
+    none -- refusing by name if another pass holds the identity at any one of
+    those garages on any of those days, naming that garage. ``effective_day``
+    is the caller's: a redemption passes the local day of the garage the car
+    is standing at, and that one day is the registration's day everywhere."""
     tenant_uuid = as_uuid(tenant_id)
     identity = require_text(vehicle_identity, "vehicle_identity")
     garage_uuid, _garage = load_readable_garage(cursor, tenant_uuid, garage_external_id)
     pass_uuid, pass_ = load_pass(cursor, tenant_uuid, garage_uuid, pass_external_id)
+    garages = garages_of(cursor, tenant_uuid, pass_uuid)
     # The TARGET pass first, by name. Revoked outranks unreadable here as it
     # does in the access answer: a revoked pass is refused as revoked, and
     # there is nothing about it left to repair.
@@ -609,83 +728,95 @@ def register_vehicle(
                 f"end_day {end_day} is past pass {pass_external_id!r} valid_to {last_day}.",
             )
 
-    # 1. Refuse by name before anything is written. An OPEN registration is a
-    #    holder whatever its pass's state -- revocation ends registrations, but
-    #    a row a raw write (or an older version of this module) left open on a
-    #    revoked pass is still the row the EXCLUDE would meet, and it is named
-    #    here rather than met there. A registration on a pass whose valid_to
-    #    has passed before this one takes effect holds nothing -- expiry is
-    #    derived -- and is released in step 2, not named here.
-    holders = _holders(cursor, tenant_uuid, garage_uuid, identity, effective_day, end_day)
-    for _rid, other, label, state, other_valid_to, other_from, other_end in holders:
-        if other_valid_to is not None and other_valid_to < effective_day and other_end is None:
-            continue  # expired before this registration starts: released below
-        ends = (
-            f"ends on {other_end}" if other_end is not None
-            else f"runs to the pass's valid_to {other_valid_to}, so ends on "
-                 f"{other_valid_to + timedelta(days=1)}" if other_valid_to is not None
-            else "has no end day"
-        )
-        raise Refused(
-            REFUSAL_VEHICLE_ON_ANOTHER_PASS,
-            "vehicle_identity",
-            f"{identity!r} is registered to pass {other!r} ({label}, {state}) from "
-            f"{other_from}, and that registration {ends}.",
-        )
-
-    # 2. Release what expiry has already freed.
-    for rid, _other, _label, _state, other_valid_to, _from, other_end in holders:
-        if other_end is None and other_valid_to is not None and other_valid_to < effective_day:
-            cursor.execute(
-                "UPDATE vehicle_registrations SET end_day = GREATEST(%s, effective_day), "
-                "ended_reason = %s WHERE tenant_id = %s AND id = %s",
-                (other_valid_to + timedelta(days=1), ENDED_BY_EXPIRY, tenant_uuid, rid),
+    # 1. Refuse by name before anything is written -- AT EVERY GARAGE OF THE
+    #    PASS, in one order, before the first row: a car held elsewhere in the
+    #    set refuses the whole registration, and a partial fan-out is never an
+    #    outcome. An OPEN registration is a holder whatever its pass's state
+    #    -- revocation ends registrations, but a row a raw write (or an older
+    #    version of this module) left open on a revoked pass is still the row
+    #    the EXCLUDE would meet, and it is named here rather than met there. A
+    #    registration on a pass whose valid_to has passed before this one
+    #    takes effect holds nothing -- expiry is derived -- and is released in
+    #    step 2, not named here.
+    holders_by_garage = [
+        (garage_ext, _holders(cursor, tenant_uuid, uuid, identity, effective_day, end_day))
+        for garage_ext, uuid in garages
+    ]
+    for garage_ext, holders in holders_by_garage:
+        for _rid, other, label, state, other_valid_to, other_from, other_end in holders:
+            if other_valid_to is not None and other_valid_to < effective_day and other_end is None:
+                continue  # expired before this registration starts: released below
+            ends = (
+                f"ends on {other_end}" if other_end is not None
+                else f"runs to the pass's valid_to {other_valid_to}, so ends on "
+                     f"{other_valid_to + timedelta(days=1)}" if other_valid_to is not None
+                else "has no end day"
+            )
+            raise Refused(
+                REFUSAL_VEHICLE_ON_ANOTHER_PASS,
+                "vehicle_identity",
+                f"at garage {garage_ext!r}: {identity!r} is registered to pass {other!r} "
+                f"({label}, {state}) from {other_from}, and that registration {ends}.",
             )
 
-    # 3. Write, with the constraint as the backstop for a race.
+    # 2. Release what expiry has already freed, at every garage.
+    for _garage_ext, holders in holders_by_garage:
+        for rid, _other, _label, _state, other_valid_to, _from, other_end in holders:
+            if other_end is None and other_valid_to is not None and other_valid_to < effective_day:
+                cursor.execute(
+                    "UPDATE vehicle_registrations SET end_day = GREATEST(%s, effective_day), "
+                    "ended_reason = %s WHERE tenant_id = %s AND id = %s",
+                    (other_valid_to + timedelta(days=1), ENDED_BY_EXPIRY, tenant_uuid, rid),
+                )
+
+    # 3. Write -- ONE ROW PER GARAGE OF THE PASS -- with the constraint as the
+    #    backstop for a race at each. A violation at any garage aborts the
+    #    transaction, and with it every row of the fan-out written before it.
     import psycopg
 
-    try:
-        cursor.execute(
-            "INSERT INTO vehicle_registrations (tenant_id, garage_id, pass_id, vehicle_identity, "
-            "effective_day, end_day, ended_reason) VALUES (%s, %s, %s, %s, %s, %s, %s) "
-            "RETURNING id",
-            (tenant_uuid, garage_uuid, pass_uuid, identity, effective_day, end_day,
-             ENDED_BY_OWNER if end_day is not None else None),
-        )
-    except psycopg.errors.ExclusionViolation as violation:
-        raise Refused(
-            REFUSAL_CONSTRAINT, "vehicle_identity",
-            f"constraint {violation.diag.constraint_name}: another registration of "
-            f"{identity!r} landed first. Roll back and read again.",
-        ) from violation
-    except psycopg.errors.DeadlockDetected as deadlock:
-        # The other shape a race at the EXCLUDE takes: each writer's INSERT
-        # waits on the other's in-progress row and the database rolls one of
-        # them back. Measured on the L3's 120-round probe: 0 in 120 on two
-        # clusters, 1-3 in 120 on a third -- a timing property, and it reached
-        # the caller as a traceback. The advice is the same as the constraint's.
-        #
-        # WHAT THIS SENTENCE SAYS IS ONLY WHAT THIS MODULE OBSERVED: its INSERT
-        # was the writer the database rolled back. It does NOT say what the
-        # other side of the cycle was. Measured before this: it said "two
-        # registrations raced", and under a deadlock from a lock this module
-        # never takes (a raw SELECT ... FOR UPDATE on the pass's row, by
-        # another transaction) that sentence was false and PostgreSQL's own
-        # DETAIL -- the one line that names the cycle -- was thrown away. The
-        # DETAIL is carried now, verbatim, and no cause is asserted.
-        detail = (deadlock.diag.message_detail or "").strip()
-        raise Refused(
-            REFUSAL_CONSTRAINT, "vehicle_identity",
-            f"constraint {ONE_PASS_PER_GARAGE}: the database detected a deadlock while this "
-            f"registration of {identity!r} waited on another transaction, and rolled this "
-            "write back. What the other transaction held is not something this module "
-            "observed; PostgreSQL's own account of the cycle: "
-            + (detail if detail else "(no DETAIL was supplied)")
-            + " Roll back and read again.",
-        ) from deadlock
+    for garage_ext, uuid in garages:
+        try:
+            cursor.execute(
+                "INSERT INTO vehicle_registrations (tenant_id, garage_id, pass_id, "
+                "vehicle_identity, effective_day, end_day, ended_reason) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id",
+                (tenant_uuid, uuid, pass_uuid, identity, effective_day, end_day,
+                 ENDED_BY_OWNER if end_day is not None else None),
+            )
+        except psycopg.errors.ExclusionViolation as violation:
+            raise Refused(
+                REFUSAL_CONSTRAINT, "vehicle_identity",
+                f"constraint {violation.diag.constraint_name}: another registration of "
+                f"{identity!r} at garage {garage_ext!r} landed first. Roll back and read again.",
+            ) from violation
+        except psycopg.errors.DeadlockDetected as deadlock:
+            # The other shape a race at the EXCLUDE takes: each writer's INSERT
+            # waits on the other's in-progress row and the database rolls one of
+            # them back. Measured on the L3's 120-round probe: 0 in 120 on two
+            # clusters, 1-3 in 120 on a third -- a timing property, and it reached
+            # the caller as a traceback. The advice is the same as the constraint's.
+            #
+            # WHAT THIS SENTENCE SAYS IS ONLY WHAT THIS MODULE OBSERVED: its INSERT
+            # was the writer the database rolled back. It does NOT say what the
+            # other side of the cycle was. Measured before this: it said "two
+            # registrations raced", and under a deadlock from a lock this module
+            # never takes (a raw SELECT ... FOR UPDATE on the pass's row, by
+            # another transaction) that sentence was false and PostgreSQL's own
+            # DETAIL -- the one line that names the cycle -- was thrown away. The
+            # DETAIL is carried now, verbatim, and no cause is asserted.
+            detail = (deadlock.diag.message_detail or "").strip()
+            raise Refused(
+                REFUSAL_CONSTRAINT, "vehicle_identity",
+                f"constraint {ONE_PASS_PER_GARAGE}: the database detected a deadlock while this "
+                f"registration of {identity!r} waited on another transaction, and rolled this "
+                "write back. What the other transaction held is not something this module "
+                "observed; PostgreSQL's own account of the cycle: "
+                + (detail if detail else "(no DETAIL was supplied)")
+                + " Roll back and read again.",
+            ) from deadlock
     return {
         "pass": pass_external_id, "vehicle_identity": identity,
+        "garages": [garage_ext for garage_ext, _uuid in garages],
         "effective_day": effective_day, "end_day": end_day,
         "bounded_by_valid_to": last_day if end_day is None else None,
     }
@@ -695,14 +826,19 @@ def end_registration(
     cursor: Any, tenant_id: Any, garage_external_id: str, pass_external_id: str,
     vehicle_identity: str, end_day: date,
 ) -> dict:
-    """End a registration on a day. The identity is free FROM that day."""
+    """End a registration on a day -- AT EVERY GARAGE THE PASS NAMES, since the
+    registration was written at every one. The identity is free FROM that day
+    everywhere the pass answers. The registration is the latest one of this
+    identity on this pass (one effective day, one row per garage)."""
     tenant_uuid = as_uuid(tenant_id)
     identity = require_text(vehicle_identity, "vehicle_identity")
     garage_uuid, _garage = load_readable_garage(cursor, tenant_uuid, garage_external_id)
     pass_uuid, _pass = load_pass(cursor, tenant_uuid, garage_uuid, pass_external_id)
     cursor.execute(
-        "SELECT id, effective_day, end_day FROM vehicle_registrations WHERE tenant_id = %s "
-        "AND pass_id = %s AND vehicle_identity = %s ORDER BY effective_day DESC",
+        "SELECT r.id, r.effective_day, r.end_day, g.external_id FROM vehicle_registrations r "
+        "JOIN garages g ON g.tenant_id = r.tenant_id AND g.id = r.garage_id "
+        "WHERE r.tenant_id = %s AND r.pass_id = %s AND r.vehicle_identity = %s "
+        "ORDER BY r.effective_day DESC, g.external_id",
         (tenant_uuid, pass_uuid, identity),
     )
     rows = cursor.fetchall()
@@ -711,7 +847,8 @@ def end_registration(
             REFUSAL_REGISTRATION_NOT_FOUND, "vehicle_identity",
             f"{identity!r} on pass {pass_external_id!r}.",
         )
-    rid, effective, current_end = rows[0]
+    _rid, effective, current_end, _garage_ext = rows[0]
+    latest = [row for row in rows if row[1] == effective]
     if current_end is not None:
         raise Refused(
             REFUSAL_REGISTRATION_ALREADY_ENDED, "end_day",
@@ -724,10 +861,11 @@ def end_registration(
         )
     cursor.execute(
         "UPDATE vehicle_registrations SET end_day = %s, ended_reason = %s "
-        "WHERE tenant_id = %s AND id = %s",
-        (end_day, ENDED_BY_OWNER, tenant_uuid, rid),
+        "WHERE tenant_id = %s AND id = ANY(%s) AND end_day IS NULL",
+        (end_day, ENDED_BY_OWNER, tenant_uuid, [rid for rid, *_rest in latest]),
     )
-    return {"pass": pass_external_id, "vehicle_identity": identity, "end_day": end_day}
+    return {"pass": pass_external_id, "vehicle_identity": identity, "end_day": end_day,
+            "garages": [garage_ext for *_rest, garage_ext in latest]}
 
 
 def registrations_of(
@@ -756,11 +894,20 @@ def registrations_of(
 # ---------------------------------------------------------------------------
 
 
-def _open_visit(cursor: Any, tenant_uuid: UUID, pass_uuid: UUID, identity: str) -> tuple | None:
+def _open_visit(
+    cursor: Any, tenant_uuid: UUID, garage_uuid: UUID, pass_uuid: UUID, identity: str,
+) -> tuple | None:
+    """The still-open recorded entry of this vehicle on this pass AT THIS
+    GARAGE. Keyed on the garage, deliberately: the ledger is per garage, and
+    a pass now names a set of them. Measured before this (the G3a L3): with
+    the garage left out, an exit recorded at garage B closed the visit opened
+    at garage A and wrote B's lane onto A's row, and an entry at B was refused
+    for a visit still open at A. ``visits_on`` reads by PASS across the set
+    on purpose -- the allowance is one set of terms (C5) -- and stays so."""
     cursor.execute(
-        "SELECT id, entered_at FROM visits WHERE tenant_id = %s AND pass_id = %s "
-        "AND vehicle_identity = %s AND exited_at IS NULL",
-        (tenant_uuid, pass_uuid, identity),
+        "SELECT id, entered_at FROM visits WHERE tenant_id = %s AND garage_id = %s "
+        "AND pass_id = %s AND vehicle_identity = %s AND exited_at IS NULL",
+        (tenant_uuid, garage_uuid, pass_uuid, identity),
     )
     return cursor.fetchone()
 
@@ -774,12 +921,12 @@ def record_entry(
     require_aware(at, "at")
     garage_uuid, _garage = load_readable_garage(cursor, tenant_uuid, garage_external_id)
     pass_uuid, _pass = load_pass(cursor, tenant_uuid, garage_uuid, pass_external_id)
-    open_ = _open_visit(cursor, tenant_uuid, pass_uuid, identity)
+    open_ = _open_visit(cursor, tenant_uuid, garage_uuid, pass_uuid, identity)
     if open_ is not None:
         raise Refused(
             REFUSAL_VISIT_ALREADY_OPEN, "vehicle_identity",
-            f"{identity!r} entered on pass {pass_external_id!r} at {open_[1].isoformat()} "
-            "and has no recorded exit.",
+            f"{identity!r} entered garage {garage_external_id!r} on pass {pass_external_id!r} "
+            f"at {open_[1].isoformat()} and has no recorded exit.",
         )
     import psycopg
 
@@ -807,11 +954,11 @@ def record_exit(
     require_aware(at, "at")
     garage_uuid, _garage = load_readable_garage(cursor, tenant_uuid, garage_external_id)
     pass_uuid, _pass = load_pass(cursor, tenant_uuid, garage_uuid, pass_external_id)
-    open_ = _open_visit(cursor, tenant_uuid, pass_uuid, identity)
+    open_ = _open_visit(cursor, tenant_uuid, garage_uuid, pass_uuid, identity)
     if open_ is None:
         raise Refused(
             REFUSAL_NO_OPEN_VISIT, "vehicle_identity",
-            f"{identity!r} on pass {pass_external_id!r}.",
+            f"{identity!r} on pass {pass_external_id!r} at garage {garage_external_id!r}.",
         )
     visit_id, entered_at = open_
     if at < entered_at:
@@ -828,13 +975,18 @@ def record_exit(
 
 
 def visits_on(cursor: Any, tenant_id: Any, pass_uuid: UUID, pass_external_id: str) -> list[Visit]:
+    # Every garage of the pass, on purpose (C5: the allowance counts the set);
+    # each row carries its garage's external id, so the engine can pick the
+    # stay's entry at the garage it is answering for.
     cursor.execute(
-        "SELECT vehicle_identity, entry_lane, entered_at, exited_at, exit_lane FROM visits "
-        "WHERE tenant_id = %s AND pass_id = %s ORDER BY entered_at",
+        "SELECT g.external_id, v.vehicle_identity, v.entry_lane, v.entered_at, v.exited_at, "
+        "v.exit_lane FROM visits v "
+        "JOIN garages g ON g.tenant_id = v.tenant_id AND g.id = v.garage_id "
+        "WHERE v.tenant_id = %s AND v.pass_id = %s ORDER BY v.entered_at",
         (as_uuid(tenant_id), pass_uuid),
     )
     return [
-        Visit(pass_id=pass_external_id, vehicle_identity=v, entry_lane=el, entered_at=ea,
-              exited_at=xa, exit_lane=xl)
-        for v, el, ea, xa, xl in cursor.fetchall()
+        Visit(pass_id=pass_external_id, garage_id=g, vehicle_identity=v, entry_lane=el,
+              entered_at=ea, exited_at=xa, exit_lane=xl)
+        for g, v, el, ea, xa, xl in cursor.fetchall()
     ]

@@ -53,7 +53,7 @@ def seeded(app: Any, tenant_id: Any, garage: Garage, state: State = State.DRAFT,
            **overrides) -> Pass:
     """A garage and one pass at it, committed. The pass is DRAFT by default:
     the first redemption moves it to active, which is the case worth watching."""
-    pass_ = a_pass(garage_id=garage.id, state=state, **overrides)
+    pass_ = a_pass(garage_ids={garage.id}, state=state, **overrides)
     seed(app, tenant_id, garage, (pass_,))
     return pass_
 

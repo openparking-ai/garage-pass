@@ -226,6 +226,30 @@ def tables_cascading_into(connection: Any, table: str) -> frozenset[str]:
     return frozenset(found)
 
 
+def tables_referencing(connection: Any, table: str) -> frozenset[str]:
+    """Every table holding a foreign key INTO ``table``, whatever its ON DELETE
+    rule, read from ``pg_constraint``. A table with none is a LEAF: deleting
+    its rows reaches nothing else. Measured before this (the G3a L3): the
+    G12 red on a DELETE grant called ``pass_garages`` a leaf because the only
+    walk was the one into the histories, and ``pass_garages`` has three
+    children -- so "leaf" is read from the catalogue now, never from what a
+    narrower walk failed to find."""
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT DISTINCT child.relname
+            FROM pg_constraint k
+            JOIN pg_class child ON child.oid = k.conrelid
+            JOIN pg_class parent ON parent.oid = k.confrelid
+            JOIN pg_namespace n ON n.oid = parent.relnamespace
+            WHERE n.nspname = 'public' AND k.contype = 'f' AND parent.relname = %s
+              AND child.oid <> parent.oid
+            """,
+            (table,),
+        )
+        return frozenset(row[0] for row in cursor.fetchall())
+
+
 def all_tables(connection: Any) -> list[str]:
     """Every ordinary table in `public` -- the denominator of "the application
     role holds DELETE on no table", read from the catalogue so a table added

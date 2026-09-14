@@ -9,7 +9,7 @@ the answer itself — no database and no dependencies at all.
 ```
 $ garage-pass check-terms --pass pass.json
 $ garage-pass access --garage garage.json --pass pass.json \
-      --registrations registrations.json --visits visits.json \
+      --registrations registrations.json --visits visits.json [--garages others.json] \
       --vehicle CAR-1 --lane L1 --direction entry --at 2026-06-01T12:00:00-06:00
 ```
 
@@ -43,7 +43,9 @@ $ garage-pass access-in-store --tenant T --garage garage-downtown \
 
 ## What a pass is
 
-One garage. An owner-typed **label** — "Employee", "Monthly", "Vendor", whatever
+The garages it answers at — one or more, a set the owner states by listing
+them, never an "everywhere" flag; a pass answers at every garage it names and at
+no other. An owner-typed **label** — "Employee", "Monthly", "Vendor", whatever
 the owner needs — that no behaviour reads. A **holder**: an email address, and
 optionally a name and a phone; no account, no login. Its **terms**. Its
 **state**. The **vehicles** registered to it.
@@ -56,8 +58,11 @@ passes is which other module is connected to them, and in this version none is.
 A valid-from / valid-to range in the garage's local day. Recurring windows: days
 of the week plus minutes of the local day. A maximum stay per visit. A visit
 allowance, over the pass's life or per window. The directions the pass states —
-entry, exit or both; nothing is implicit. The lanes it may use; absent means
-every lane.
+entry, exit or both; nothing is implicit. The lanes it may use, stated per
+garage — lane `A1` at two garages is two barriers — absent means every lane at
+every garage the pass names. The terms are one set, on the pass, evaluated at
+whichever garage the car is at: a 20-visit allowance is 20 on the pass, not 20
+per garage; only the lanes are per garage.
 
 **A contradiction is refused when the pass is created, naming the field.** A
 valid-to before valid-from, a weekend window on a Monday-to-Wednesday pass, a
@@ -135,12 +140,16 @@ $ garage-pass redeem-enrolment --tenant T --garage garage-downtown --token <what
 ### One car, one pass per garage
 
 A vehicle identity is on one pass at a garage for any given day. A second
-registration is refused by name — naming the pass that holds the identity, its
-state and the day that registration ends — before the database's own constraint
-has to; every open registration counts as a holder whatever its pass's state,
-so the constraint is the backstop for a raw insert and for two writers
-genuinely racing, and nothing else reaches it through the module. Ending a
-registration on day D frees the identity **from** D.
+registration is refused by name — naming the garage, the pass that holds the
+identity, its state and the day that registration ends — before the database's
+own constraint has to; every open registration counts as a holder whatever its
+pass's state, so the constraint is the backstop for a raw insert and for two
+writers genuinely racing, and nothing else reaches it through the module. A
+registration is written at **every garage the pass names**, one row per garage
+in one transaction — a pass over three garages holds the car at all three from
+one enrolment; a car held by another pass at any one of them refuses the whole
+registration, and a partial fan-out is never an outcome. Ending a registration
+on day D frees the identity **from** D, at every garage of the pass.
 
 **A vehicle is registered onto a draft, awaiting-enrolment or active pass.** A
 registration onto a suspended pass (a hold; a car added to a hold is a claim the
@@ -167,7 +176,23 @@ measure from is answered on the terms that can be evaluated and named
 holds no session state. It answers; the lane acts. What it holds is a ledger of
 the visits the lane told it about, because a visit allowance and a maximum stay
 are computed from those rows and from nothing else — and the answer says what
-it counted, on which pass, over what.
+it counted, on which pass, over what. **The ledger is per garage**: a pass may
+name several, and one open visit per vehicle per pass is the rule *at each* —
+an entry at one garage of the set is never refused for a visit still open at
+another, and an exit never closes another garage's visit — while the allowance
+counts every garage of the set, **each entry read on the clock of the garage
+it was recorded at**: a pass's garages can stand in different zones, and
+whether an entry fell in this window today is a question about the wall clock
+on the door it drove through, not the one at the garage asking now — so the
+pass's garages reach the engine (the store hands them in; the command line takes
+`--garages`), and an entry at a garage whose clock is not there is refused by
+name at an entry, never read on the wrong clock. A visit carries its garage, and
+**a stay is measured at the garage the car is leaving**, from the entry recorded
+there: an entry still open at another garage of the set is not this exit's
+entry, and the stay is then unmeasured and named, never measured from the wrong
+garage. Revoking a pass ends its registrations at each garage on *that*
+garage's day of the instant. Removing a garage from a pass that holds a visit
+or a registration there fails by name; nothing recorded is erased by it.
 
 ### An exit is never refused
 
@@ -248,8 +273,8 @@ credential and records that it was issued; delivering it is the integrator's,
 and rendering a bitmap is the client's. No money. No connection to any billing
 module — whether the registration-day transient fee is credited, and when
 monthly status begins, is the billing connection's business — and no
-reservations of either kind. No accounts, no passwords, no screens. One garage
-per pass.
+reservations of either kind. No accounts, no passwords, no screens. A pass
+answers only at the garages it names.
 
 ## Install
 

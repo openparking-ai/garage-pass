@@ -22,6 +22,7 @@ from fixtures import (
     a_pass,
     no_transient_garage,
     registered,
+    terms_at,
     transient_garage,
 )
 from garage_pass import findings as f
@@ -37,7 +38,8 @@ GARAGES = (transient_garage(), no_transient_garage())
 @pytest.mark.parametrize("name", list(TERMS_CONFIGURATIONS))
 @pytest.mark.parametrize("garage", GARAGES, ids=[g.id for g in GARAGES])
 def test_a_revoked_pass_is_not_covered_at_entry_in_every_configuration(garage, name):
-    pass_ = a_pass(garage_id=garage.id, terms=TERMS_CONFIGURATIONS[name], state=State.REVOKED)
+    pass_ = a_pass(garage_ids={garage.id}, terms=terms_at(garage.id, TERMS_CONFIGURATIONS[name]),
+                   state=State.REVOKED)
     answer = access(
         garage=garage, passes=[pass_], registrations=[registered(pass_)], visits=[],
         vehicle_identity="CAR-1", lane="L1", direction=Direction.ENTRY, at=NOON_MONDAY,
@@ -60,11 +62,13 @@ def test_the_same_pass_active_is_covered_so_the_red_above_is_about_revocation(na
     be the state. The exit-only configuration is not in this list because its
     terms, not its state, refuse an entry -- a selection, not a skip."""
     garage = transient_garage()
-    pass_ = a_pass(garage_id=garage.id, terms=TERMS_CONFIGURATIONS[name], state=State.ACTIVE)
+    pass_ = a_pass(garage_ids={garage.id}, terms=terms_at(garage.id, TERMS_CONFIGURATIONS[name]),
+                   state=State.ACTIVE)
     answer = access(
         garage=garage, passes=[pass_], registrations=[registered(pass_)],
-        visits=[Visit(pass_id=pass_.id, vehicle_identity="CAR-1", entry_lane="L1",
-                      entered_at=TWO_HOURS_BEFORE, exited_at=NOON_MONDAY, exit_lane="L1")],
+        visits=[Visit(pass_id=pass_.id, garage_id=garage.id, vehicle_identity="CAR-1",
+                      entry_lane="L1", entered_at=TWO_HOURS_BEFORE, exited_at=NOON_MONDAY,
+                      exit_lane="L1")],
         vehicle_identity="CAR-1", lane="L1", direction=Direction.ENTRY, at=NOON_MONDAY,
     )
     assert answer.outcome is Outcome.COVERED, answer
@@ -88,7 +92,7 @@ def test_revoked_outranks_expiry_in_the_reason_the_lane_is_given():
 
     garage = transient_garage()
     pass_ = a_pass(
-        garage_id=garage.id, state=State.REVOKED,
+        garage_ids={garage.id}, state=State.REVOKED,
         terms=simple_terms(valid_from=date(2025, 1, 1), valid_to=date(2025, 6, 30)),
     )
     answer = access(

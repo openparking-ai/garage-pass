@@ -15,22 +15,44 @@ access answer actually turns on, read from ``access.py`` rather than imagined:
 * each term present and absent: valid range, windows, max stay, allowance, lanes
 * the timezone -- one that shifts and one that does not
 * the instant -- inside a window, outside it, on each transition day
+* THE ZONES OF ONE PASS'S GARAGES -- all one zone, and MIXED. A pass names a
+  set of garages, and a per-window count reads each recorded entry on the
+  clock of the garage it was recorded at. Measured before this (the G3a merge
+  gate): every multi-garage test put A, B and C in one zone, so a count that
+  read every garage's entries on the asking garage's clock stayed green
+  through four review layers. ``far_garage`` (Tokyo: no daylight saving, and
+  on another calendar day for most of Denver's working day) and
+  ``fixed_garage`` (Phoenix: the shifting zone's neighbour that does not
+  shift, for the DST edge) exist so that a mixed-zone pass CAN appear here.
 """
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from datetime import date, datetime, timedelta
 
 from garage_pass.garage import Garage
 from garage_pass.localday import day_start, elapsed, zone
 from garage_pass.passes import Holder, Pass, Registration, State
-from garage_pass.terms import AllowancePeriod, Direction, Terms, VisitAllowance, Window
+from garage_pass.terms import (
+    AllowancePeriod,
+    Direction,
+    GarageLanes,
+    Terms,
+    VisitAllowance,
+    Window,
+)
 
 #: A zone that observes daylight saving, and one that does not. The second is
 #: not decoration: it is the control proving the first one's DST assertions are
 #: about the zone rather than about the arithmetic being wrong everywhere.
 SHIFTING_ZONE = "America/Denver"
 FIXED_ZONE = "America/Phoenix"
+#: A zone on ANOTHER CALENDAR DAY for most of the shifting zone's working day
+#: (UTC+9 against UTC-6/-7), and one that never shifts. The mixed-zone pass's
+#: other garage: the same instant is a different day and a different window
+#: minute there, which is what the per-garage clock reading is measured on.
+FAR_ZONE = "Asia/Tokyo"
 
 #: 2026 US transitions. Named so a test asserts against a date rather than a
 #: comment, and so the fixture control can prove they really are transitions.
@@ -56,6 +78,21 @@ def unstated_garage(timezone: str = SHIFTING_ZONE) -> Garage:
     return Garage(id="garage-unstated", timezone=timezone, transient_available=None)
 
 
+def far_garage() -> Garage:
+    """The other garage of a MIXED-ZONE pass: Tokyo, beside a Denver one."""
+    return Garage(id="garage-far", timezone=FAR_ZONE, transient_available=True,
+                  enrols_at="entry")
+
+
+def fixed_garage() -> Garage:
+    """The other garage of a mixed-zone pass for the DST EDGE: Phoenix, which
+    keeps the shifting zone's winter clock all year, so on the fall-back day
+    the two read the same instant an hour apart for one hour and the same
+    for the rest of the day."""
+    return Garage(id="garage-fixed", timezone=FIXED_ZONE, transient_available=True,
+                  enrols_at="entry")
+
+
 def simple_terms(**overrides: object) -> Terms:
     """Both directions, every lane, no other term. Override to add one."""
     fields: dict = {"directions": BOTH}
@@ -63,8 +100,8 @@ def simple_terms(**overrides: object) -> Terms:
     return Terms(**fields)
 
 
-def everything_terms() -> Terms:
-    """Every term present at once."""
+def everything_terms(garage_id: str = "garage-downtown") -> Terms:
+    """Every term present at once, the lanes stated at ``garage_id``."""
     return Terms(
         valid_from=date(2026, 1, 1),
         valid_to=date(2026, 12, 31),
@@ -72,19 +109,40 @@ def everything_terms() -> Terms:
         max_stay=timedelta(hours=10),
         visit_allowance=VisitAllowance(count=3, per=AllowancePeriod.WINDOW),
         directions=BOTH,
-        allowed_lanes=frozenset({"L1", "L2"}),
+        allowed_lanes=lanes_at(garage_id, "L1", "L2"),
     )
+
+
+def terms_at(garage_id: str, terms: Terms) -> Terms:
+    """The same terms on a pass that names ONE garage, ``garage_id``: stated
+    lanes are re-stated there (every lane the configuration names), so a
+    configuration written for garage-downtown pairs with any garage. Lanes
+    not stated stay not stated. Nothing else moves -- the terms are one set
+    wherever the pass is, and this fixture proves it by construction."""
+    import dataclasses
+
+    if terms.allowed_lanes is None:
+        return terms
+    every_lane = frozenset(lane for entry in terms.allowed_lanes for lane in entry.lanes)
+    return dataclasses.replace(terms, allowed_lanes=lanes_at(garage_id, *every_lane))
 
 
 def a_pass(
     id: str = "pass-1",
-    garage_id: str = "garage-downtown",
+    garage_ids: Iterable[str] = ("garage-downtown",),
     label: str = "Employee",
     terms: Terms | None = None,
     state: State = State.ACTIVE,
 ) -> Pass:
-    return Pass(id=id, garage_id=garage_id, label=label, holder=HOLDER,
+    """A pass naming ``garage_ids`` -- one garage by default, the shape every
+    test before G3a had; a set of several for the multi-garage paths."""
+    return Pass(id=id, garage_ids=frozenset(garage_ids), label=label, holder=HOLDER,
                 terms=terms or simple_terms(), state=state)
+
+
+def lanes_at(garage_id: str, *lanes: str) -> tuple[GarageLanes, ...]:
+    """A stated lane set at ONE garage; add tuples for a pass over several."""
+    return (GarageLanes(garage_id=garage_id, lanes=frozenset(lanes)),)
 
 
 def registered(pass_: Pass, identity: str = "CAR-1", effective: date = date(2026, 1, 1),
@@ -102,7 +160,7 @@ def pass_document(**overrides: object) -> dict:
     """The JSON shape the command line reads, valid as written."""
     document: dict = {
         "id": "pass-1",
-        "garage_id": "garage-downtown",
+        "garage_ids": ["garage-downtown"],
         "label": "Employee",
         "holder": {"email": "holder@example.com", "name": "A Holder", "phone": None},
         "terms": {
@@ -112,7 +170,7 @@ def pass_document(**overrides: object) -> dict:
             "max_stay_minutes": 600,
             "visit_allowance": {"count": 3, "per": "window"},
             "directions": ["entry", "exit"],
-            "allowed_lanes": ["L1", "L2"],
+            "allowed_lanes": [{"garage_id": "garage-downtown", "lanes": ["L1", "L2"]}],
         },
         "state": "active",
     }
@@ -142,6 +200,22 @@ def assert_fixed_zone_really_does_not_shift() -> None:
         assert length == timedelta(hours=24), f"{FIXED_ZONE} shifted on {day}: {length}"
 
 
+def assert_the_far_zone_is_on_another_day_at_noon_monday() -> None:
+    """The mixed-zone fixture measures something only if the far garage reads
+    the shifting zone's NOON_MONDAY as a different day: otherwise a count that
+    reads every entry on the asking garage's clock stays green against it."""
+    from garage_pass.localday import day_of
+
+    here, there = day_of(NOON_MONDAY, zone(SHIFTING_ZONE)), day_of(NOON_MONDAY, zone(FAR_ZONE))
+    assert here != there, (
+        f"{FAR_ZONE} was chosen because it is on another calendar day at {NOON_MONDAY}; it "
+        f"reads {there}, the same day as {SHIFTING_ZONE}'s {here}."
+    )
+    length = elapsed(day_start(FALL_BACK_2026, zone(FAR_ZONE)),
+                     day_start(FALL_BACK_2026 + timedelta(days=1), zone(FAR_ZONE)))
+    assert length == timedelta(hours=24), f"{FAR_ZONE} shifted on {FALL_BACK_2026}: {length}"
+
+
 def assert_the_everything_terms_carry_every_term() -> None:
     terms = everything_terms()
     assert terms.valid_from and terms.valid_to and terms.windows and terms.max_stay
@@ -168,7 +242,7 @@ TERMS_CONFIGURATIONS: dict[str, Terms] = {
     "allowance per window": simple_terms(
         windows=(SIX_TO_EIGHT,), visit_allowance=VisitAllowance(count=3, per=AllowancePeriod.WINDOW)
     ),
-    "lanes": simple_terms(allowed_lanes=frozenset({"L1"})),
+    "lanes": simple_terms(allowed_lanes=lanes_at("garage-downtown", "L1")),
     "entry only": simple_terms(directions=frozenset({Direction.ENTRY})),
     "exit only": simple_terms(directions=frozenset({Direction.EXIT})),
     "everything": everything_terms(),
