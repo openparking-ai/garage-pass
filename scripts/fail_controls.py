@@ -841,10 +841,12 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
     # ---- the merge gate's five findings ------------------------------------
     "G1/holder-skip": (
         G1, "store/records.py",
-        "    for _rid, other, label, state, other_valid_to, other_from, other_end in holders:\n",
-        "    for _rid, other, label, state, other_valid_to, other_from, other_end in holders:\n"
-        "        if state == State.REVOKED.value:\n"
-        "            continue  # PLANTED: holders on revoked passes are skipped\n",
+        "        for _rid, other, label, state, other_valid_to, other_from, other_end in "
+        "holders:\n",
+        "        for _rid, other, label, state, other_valid_to, other_from, other_end in "
+        "holders:\n"
+        "            if state == State.REVOKED.value:\n"
+        "                continue  # PLANTED: holders on revoked passes are skipped\n",
         "the overlap check skips holders on revoked passes again, so a registration a raw "
         "write left open on a revoked pass is invisible: the live pass meets the EXCLUDE "
         "and the caller is told to roll back and read again, where there is no race",
