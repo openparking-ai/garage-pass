@@ -176,7 +176,12 @@ measure from is answered on the terms that can be evaluated and named
 holds no session state. It answers; the lane acts. What it holds is a ledger of
 the visits the lane told it about, because a visit allowance and a maximum stay
 are computed from those rows and from nothing else — and the answer says what
-it counted, on which pass, over what.
+it counted, on which pass, over what. **The ledger is per garage**: a pass may
+name several, and one open visit per vehicle per pass is the rule *at each* —
+an entry at one garage of the set is never refused for a visit still open at
+another, and an exit never closes another garage's visit — while the allowance
+counts every garage of the set. Removing a garage from a pass that holds a
+visit or a registration there fails by name; nothing recorded is erased by it.
 
 ### An exit is never refused
 

@@ -94,7 +94,7 @@ from garage_pass.terms import (
 )
 
 ONE_PASS_PER_GARAGE = "vehicle_registrations_one_pass_per_garage"
-ONE_OPEN_VISIT = "visits_one_open_per_vehicle_per_pass"
+ONE_OPEN_VISIT = "visits_one_open_per_vehicle_per_garage"
 ENDED_BY_REVOCATION = "pass revoked"
 ENDED_BY_EXPIRY = "pass valid_to passed"
 ENDED_BY_OWNER = "ended"
@@ -874,11 +874,20 @@ def registrations_of(
 # ---------------------------------------------------------------------------
 
 
-def _open_visit(cursor: Any, tenant_uuid: UUID, pass_uuid: UUID, identity: str) -> tuple | None:
+def _open_visit(
+    cursor: Any, tenant_uuid: UUID, garage_uuid: UUID, pass_uuid: UUID, identity: str,
+) -> tuple | None:
+    """The still-open recorded entry of this vehicle on this pass AT THIS
+    GARAGE. Keyed on the garage, deliberately: the ledger is per garage, and
+    a pass now names a set of them. Measured before this (the G3a L3): with
+    the garage left out, an exit recorded at garage B closed the visit opened
+    at garage A and wrote B's lane onto A's row, and an entry at B was refused
+    for a visit still open at A. ``visits_on`` reads by PASS across the set
+    on purpose -- the allowance is one set of terms (C5) -- and stays so."""
     cursor.execute(
-        "SELECT id, entered_at FROM visits WHERE tenant_id = %s AND pass_id = %s "
-        "AND vehicle_identity = %s AND exited_at IS NULL",
-        (tenant_uuid, pass_uuid, identity),
+        "SELECT id, entered_at FROM visits WHERE tenant_id = %s AND garage_id = %s "
+        "AND pass_id = %s AND vehicle_identity = %s AND exited_at IS NULL",
+        (tenant_uuid, garage_uuid, pass_uuid, identity),
     )
     return cursor.fetchone()
 
@@ -892,12 +901,12 @@ def record_entry(
     require_aware(at, "at")
     garage_uuid, _garage = load_readable_garage(cursor, tenant_uuid, garage_external_id)
     pass_uuid, _pass = load_pass(cursor, tenant_uuid, garage_uuid, pass_external_id)
-    open_ = _open_visit(cursor, tenant_uuid, pass_uuid, identity)
+    open_ = _open_visit(cursor, tenant_uuid, garage_uuid, pass_uuid, identity)
     if open_ is not None:
         raise Refused(
             REFUSAL_VISIT_ALREADY_OPEN, "vehicle_identity",
-            f"{identity!r} entered on pass {pass_external_id!r} at {open_[1].isoformat()} "
-            "and has no recorded exit.",
+            f"{identity!r} entered garage {garage_external_id!r} on pass {pass_external_id!r} "
+            f"at {open_[1].isoformat()} and has no recorded exit.",
         )
     import psycopg
 
@@ -925,11 +934,11 @@ def record_exit(
     require_aware(at, "at")
     garage_uuid, _garage = load_readable_garage(cursor, tenant_uuid, garage_external_id)
     pass_uuid, _pass = load_pass(cursor, tenant_uuid, garage_uuid, pass_external_id)
-    open_ = _open_visit(cursor, tenant_uuid, pass_uuid, identity)
+    open_ = _open_visit(cursor, tenant_uuid, garage_uuid, pass_uuid, identity)
     if open_ is None:
         raise Refused(
             REFUSAL_NO_OPEN_VISIT, "vehicle_identity",
-            f"{identity!r} on pass {pass_external_id!r}.",
+            f"{identity!r} on pass {pass_external_id!r} at garage {garage_external_id!r}.",
         )
     visit_id, entered_at = open_
     if at < entered_at:

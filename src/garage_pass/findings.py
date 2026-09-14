@@ -298,13 +298,15 @@ REFUSALS: dict[str, str] = {
         "detail names the garage asked for and the pass's own set. Nothing is written."
     ),
     REFUSAL_NO_OPEN_VISIT: (
-        "No recorded entry of this vehicle on this pass is still open, so there is "
-        "no visit for this exit to close."
+        "No recorded entry of this vehicle on this pass at this garage is still open, "
+        "so there is no visit for this exit to close. The ledger is per garage: an "
+        "entry recorded at another garage of the pass is not the one this exit closes."
     ),
     REFUSAL_VISIT_ALREADY_OPEN: (
-        "A recorded entry of this vehicle on this pass is still open. Record its "
-        "exit before recording another entry, or the visit ledger would hold a car "
-        "inside twice."
+        "A recorded entry of this vehicle on this pass at this garage is still open. "
+        "Record its exit before recording another entry here, or the visit ledger "
+        "would hold a car inside this garage twice. A visit still open at another "
+        "garage of the pass does not refuse an entry here."
     ),
     REFUSAL_EXIT_BEFORE_ENTRY: (
         "The exit instant is earlier than the entry it would close."

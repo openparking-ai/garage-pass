@@ -1895,6 +1895,87 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
         "AND p.external_id = q.external_id AND p.id > q.id; RAISE NOTICE 'PLANTED: winner picked '",
         "the UNIQUE tightening picks a winner and drops the other pass instead of failing by name",
     ),
+    # --- the G3a fix round: the ledger per garage (X1), the keys RESTRICT (X2),
+    #     the G12 classification from the catalogue (X3). Every anchor below is
+    #     multi-line on purpose: a second line's indentation is inside the match,
+    #     so a deeper re-indent of the code reads DEAD here rather than planting
+    #     at the wrong depth (the L3's F3, dead by grade, still worth not buying).
+    "G25/open-visit-any-garage": (
+        G25, "store/records.py",
+        source(
+            '        "SELECT id, entered_at FROM visits WHERE tenant_id = %s AND garage_id = %s "',
+            '        "AND pass_id = %s AND vehicle_identity = %s AND exited_at IS NULL",',
+        ),
+        source(
+            '        "SELECT id, entered_at FROM visits WHERE tenant_id = %s AND %s::uuid IS NOT '
+            'NULL "',
+            '        "AND pass_id = %s AND vehicle_identity = %s AND exited_at IS NULL",  '
+            '# PLANTED',
+
+        ),
+        "the open-visit lookup ignores the garage again: an entry at B is refused for a visit "
+        "open at A, and an exit at B closes A's visit",
+    ),
+    "G25/open-visit-index-per-pass": (
+        G25, MIGRATION_0004,
+        source(
+            "CREATE UNIQUE INDEX visits_one_open_per_vehicle_per_garage",
+            "  ON visits (tenant_id, pass_id, garage_id, vehicle_identity) WHERE exited_at IS "
+            "NULL;",
+        ),
+        source(
+            "CREATE UNIQUE INDEX visits_one_open_per_vehicle_per_garage",
+            "  ON visits (tenant_id, pass_id, vehicle_identity) WHERE exited_at IS NULL;  "
+            "-- PLANTED",
+        ),
+        "the database's backstop is keyed per pass again: with the module's check per garage, "
+        "the entry at B while A is open meets the index as a bare constraint",
+    ),
+    "G25/visits-cascade": (
+        G25, MIGRATION_0004,
+        source(
+            "  ADD CONSTRAINT visits_garage_of_pass",
+            "    FOREIGN KEY (tenant_id, pass_id, garage_id)",
+            "    REFERENCES pass_garages (tenant_id, pass_id, garage_id) ON DELETE RESTRICT;",
+        ),
+        source(
+            "  ADD CONSTRAINT visits_garage_of_pass",
+            "    FOREIGN KEY (tenant_id, pass_id, garage_id)",
+            "    REFERENCES pass_garages (tenant_id, pass_id, garage_id) ON DELETE CASCADE;  "
+            "-- PLANTED",
+        ),
+        "removing a garage from a pass silently erases that garage's visits again",
+    ),
+    "G25/registrations-cascade": (
+        G25, MIGRATION_0004,
+        source(
+            "  ADD CONSTRAINT vehicle_registrations_garage_of_pass",
+            "    FOREIGN KEY (tenant_id, pass_id, garage_id)",
+            "    REFERENCES pass_garages (tenant_id, pass_id, garage_id) ON DELETE RESTRICT;",
+        ),
+        source(
+            "  ADD CONSTRAINT vehicle_registrations_garage_of_pass",
+            "    FOREIGN KEY (tenant_id, pass_id, garage_id)",
+            "    REFERENCES pass_garages (tenant_id, pass_id, garage_id) ON DELETE CASCADE;  "
+            "-- PLANTED",
+        ),
+        "removing a garage from a pass silently erases that garage's registrations again",
+    ),
+    "G12/leaf-by-assumption": (
+        G12, "store/postgres.py",
+        source(
+            "            (table,),",
+            "        )",
+            "        return frozenset(row[0] for row in cursor.fetchall())",
+        ),
+        source(
+            "            (table,),",
+            "        )",
+            "        return frozenset()  # PLANTED: every table is a leaf",
+        ),
+        "the catalogue read of a table's children is planted empty, so a DELETE grant on a "
+        "table with children is named as a leaf again",
+    ),
 }
 
 

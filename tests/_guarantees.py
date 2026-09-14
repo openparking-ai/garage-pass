@@ -367,7 +367,14 @@ GUARANTEES: dict[str, str] = {
         "every pass that existed keeps exactly the one garage it had and every lane row "
         "carries its own pass's garage; a lane row it cannot place makes it fail naming "
         "the count rather than drop the row, and two passes of one tenant sharing an id "
-        "make it fail naming the id rather than pick a winner."
+        "make it fail naming the id rather than pick a winner. THE VISIT LEDGER STAYS PER "
+        "GARAGE: one open visit per vehicle per pass PER GARAGE, by the module's own check "
+        "and by the database's index, so an entry at one garage of the set is never refused "
+        "for a visit still open at another and an exit never closes another garage's visit "
+        "-- while the allowance still counts every garage of the set. And a membership row "
+        "decides nothing recorded under it: removing a garage from a pass that holds a visit "
+        "or a registration there fails by name (the keys are RESTRICT), never erases them; "
+        "only the lanes stated at that garage go with it."
     ),
 }
 

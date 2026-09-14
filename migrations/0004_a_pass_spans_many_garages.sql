@@ -19,7 +19,8 @@
 --     one-car-one-pass EXCLUDE is unchanged: one enrolment writes one
 --     registration row per garage of the pass, in one transaction, all or
 --     none, and a collision at any one of them refuses the whole enrolment by
---     name. The database's backstop keeps its exact meaning.
+--     name. The database's backstop keeps its exact meaning. The visit ledger
+--     is per garage too: one open visit per vehicle per pass PER GARAGE.
 --   * The credentials (`enrolments`, `holder_links`) carry no garage of their
 --     own; they derive it from the pass, and now the pass's garage is a set.
 --   * The terms stay ON THE PASS: one set, evaluated at whichever garage the
@@ -117,6 +118,10 @@ $$;
 --    the garage: lane `A1` at two garages is two different barriers.
 -- ---------------------------------------------------------------------------
 ALTER TABLE pass_lanes ALTER COLUMN garage_id SET NOT NULL;
+-- CASCADE here, deliberately, and it is the ONE cascade out of pass_garages: a
+-- lane row is configuration of the pass AT THAT GARAGE, so a garage leaving the
+-- pass's set takes its lane rows with it. The two keys below are RESTRICT; do
+-- not read "the cascades were wrong" onto this one.
 ALTER TABLE pass_lanes
   ADD CONSTRAINT pass_lanes_garage_of_pass
     FOREIGN KEY (tenant_id, pass_id, garage_id)
@@ -132,14 +137,34 @@ ALTER TABLE pass_lanes ADD PRIMARY KEY (tenant_id, pass_id, garage_id, lane);
 -- garage the pass does not name is a shape the module refuses, and a raw
 -- write can no longer make it. Existing rows satisfy this by construction
 -- (step 2 gave every pass its one garage, and every row named that garage).
+--
+-- RESTRICT, NOT CASCADE, on both -- measured at the L3: with CASCADE, deleting
+-- ONE pass_garages row took that garage's visits and registrations with it. A
+-- visit is a historical fact, the ledger G9 answers every stay and allowance
+-- from; a registration is never deleted by this module either, it is ENDED
+-- with a day and a reason that the revocation tests read. A membership row's
+-- lifetime may not decide either one's. So removing a garage that holds a
+-- visit or a registration on the pass fails here BY NAME, as this module
+-- fails everywhere else, and a membership with nothing under it still goes.
 ALTER TABLE vehicle_registrations
   ADD CONSTRAINT vehicle_registrations_garage_of_pass
     FOREIGN KEY (tenant_id, pass_id, garage_id)
-    REFERENCES pass_garages (tenant_id, pass_id, garage_id) ON DELETE CASCADE;
+    REFERENCES pass_garages (tenant_id, pass_id, garage_id) ON DELETE RESTRICT;
 ALTER TABLE visits
   ADD CONSTRAINT visits_garage_of_pass
     FOREIGN KEY (tenant_id, pass_id, garage_id)
-    REFERENCES pass_garages (tenant_id, pass_id, garage_id) ON DELETE CASCADE;
+    REFERENCES pass_garages (tenant_id, pass_id, garage_id) ON DELETE RESTRICT;
+
+-- ONE OPEN VISIT PER VEHICLE PER PASS PER GARAGE. 0001's partial unique index
+-- keyed the open visit on (pass, vehicle) -- correct while a pass had one
+-- garage, since the pass implied it. Now the pass is a set and the ledger
+-- stays per garage: a car whose exit at garage A was never recorded is not
+-- refused at garage B's barrier for it, and an exit at B never closes A's
+-- visit. The module's own check (records._open_visit) keys on the garage; this
+-- index is its backstop, re-keyed the same way.
+DROP INDEX visits_one_open_per_vehicle_per_pass;
+CREATE UNIQUE INDEX visits_one_open_per_vehicle_per_garage
+  ON visits (tenant_id, pass_id, garage_id, vehicle_identity) WHERE exited_at IS NULL;
 
 -- ---------------------------------------------------------------------------
 -- 6. ONLY NOW: the pass's external id is unique per tenant, and the column

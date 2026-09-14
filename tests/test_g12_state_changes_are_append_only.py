@@ -16,7 +16,13 @@ correction 1), so a DELETE granted there would have passed. The walk is KEPT,
 inside the same test, for what the red says: DELETE on ``passes`` erases the
 history and the failure names it; DELETE on ``enrolments`` is a leaf and the
 failure names the leaf. Measured before the fix: ``DELETE FROM passes`` as the
-application role took the history from one row to none.
+application role took the history from one row to none. **AND "LEAF" IS READ
+FROM THE CATALOGUE**: a table nothing references. Measured at the G3a L3: the
+red on a planted DELETE grant called ``pass_garages`` -- three children -- "a
+leaf: the walk into a history would not have seen it", true of the walk and
+false of the table. An offending table is now named in one of three ways: it
+erases a history; nothing references it (a leaf); or it is the parent of the
+tables that reference it, none a history.
 
 **AND THE GARAGE REPAIRS ARE RECORDED THE SAME WAY** (migrations 0002 and
 0003). ``set_garage_timezone`` changes how every pass at the garage is read,
@@ -38,7 +44,8 @@ back to the application role (the red names the history it erases); DELETE on
 ``enrolments`` granted (the red names the leaf); the garage history's INSERT
 planted away; its grant widened; the repair's who/why check planted away; the
 enrols-at repair's contradiction check planted away; its history row planted
-away.
+away; the catalogue read of a table's children planted empty (every table a
+leaf again).
 """
 
 from __future__ import annotations
@@ -172,6 +179,25 @@ def test_the_history_is_append_only_by_grant_and_by_a_refused_update(app, tenant
 HISTORIES = {"pass_state_changes": {"passes", "tenants"}, "garage_changes": {"garages", "tenants"}}
 
 
+def what_a_delete_there_does(app, table: str, erases: dict[str, list[str]]) -> str:
+    """The sentence the red names an offending table with -- THREE classes, and
+    the third is read from the catalogue, never assumed: a table that cascades
+    into a history erases it; a table nothing references is a leaf; and a
+    table with children of its own that are NOT histories is named as their
+    parent. Measured before this (the G3a L3): ``pass_garages``, with three
+    children, was called "a leaf: the walk into a history would not have seen
+    it" -- true of the walk, false of the table."""
+    from garage_pass.store.postgres import tables_referencing
+
+    if table in erases:
+        return f"a DELETE there erases {', '.join(sorted(erases[table]))}"
+    children = tables_referencing(app, table)
+    if children:
+        return (f"a parent of {', '.join(sorted(children))}, none a history: the walk into a "
+                "history would not have seen it, and what a DELETE there reaches is theirs")
+    return "a leaf: nothing references it, and the walk into a history would not have seen it"
+
+
 def append_only_tables(app) -> set[str]:
     """Every table the application role may only SELECT and INSERT on -- the
     histories, read from the catalogue rather than typed."""
@@ -210,14 +236,10 @@ def test_the_application_role_holds_delete_on_no_table_in_the_schema(app, tenant
     assert "garages" not in erases.get("pass_state_changes", []), (
         "garages -> passes is RESTRICT; the walk over-reached"
     )
-    offenders = []
-    for table in tables:
-        if "DELETE" in grants_on(app, table):
-            offenders.append(
-                f"{table} (a DELETE there erases {', '.join(sorted(erases[table]))})"
-                if table in erases else f"{table} (a leaf: the walk into a history would not "
-                "have seen it)"
-            )
+    offenders = [
+        f"{table} ({what_a_delete_there_does(app, table, erases)})"
+        for table in tables if "DELETE" in grants_on(app, table)
+    ]
     assert offenders == [], f"the application role holds DELETE on: {offenders}"
     # and it really cannot: the way the code would make the call, at its role --
     # an ancestor of a history, and a leaf
@@ -228,6 +250,34 @@ def test_the_application_role_holds_delete_on_no_table_in_the_schema(app, tenant
                 cursor.execute(statement)
         app.rollback()
     assert query(app, tenant_id, "SELECT count(*) FROM pass_state_changes") == [(1,)]
+
+
+@pytest.mark.guarantee("G12")
+@store_test
+def test_an_offending_table_is_named_by_what_a_delete_there_reaches(app):
+    """The three classes, each on a real table of the shipped schema, and the
+    parent class on the table that was misnamed: ``pass_garages`` is named as
+    the parent of its three children (``pass_lanes``, ``vehicle_registrations``,
+    ``visits``) and never as a leaf; ``enrolments`` (nothing references it) is
+    the leaf; ``passes`` erases ``pass_state_changes``."""
+    from garage_pass.store.postgres import tables_referencing
+
+    erases = {}
+    for history in HISTORIES:
+        for table in tables_cascading_into(app, history):
+            erases.setdefault(table, []).append(history)
+    assert tables_referencing(app, "pass_garages") == {
+        "pass_lanes", "vehicle_registrations", "visits"
+    }
+    assert tables_referencing(app, "enrolments") == frozenset()
+    parent = what_a_delete_there_does(app, "pass_garages", erases)
+    assert parent.startswith("a parent of pass_lanes, vehicle_registrations, visits"), parent
+    assert "leaf" not in parent.split(":")[0]
+    leaf = what_a_delete_there_does(app, "enrolments", erases)
+    assert leaf.startswith("a leaf: nothing references"), leaf
+    assert what_a_delete_there_does(app, "passes", erases) == (
+        "a DELETE there erases pass_state_changes"
+    )
 
 
 @pytest.mark.guarantee("G12")

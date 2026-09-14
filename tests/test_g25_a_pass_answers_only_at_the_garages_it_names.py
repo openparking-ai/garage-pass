@@ -15,6 +15,20 @@ here, and the fan-out's two halves are each measured WITH THE OTHER REMOVED:
 the EXCLUDE with the module's named refusal monkeypatched away, the named
 refusal with the fan-out's atomicity monkeypatched away. A control run with
 both in place would prove nothing about either.
+
+**THE VISIT LEDGER IS PER GARAGE, AND A MEMBERSHIP ROW ERASES NOTHING** (the
+G3a L3's F2 and F1, the fix round). Measured on the round's first head: the
+open-visit lookup was keyed on the pass alone, so an entry at garage B was
+refused for a visit open at A and an exit at B closed A's visit with B's lane
+on it; and the keys from ``visits`` and ``vehicle_registrations`` into
+``pass_garages`` were CASCADE, so deleting one membership row took that
+garage's ledger with it. Now the lookup and the index are keyed on the garage,
+the two keys are RESTRICT (the lanes key stays CASCADE: a lane is configuration
+of the pass at that garage), and the allowance -- C5 -- still counts the set.
+Controls: the garage predicate planted out of the lookup; the index planted
+back to per pass (the entry at B then meets it as a bare constraint); each key
+planted back to CASCADE, with the visits key measured on a garage that holds
+ONLY a visit so the registrations key cannot stand in for it.
 """
 
 from __future__ import annotations
@@ -663,6 +677,208 @@ def test_a_stored_pass_with_lanes_stated_and_none_at_one_of_its_garages_loads_un
     assert f.REFUSAL_LANES_NOT_STATED_FOR_GARAGE in entry.detail and "'garage-b'" in entry.detail
     exit_ = access_from_store(app, tenant_id, B.id, "CAR-1", "L1", Direction.EXIT, NOON_MONDAY)
     assert exit_.outcome is Outcome.NOT_COVERED and exit_.reason == f.PASS_UNREADABLE
+
+
+# ---------------------------------------------------------------------------
+# The visit ledger is PER GARAGE (the L3's F2), and a membership row decides
+# nothing recorded under it (the L3's F1).
+# ---------------------------------------------------------------------------
+
+from garage_pass.store.records import (  # noqa: E402
+    ONE_OPEN_VISIT,
+    record_entry,
+    record_exit,
+)
+from garage_pass.terms import AllowancePeriod, VisitAllowance  # noqa: E402
+
+
+def _entry(app, tenant_id, garage: Garage, pass_: Pass, identity: str, hour: int) -> dict:
+    with tenant(app, tenant_id) as cursor:
+        out = record_entry(cursor, tenant_id, garage.id, pass_.id, identity, "L1",
+                           at(date(2026, 6, 1), hour))
+    app.commit()
+    return out
+
+
+def _exit(app, tenant_id, garage: Garage, pass_: Pass, identity: str, hour: int) -> dict:
+    with tenant(app, tenant_id) as cursor:
+        out = record_exit(cursor, tenant_id, garage.id, pass_.id, identity, "L1",
+                          at(date(2026, 6, 1), hour))
+    app.commit()
+    return out
+
+
+def ledger(app, tenant_id) -> list[tuple]:
+    """(garage, identity, entry hour, exited?) -- every visit row, by garage."""
+    return query(
+        app, tenant_id,
+        "SELECT g.external_id, v.vehicle_identity, v.entered_at, v.exited_at IS NOT NULL "
+        "FROM visits v JOIN garages g ON g.id = v.garage_id ORDER BY 1, 3",
+    )
+
+
+@pytest.mark.guarantee("G25")
+@store_test
+def test_an_open_visit_at_one_garage_neither_refuses_an_entry_nor_closes_an_exit_at_another(
+    app, tenant_id
+):
+    """Measured at the L3 on 0e72732: an entry at B was refused VISIT_ALREADY_OPEN
+    for a visit open at A, and an exit at B CLOSED A's visit and wrote B's lane on
+    it. Now: the open-visit lookup is keyed on the garage. The same-garage rule is
+    the control -- entering A twice is still refused, with the same code, and the
+    database's own index (re-keyed per garage in 0004) still names itself."""
+    import psycopg
+
+    uuids = seed_garages(app, tenant_id, A, B)
+    pass_ = spanning(A, B, state=State.ACTIVE)
+    create(app, tenant_id, A, pass_)
+    with tenant(app, tenant_id) as cursor:
+        register_vehicle(cursor, tenant_id, A.id, pass_.id, "CAR-1", date(2026, 1, 1))
+    app.commit()
+    _entry(app, tenant_id, A, pass_, "CAR-1", 8)
+    # the control first: the SAME garage twice is refused as before, naming the garage
+    with pytest.raises(f.Refused) as refused:
+        _entry(app, tenant_id, A, pass_, "CAR-1", 9)
+    app.rollback()
+    assert refused.value.code == f.REFUSAL_VISIT_ALREADY_OPEN
+    assert "'garage-a'" in refused.value.detail and "no recorded exit" in refused.value.detail
+    # and the database's backstop for the same garage, by name
+    (pass_uuid,) = query(app, tenant_id, "SELECT id FROM passes")[0]
+    with pytest.raises(psycopg.errors.UniqueViolation) as violation:
+        with tenant(app, tenant_id) as cursor:
+            cursor.execute(
+                "INSERT INTO visits (tenant_id, garage_id, pass_id, vehicle_identity, entry_lane, "
+                "entered_at) VALUES (%s, %s, %s, 'CAR-1', 'L1', now())",
+                (tenant_id, uuids[A.id], pass_uuid),
+            )
+    app.rollback()
+    assert violation.value.diag.constraint_name == ONE_OPEN_VISIT
+    # an exit at B with nothing open AT B: refused by name, naming B -- never A's visit closed
+    with pytest.raises(f.Refused) as refused:
+        _exit(app, tenant_id, B, pass_, "CAR-1", 9)
+    app.rollback()
+    assert refused.value.code == f.REFUSAL_NO_OPEN_VISIT
+    assert "'garage-b'" in refused.value.detail
+    assert ledger(app, tenant_id) == [("garage-a", "CAR-1", at(date(2026, 6, 1), 8), False)]
+    # an entry at B while A's visit is still open: RECORDED, the ledger holds both.
+    # Spelled as an assertion, so a refusal here -- the module's, or the database
+    # index's if it were keyed per pass again -- is read as a red about the subject
+    try:
+        _entry(app, tenant_id, B, pass_, "CAR-1", 10)
+    except f.Refused as refused:
+        app.rollback()
+        pytest.fail(f"an entry at B was refused for a visit open at A: {refused.code}: "
+                    f"{refused.detail}")
+    assert ledger(app, tenant_id) == [
+        ("garage-a", "CAR-1", at(date(2026, 6, 1), 8), False),
+        ("garage-b", "CAR-1", at(date(2026, 6, 1), 10), False),
+    ]
+    # each exit closes ITS garage's visit and no other
+    _exit(app, tenant_id, B, pass_, "CAR-1", 11)
+    assert ledger(app, tenant_id) == [
+        ("garage-a", "CAR-1", at(date(2026, 6, 1), 8), False),
+        ("garage-b", "CAR-1", at(date(2026, 6, 1), 10), True),
+    ]
+    _exit(app, tenant_id, A, pass_, "CAR-1", 12)
+    assert all(exited for _g, _i, _e, exited in ledger(app, tenant_id))
+    # G4, untouched: the access answer at EXIT at every garage of the set is an answer
+    for garage in (A, B):
+        answer = access_from_store(app, tenant_id, garage.id, "CAR-1", "L1", Direction.EXIT,
+                                   at(date(2026, 6, 1), 13))
+        assert answer.outcome is Outcome.COVERED and answer.exit_note
+
+
+@pytest.mark.guarantee("G25")
+@store_test
+def test_the_allowance_still_counts_every_garage_of_the_set_after_the_ledger_is_per_garage(
+    app, tenant_id
+):
+    """C5, the control that stops the fix over-reaching: the open-visit lookup
+    is per garage, the ALLOWANCE is not -- two entries, one at A and one at B,
+    spend a two-visit allowance at both, and the sentence counts both."""
+    seed_garages(app, tenant_id, A, B)
+    pass_ = spanning(A, B, state=State.ACTIVE, terms=simple_terms(
+        visit_allowance=VisitAllowance(count=2, per=AllowancePeriod.LIFE)))
+    create(app, tenant_id, A, pass_)
+    with tenant(app, tenant_id) as cursor:
+        register_vehicle(cursor, tenant_id, A.id, pass_.id, "CAR-1", date(2026, 1, 1))
+    app.commit()
+    _entry(app, tenant_id, A, pass_, "CAR-1", 8)
+    _exit(app, tenant_id, A, pass_, "CAR-1", 9)
+    _entry(app, tenant_id, B, pass_, "CAR-1", 10)
+    _exit(app, tenant_id, B, pass_, "CAR-1", 11)
+    for garage in (A, B):
+        answer = access_from_store(app, tenant_id, garage.id, "CAR-1", "L1", Direction.ENTRY,
+                                   at(date(2026, 6, 1), 12))
+        assert answer.outcome is Outcome.NOT_COVERED and answer.reason == f.OUT_OF_VISITS
+        assert "2 of 2 visit(s) used; counted 2 recorded entries on pass" in answer.detail, answer
+    # a per-garage count would have read 1 of 2 at both: the control on the control
+    third = access_from_store(app, tenant_id, A.id, "CAR-2", "L1", Direction.ENTRY,
+                              at(date(2026, 6, 1), 12))
+    assert third.reason == f.NO_PASS
+
+
+@pytest.mark.guarantee("G25")
+@store_test
+def test_removing_a_garage_that_holds_a_visit_or_a_registration_fails_by_name(
+    app, owner, tenant_id
+):
+    """The L3's F1, read the other way: with ON DELETE CASCADE a superuser delete
+    of ONE pass_garages row took that garage's visits and registrations with
+    it. Now RESTRICT, both keys, each named in the failure; and the control
+    without which this only proves the table is unreachable -- a membership
+    row with nothing under it still goes, and takes only its lane rows."""
+    import psycopg
+
+    uuids = seed_garages(app, tenant_id, A, B, C)
+    pass_ = spanning(A, B, C, state=State.ACTIVE, terms=simple_terms(
+        allowed_lanes=lanes_at(A.id, "L1") + lanes_at(B.id, "L1") + lanes_at(C.id, "L1")))
+    create(app, tenant_id, A, pass_)
+    with tenant(app, tenant_id) as cursor:
+        register_vehicle(cursor, tenant_id, A.id, pass_.id, "CAR-1", date(2026, 1, 1))
+    app.commit()
+    _entry(app, tenant_id, B, pass_, "CAR-1", 8)
+    _exit(app, tenant_id, B, pass_, "CAR-1", 9)
+    (pass_uuid,) = query(app, tenant_id, "SELECT id FROM passes")[0]
+    # B is left holding ONLY its visit: its registration row goes as the OWNER
+    # (a redaction, the one route this module leaves), so that the visits key is
+    # the only thing standing and the test measures IT, not the registrations key
+    with owner.cursor() as cursor:
+        cursor.execute("DELETE FROM vehicle_registrations WHERE tenant_id = %s AND garage_id = %s",
+                       (tenant_id, uuids[B.id]))
+        assert cursor.rowcount == 1
+
+    def delete_membership(garage: Garage) -> None:
+        with owner.cursor() as cursor:
+            cursor.execute("DELETE FROM pass_garages WHERE tenant_id = %s AND pass_id = %s "
+                           "AND garage_id = %s", (tenant_id, pass_uuid, uuids[garage.id]))
+            assert cursor.rowcount == 1
+
+    before = (ledger(app, tenant_id), registration_rows(app, tenant_id))
+    # B holds only a visit: the VISITS key, by name
+    with pytest.raises(psycopg.errors.ForeignKeyViolation) as violation:
+        delete_membership(B)
+    assert violation.value.diag.constraint_name == "visits_garage_of_pass", violation.value
+    # C holds only a registration (the fan-out): the REGISTRATIONS key, by name
+    with pytest.raises(psycopg.errors.ForeignKeyViolation) as violation:
+        delete_membership(C)
+    assert violation.value.diag.constraint_name == "vehicle_registrations_garage_of_pass"
+    assert (ledger(app, tenant_id), registration_rows(app, tenant_id)) == before
+    # the control: end the registrations, delete the ledger as the OWNER (a
+    # redaction, the one route this module leaves), and the membership goes --
+    # with its lane row, and with nothing else
+    with tenant(app, tenant_id) as cursor:
+        end_registration(cursor, tenant_id, A.id, pass_.id, "CAR-1", date(2026, 7, 1))
+    app.commit()
+    with owner.cursor() as cursor:
+        cursor.execute("DELETE FROM vehicle_registrations WHERE tenant_id = %s AND garage_id = %s",
+                       (tenant_id, uuids[C.id]))
+        assert cursor.rowcount == 1
+    lanes_before = query(app, tenant_id, "SELECT count(*) FROM pass_lanes")
+    delete_membership(C)
+    assert query(app, tenant_id, "SELECT count(*) FROM pass_lanes") == [(lanes_before[0][0] - 1,)]
+    assert pass_garage_rows(app, tenant_id) == [(pass_.id, A.id), (pass_.id, B.id)]
+    assert ledger(app, tenant_id) == before[0], "a visit went with a membership it was not under"
 
 
 # ---------------------------------------------------------------------------
