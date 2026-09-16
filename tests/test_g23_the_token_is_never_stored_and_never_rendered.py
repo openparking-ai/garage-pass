@@ -107,7 +107,8 @@ def test_the_plaintext_is_rendered_by_the_issue_calls_and_by_nothing_else(
 ):
     """Everything rendered since this test began -- every Answer, every printed
     refusal (the suite's collector) and every line the command line printed --
-    holds the tokens only in the two issue outputs."""
+    holds the tokens only in the two issue outputs -- and the pass read
+    (``show-pass``) renders neither a token nor its digest."""
     from _rendered_sentences import rendered_so_far
     from garage_pass.cli import main
 
@@ -162,6 +163,13 @@ def test_the_plaintext_is_rendered_by_the_issue_calls_and_by_nothing_else(
                      "1", "--enrolment-id", "qr-2", "--starts-on", "2026-06-01", "--days-valid",
                      "3", "--at", "2026-06-01T12:00:00-06:00"])
     assert '"REFUSAL_CREDENTIAL_ALREADY_USED"' in used_link["printed"]
+    # the one READ of a pass (G26) is a door too: it renders neither the
+    # plaintext (the loop below reads its output with every other command's)
+    # nor the digest -- nothing from the credential tables travels
+    read = run(["show-pass", *T, "--pass-id", pass_.id])
+    assert read["status"] == 0 and '"registrations"' in read["printed"]
+    for name, needle in (("enrolment", digest(token)), ("link", digest(link_token))):
+        assert needle not in read["printed"], f"the read rendered the {name} digest"
     with tenant(app, tenant_id) as cursor:
         change_state(cursor, tenant_id, TRANSIENT_ENTRY.id, pass_.id, State.REVOKED, by="o",
                      at=at(date(2026, 6, 2), 9), reason="divorced")

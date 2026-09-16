@@ -105,6 +105,7 @@ G22 = "tests/test_g22_the_vehicle_description_decides_nothing.py"
 G23 = "tests/test_g23_the_token_is_never_stored_and_never_rendered.py"
 G24 = "tests/test_g24_a_holder_link_writes_two_columns_and_nothing_else.py"
 G25 = "tests/test_g25_a_pass_answers_only_at_the_garages_it_names.py"
+G26 = "tests/test_g26_a_pass_is_read_whole_and_the_read_writes_nothing.py"
 MIGRATION = "migrations/0001_garages_passes_registrations_and_rls.sql"
 MIGRATION_0002 = "migrations/0002_garage_changes_are_recorded.sql"
 MIGRATION_0003 = "migrations/0003_enrolments_holder_links_and_where_a_garage_enrols.sql"
@@ -2109,6 +2110,141 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
         "  # PLANTED: unreadable loads as stored",
         "a garage of the pass whose zone cannot be read no longer refuses the revocation by "
         "name with the repair; the zone read raises the bare timezone refusal instead",
+    ),
+
+    # ---- G26: the one read of a pass ------------------------------------------
+    "G26/history-dropped": (
+        G26, "store/records.py",
+        '        "WHERE r.tenant_id = %s AND r.pass_id = %s",\n'
+        '        (tenant_uuid, pass_uuid),\n',
+        '        "WHERE r.tenant_id = %s AND r.pass_id = %s AND r.end_day IS NULL",  # PLANTED\n'
+        '        (tenant_uuid, pass_uuid),\n',
+        "the read drops ended rows: the register loses its history",
+    ),
+    "G26/sort-removed": (
+        G26, "store/records.py",
+        '    registrations.sort(key=lambda r: (r["vehicle_identity"], r["effective_day"], '
+        'r["garage"]))\n',
+        '    pass  # PLANTED: the database\'s own order, whatever it is\n',
+        "no sort: the rows come out in the heap's order, which the test's premise proves is "
+        "not the code-point order",
+    ),
+    "G26/sort-reversed": (
+        G26, "store/records.py",
+        '    registrations.sort(key=lambda r: (r["vehicle_identity"], r["effective_day"], '
+        'r["garage"]))\n',
+        '    registrations.sort(key=lambda r: (r["vehicle_identity"], r["effective_day"], '
+        'r["garage"]), reverse=True)  # PLANTED\n',
+        "the order is deterministic but not the published one",
+    ),
+    "G26/garages-unsorted": (
+        G26, "store/records.py",
+        "    named = sorted(pass_.garage_ids)\n",
+        "    named = sorted(pass_.garage_ids, reverse=True)  # PLANTED\n",
+        "the garage list is not in code-point order",
+    ),
+    "G26/read-writes": (
+        G26, "store/records.py",
+        "    named = sorted(pass_.garage_ids)\n",
+        "    named = sorted(pass_.garage_ids)\n"
+        "    cursor.execute(\"UPDATE passes SET label = label || ' (read)' WHERE tenant_id = %s "
+        "AND id = %s\", (tenant_uuid, pass_uuid))  # PLANTED: a read that writes\n",
+        "the read touches a row: the digests of every table before and after differ",
+    ),
+    "G26/label-travels": (
+        G26, "store/records.py",
+        '        "state": pass_.state.value,\n        "valid_from"',
+        '        "state": pass_.state.value,\n        "label": pass_.label,  # PLANTED\n'
+        '        "valid_from"',
+        "one more key: the label, which the reader does not need, travels",
+    ),
+    "G26/unreadable-pass-refuses": (
+        G26, "store/records.py",
+        "    unreadable_garages: dict[str, Any] = {}\n",
+        "    if pass_.unreadable is not None:  # PLANTED: a read that refuses on unreadable data\n"
+        "        raise Refused(pass_.unreadable.code, pass_.unreadable.field, 'PLANTED')\n"
+        "    unreadable_garages: dict[str, Any] = {}\n",
+        "a pass stored unreadable is refused instead of shown",
+    ),
+    "G26/unreadable-garage-refuses": (
+        G26, "store/records.py",
+        "    garage_uuid, _garage = load_garage(cursor, tenant_uuid, garage_external_id)\n"
+        "    pass_uuid, pass_ = load_pass(cursor, tenant_uuid, garage_uuid, pass_external_id)\n"
+        "    unreadable_garages",
+        "    garage_uuid, _garage = load_readable_garage(cursor, tenant_uuid, "
+        "garage_external_id)  # PLANTED\n"
+        "    pass_uuid, pass_ = load_pass(cursor, tenant_uuid, garage_uuid, pass_external_id)\n"
+        "    unreadable_garages",
+        "the read goes through the write-side loader: an unreadable garage refuses the read",
+    ),
+    "G26/membership": (
+        G26, "store/records.py",
+        "    if as_uuid(garage_uuid) not in garage_uuids:",
+        "    if False:  # PLANTED: any garage reads any pass",
+        "a garage the pass does not name reads it: the G25 refusal the read relies on is gone",
+    ),
+    "G26/tenant-predicate": (
+        G26, "store/records.py",
+        '        _PASS_COLUMNS + "WHERE p.tenant_id = %s AND p.external_id = %s",\n'
+        '        (tenant_uuid, external_id),\n',
+        '        _PASS_COLUMNS + "WHERE p.external_id = %s",  # PLANTED: any tenant\'s pass\n'
+        '        (external_id,),\n',
+        "the pass is looked up by id alone: with row-level security off, one tenant reads "
+        "the other's pass (with it on, the policy still holds -- which is why the test runs "
+        "both ways)",
+    ),
+    "G26/outside-set-dropped": (
+        G26, "store/records.py",
+        '        "JOIN garages g ON g.tenant_id = r.tenant_id AND g.id = r.garage_id "\n'
+        '        "WHERE r.tenant_id = %s AND r.pass_id = %s",',
+        '        "JOIN garages g ON g.tenant_id = r.tenant_id AND g.id = r.garage_id "\n'
+        '        "JOIN pass_garages pg ON pg.tenant_id = r.tenant_id AND pg.pass_id = r.pass_id "\n'
+        '        "AND pg.garage_id = r.garage_id "  # PLANTED: through the set\n'
+        '        "WHERE r.tenant_id = %s AND r.pass_id = %s",',
+        "the rows are selected through the garage set: a row at a garage outside it is "
+        "silently dropped",
+    ),
+    "G26/garage-of-pass-constraint": (
+        G26, MIGRATION_0004,
+        source(
+            "ALTER TABLE vehicle_registrations",
+            "  ADD CONSTRAINT vehicle_registrations_garage_of_pass",
+            "    FOREIGN KEY (tenant_id, pass_id, garage_id)",
+            "    REFERENCES pass_garages (tenant_id, pass_id, garage_id) ON DELETE RESTRICT;",
+        ),
+        "-- PLANTED: no constraint ties a registration's garage to the pass's set",
+        "the constraint is gone: a raw insert outside the set is accepted and a membership "
+        "row under a registration deletes",
+    ),
+    "G26/valid-to-dropped": (
+        G26, "store/records.py",
+        '        "valid_to": terms.valid_to if terms is not None else None,\n',
+        '        "valid_to": None,  # PLANTED: the end of the range never travels\n',
+        "valid_to is always null: a pass past its end reads like a live one",
+    ),
+    "G26/valid-from-dropped": (
+        G26, "store/records.py",
+        '        "valid_from": terms.valid_from if terms is not None else None,\n',
+        '        "valid_from": None,  # PLANTED: the start of the range never travels\n',
+        "valid_from is always null: a pass not yet valid reads like a live one",
+    ),
+    "G26/another-term-travels": (
+        G26, "store/records.py",
+        '        "valid_to": terms.valid_to if terms is not None else None,\n',
+        '        "valid_to": terms.valid_to if terms is not None else None,\n'
+        '        "windows": terms.windows if terms is not None else None,  # PLANTED\n',
+        "one more term -- the windows -- travels: the 'nothing more' of F1 is unguarded without "
+        "this",
+    ),
+    "G23/show-pass-renders-digest": (
+        G23, "store/records.py",
+        "    named = sorted(pass_.garage_ids)\n",
+        "    named = sorted(pass_.garage_ids)\n"
+        '    cursor.execute("SELECT token_sha256 FROM enrolments WHERE tenant_id = %s AND '
+        'pass_id = %s", (tenant_uuid, pass_uuid))  # PLANTED\n'
+        '    unreadable_garages["PLANTED"] = [d for (d,) in cursor.fetchall()]\n',
+        "the read renders the credential's digest: G23's rendered scan must see it in the "
+        "read's output (the positive control that the scan covers the verb)",
     ),
 }
 

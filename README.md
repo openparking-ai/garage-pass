@@ -14,7 +14,8 @@ $ garage-pass access --garage garage.json --pass pass.json \
 ```
 
 And, against the store: create the pass, register the vehicle, record what the
-lane saw, answer the lane from what is actually recorded. Exit status 0 covered,
+lane saw, answer the lane from what is actually recorded, read the pass whole.
+Exit status 0 covered,
 1 not covered, 2 refused to answer or the machine's configuration (one sentence
 on stderr: no DSN, a database that does not connect or is not migrated, a role
 without its grants, no timezone database), 3 the request was refused — and a
@@ -39,6 +40,7 @@ $ garage-pass record-entry --tenant T --garage garage-downtown --pass-id pass-1 
       --vehicle CAR-1 --lane L1 --at 2026-06-01T09:00:00-06:00
 $ garage-pass access-in-store --tenant T --garage garage-downtown \
       --vehicle CAR-1 --lane L1 --direction exit --at 2026-06-01T12:00:00-06:00
+$ garage-pass show-pass --tenant T --garage garage-downtown --pass-id pass-1
 ```
 
 ## What a pass is
@@ -156,6 +158,32 @@ registration onto a suspended pass (a hold; a car added to a hold is a claim the
 owner did not make), a revoked pass (revoked is revoked) or an expired one (over,
 derived from `valid_to` against the registration's effective day) is refused by
 name, naming the state.
+
+### Reading a pass whole
+
+`show-pass` is the one read of a pass, for any reader: the pass id, its stored
+state, the two days its terms bound it with (`valid_from` and `valid_to`, ISO
+days or `null`), the garages it names (external ids, sorted) and **every**
+registration it holds, history included — ended rows too — each as the identity
+as recorded, the garage's external id, `effective_day`, `end_day` and
+`ended_reason`. Nothing else: not the holder's name, phone or email, no term
+beyond the two valid days (not the windows, the maximum stay, the allowance, the
+lanes or the directions), not the label, nothing from the credential tables — the
+reader needs the register and needs to know *when* the pass covers, not *how*,
+and personal data it does not need does not travel. It writes nothing (proven by
+row counts and row digests of every table before and after). **It uses no
+clock**: the state shown is the stored one and `expired` is not derived — a pass
+spans garages in different timezones, so which day is the reader's call; the
+reader compares the two days with its own. A `null` bound is a bound the terms
+did not state (both are optional) or terms the module cannot read, and the
+second is already named in `unreadable`. The order is the module's, applied in
+Python by code point — identity, then effective day, then garage — never the
+database's collation, so a reader on another machine gets the same bytes. A pass
+the module cannot read (G17) is still shown, with the field named; a garage of
+the set whose timezone the running system does not carry stops no read, and is
+named. The same `--garage` every store command takes: a garage the pass does not
+name is refused naming the set (G25 — the read is not a way to look a pass up
+from a garage it does not answer at).
 
 ## The answer
 

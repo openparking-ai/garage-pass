@@ -384,12 +384,18 @@ REPAIR = "set_garage_timezone"
 WHO_WHEN_WHY = dict(by="operator", at=NOON_MONDAY, reason="stored from a laptop, fixed")
 
 
+#: The ONE read that takes a garage's external id like a write does (G26's
+#: ``show_pass``): it is in the derived list below and is exercised apart --
+#: it must get PAST the unreadable garage, where every write stops at it.
+READS_AGAINST_A_GARAGE = ("show_pass",)
+
+
 def writes_against_a_garage() -> list[str]:
     """Every public function in the store -- both its modules, ``records`` and
-    ``enrolments`` -- whose third parameter is the garage's external id: the
-    writes a garage takes, read from the signatures, not typed.
-    ``load_garage``/``registrations_of`` take a uuid or are named differently,
-    and are reads."""
+    ``enrolments`` -- whose third parameter is the garage's external id, read
+    from the signatures, not typed: the writes a garage takes, plus the one
+    read named in ``READS_AGAINST_A_GARAGE``. ``load_garage`` and
+    ``registrations_of`` take a uuid or are named differently, and are reads."""
     import inspect
 
     from garage_pass.store import enrolments
@@ -456,9 +462,17 @@ def test_every_write_against_an_unreadable_garage_is_refused_by_name_and_the_rep
     }
     # the redemption is the one write that CARRIES its refusal instead of raising
     # it, because the lane must still be answered: exercised below on its own
-    assert sorted([*calls, REPAIR, "redeem_enrolment"]) == writes_against_a_garage(), (
-        "a write against a garage exists that this test does not exercise"
-    )
+    assert sorted([*calls, REPAIR, "redeem_enrolment", *READS_AGAINST_A_GARAGE]) == (
+        writes_against_a_garage()
+    ), "a write against a garage exists that this test does not exercise"
+    # the one READ: it is not stopped by the garage -- it gets as far as the
+    # pass, which this test never managed to create, and refuses THAT by name
+    with pytest.raises(f.Refused) as read_refused:
+        with tenant(app, tenant_id) as cursor:
+            records.show_pass(cursor, tenant_id, "g-badtz", pass_.id)
+    app.rollback()
+    assert read_refused.value.code == f.REFUSAL_PASS_NOT_FOUND, read_refused.value
+    assert "Mars/Olympus" not in read_refused.value.detail
     for name, call in calls.items():
         with pytest.raises(f.Refused) as refused:
             with tenant(app, tenant_id) as cursor:
