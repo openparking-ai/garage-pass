@@ -414,10 +414,10 @@
   "why": "CONTRACT's authored copy of the G20 registry claim: Garage.__post_init__, set_garage_enrols_at, and the CHECK exercised by a raw INSERT and UPDATE as the owner"
  },
  {
-  "sentence": "Against the store (``GARAGE_PASS_DSN``, ``--tenant``): ``create-garage``, ``set-garage-timezone`` (the repair for a garage stored with a timezone the system does not carry -- the one write that takes an unreadable garage, and it records who, when and why like a state change does), ``set-garage-enrols-at`` (where a garage enrols -- entry or exit -- recorded the same way), ``create-pass`` (the document's ``garage_ids`` names one or more garages, and ``--garage`` is one of them; the pass answers at every garage it names and at no other), ``register-vehicle`` (one row per garage the pass names, together or not at all), ``end-registration``, ``set-state``, ``record-entry``, ``record-exit``, ``access-in-store``, and the enrolment: ``issue-enrolment`` (mint the QR for a pass: the token is printed ONCE, here, and by nothing else), ``redeem-enrolment`` (the lane presents the QR with the vehicle identity it measured: the bind, and the access answer for that same movement -- always, refused or not; exit status follows the answer's outcome, and the enrolment half is in the JSON), ``issue-holder-link`` and ``redeem-holder-link`` (the holder writes their own name and phone onto the pass and gets their QR).",
+  "sentence": "Against the store (``GARAGE_PASS_DSN``, ``--tenant``): ``create-garage``, ``set-garage-timezone`` (the repair for a garage stored with a timezone the system does not carry -- the one write that takes an unreadable garage, and it records who, when and why like a state change does), ``set-garage-enrols-at`` (where a garage enrols -- entry or exit -- recorded the same way), ``create-pass`` (the document's ``garage_ids`` names one or more garages, and ``--garage`` is one of them; the pass answers at every garage it names and at no other), ``register-vehicle`` (one row per garage the pass names, together or not at all), ``end-registration``, ``set-state``, ``record-entry``, ``record-exit``, ``access-in-store``, ``show-pass`` (the one read of a pass: its state, its garages and every registration it holds, history included, sorted in Python by code point; it writes nothing, carries no holder, terms or label, and a pass or garage stored unreadable is still shown with the refusal named), and the enrolment: ``issue-enrolment`` (mint the QR for a pass: the token is printed ONCE, here, and by nothing else), ``redeem-enrolment`` (the lane presents the QR with the vehicle identity it measured: the bind, and the access answer for that same movement -- always, refused or not; exit status follows the answer's outcome, and the enrolment half is in the JSON), ``issue-holder-link`` and ``redeem-holder-link`` (the holder writes their own name and phone onto the pass and gets their QR).",
   "file": "src/garage_pass/cli.py",
   "verdict": "NOT-PUBLISHED",
-  "why": "cli module docstring (G2 rewrite of the judged verb list): the timezone repair is still the one write an unreadable garage takes -- set_garage_enrols_at, issue_*, redeem_holder_link go through load_readable_garage and redeem_enrolment carries the refusal (G17's derived write list exercises every one); the token is printed by the issue calls and by nothing else (G23) (G3a rewrite: create-pass's garage_ids and register-vehicle's per-garage rows, measured by G25 and the G25 walk)"
+  "why": "cli module docstring (G2 rewrite of the judged verb list): the timezone repair is still the one write an unreadable garage takes -- set_garage_enrols_at, issue_*, redeem_holder_link go through load_readable_garage and redeem_enrolment carries the refusal (G17's derived write list exercises every one); the token is printed by the issue calls and by nothing else (G23) (G3a rewrite: create-pass's garage_ids and register-vehicle's per-garage rows, measured by G25 and the G25 walk) (G3b rewrite: show-pass added to the verb list -- the one read, measured by G26)"
  },
  {
   "sentence": "The detail names the garage and the pass's own set; the database's key backs it for a raw write.",
@@ -490,5 +490,41 @@
   "file": "README.md",
   "verdict": "TRUE",
   "why": "README: G25's line, measured at every door by G25's tests"
+ },
+ {
+  "sentence": "The database says one cannot: a registration's garage is one the pass holds (``vehicle_registrations_garage_of_pass``, migration 0004, RESTRICT -- the constraint refuses a raw insert outside the set and refuses to remove a membership row from under a registration), and no verb removes a garage from a pass.",
+  "file": "src/garage_pass/store/records.py",
+  "verdict": "NOT-PUBLISHED",
+  "why": "show_pass docstring (G3b): the constraint is measured by G26 (raw insert outside the set refused by name; membership row under a registration not removable); the membership refusal is load_pass's, measured by G26 and G25; the unreadable pass is G17's raw row, shown by G26"
+ },
+ {
+  "sentence": "**THE GARAGE ARGUMENT IS THE SAME ONE EVERY STORE CALL TAKES**, and the same membership refusal fires: a garage the pass does not name refuses by name, naming the set (G25 -- a pass answers only at the garages it names, and a read is not a way round that).",
+  "file": "src/garage_pass/store/records.py",
+  "verdict": "NOT-PUBLISHED",
+  "why": "show_pass docstring (G3b): the constraint is measured by G26 (raw insert outside the set refused by name; membership row under a registration not removable); the membership refusal is load_pass's, measured by G26 and G25; the unreadable pass is G17's raw row, shown by G26"
+ },
+ {
+  "sentence": "The same rule for the pass: a pass stored unreadable (G17) is still shown, state and garages and registrations, and ``unreadable`` carries the refusal.",
+  "file": "src/garage_pass/store/records.py",
+  "verdict": "NOT-PUBLISHED",
+  "why": "show_pass docstring (G3b): the constraint is measured by G26 (raw insert outside the set refused by name; membership row under a registration not removable); the membership refusal is load_pass's, measured by G26 and G25; the unreadable pass is G17's raw row, shown by G26"
+ },
+ {
+  "sentence": "The rows are selected by the pass alone, never through its garage set, so no row is dropped for its garage; and the database says such a row cannot exist: a registration names a garage the pass holds (vehicle_registrations_garage_of_pass, migration 0004, RESTRICT), so a raw insert at a garage outside the set is refused by the constraint and a membership row under a registration cannot be removed.",
+  "file": "tests/_guarantees.py",
+  "verdict": "TRUE",
+  "why": "G26: measured -- the raw insert outside the set is refused naming vehicle_registrations_garage_of_pass and the membership DELETE is refused by the same name; a row planted past the constraint (triggers disabled) is shown; the unreadable pass and the unreadable garage are shown and named (G26 tests); the three refusals are asserted as data beside a shown control"
+ },
+ {
+  "sentence": "A pass stored unreadable (G17) is still shown -- state, garages and registrations -- and the unreadable field is named with its code; a garage of the set stored with a timezone the running system does not carry stops no read, since the read uses no clock: the pass is shown and each such garage is named with its code.",
+  "file": "tests/_guarantees.py",
+  "verdict": "TRUE",
+  "why": "G26: measured -- the raw insert outside the set is refused naming vehicle_registrations_garage_of_pass and the membership DELETE is refused by the same name; a row planted past the constraint (triggers disabled) is shown; the unreadable pass and the unreadable garage are shown and named (G26 tests); the three refusals are asserted as data beside a shown control"
+ },
+ {
+  "sentence": "A pass that does not exist, or exists only at another tenant, is refused by name as every store verb refuses it; a garage the pass does not name is refused by name naming the set (G25 -- the read is not a way to look a pass up from a garage it does not answer at); a garage the tenant does not have is refused by name.",
+  "file": "tests/_guarantees.py",
+  "verdict": "TRUE",
+  "why": "G26: measured -- the raw insert outside the set is refused naming vehicle_registrations_garage_of_pass and the membership DELETE is refused by the same name; a row planted past the constraint (triggers disabled) is shown; the unreadable pass and the unreadable garage are shown and named (G26 tests); the three refusals are asserted as data beside a shown control"
  }
 ]
