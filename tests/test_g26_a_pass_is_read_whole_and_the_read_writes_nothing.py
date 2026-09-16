@@ -44,7 +44,7 @@ from pathlib import Path
 
 import pytest
 
-from fixtures import a_pass
+from fixtures import a_pass, everything_terms
 from garage_pass import findings as f
 from garage_pass.cli import _plain, main
 from garage_pass.garage import Garage
@@ -73,8 +73,8 @@ REGISTRATIONS = (
     ("car-b", date(2026, 6, 1), None),            # the same identity again, later
 )
 
-KEYS = {"pass", "state", "garages", "garages_not_named", "unreadable", "unreadable_garages",
-        "registrations"}
+KEYS = {"pass", "state", "valid_from", "valid_to", "garages", "garages_not_named", "unreadable",
+        "unreadable_garages", "registrations"}
 ROW_KEYS = {"vehicle_identity", "garage", "effective_day", "end_day", "ended_reason"}
 
 
@@ -89,9 +89,10 @@ def _dsn_for_the_app(monkeypatch):
         **{**params, "user": APP_ROLE, "password": APP_PASSWORD}))
 
 
-def seed_two_zone_pass(app, tenant_id, *, id: str = "pass-1", extra: tuple[Garage, ...] = ()):
+def seed_two_zone_pass(app, tenant_id, *, id: str = "pass-1", extra: tuple[Garage, ...] = (),
+                       terms=None):
     """A pass over Denver and Tokyo with the four registrations, committed."""
-    pass_ = a_pass(id=id, garage_ids={DENVER.id, TOKYO.id})
+    pass_ = a_pass(id=id, garage_ids={DENVER.id, TOKYO.id}, terms=terms)
     with tenant(app, tenant_id) as cursor:
         for garage in (DENVER, TOKYO, *extra):
             store_garage(cursor, tenant_id, garage)
@@ -162,6 +163,7 @@ def test_the_read_shows_every_registration_history_included_sorted_by_code_point
         out = shown(app, tenant_id, garage.id, pass_.id)
         assert set(out) == KEYS, sorted(out)
         assert out["pass"] == "pass-1" and out["state"] == "active"
+        assert out["valid_from"] is None and out["valid_to"] is None, "no range stated"
         assert out["garages"] == ["Garage-tokyo", "garage-denver"], "code point: G before g"
         assert out["garages_not_named"] == []
         assert out["unreadable"] is None and out["unreadable_garages"] == {}
@@ -230,7 +232,20 @@ def test_the_read_writes_nothing_by_row_counts_and_digests_of_every_table(
 def test_the_holder_the_terms_the_label_and_the_credentials_do_not_travel(
     app, owner, tenant_id, capsys, monkeypatch
 ):
-    pass_ = seed_two_zone_pass(app, tenant_id)
+    """Every term present at once (``everything_terms``): the two valid days
+    travel and NOTHING else of the terms does -- asserted by the field names
+    of ``Terms`` other than the two, by the lane names and by the allowance's
+    count; and the holder, the label and the credentials do not travel."""
+    import dataclasses
+
+    from fixtures import lanes_at
+    from garage_pass.terms import Terms
+
+    every = everything_terms(DENVER.id)  # lanes are stated PER GARAGE: at both of the set
+    every = dataclasses.replace(every, allowed_lanes=lanes_at(DENVER.id, "L1", "L2")
+                                + lanes_at(TOKYO.id, "L1"),
+                                valid_to=date(2027, 12, 31))  # past the fixture's future row
+    pass_ = seed_two_zone_pass(app, tenant_id, terms=every)
     with tenant(app, tenant_id) as cursor:
         token = issue_enrolment(cursor, tenant_id, DENVER.id, pass_.id, "qr-1", date(2026, 6, 1),
                                 3, by="owner", at=CREATED_AT, vehicle_description="silver")
@@ -244,13 +259,18 @@ def test_the_holder_the_terms_the_label_and_the_credentials_do_not_travel(
     assert status == 0 and set(printed) == KEYS
     from garage_pass.enrolment import digest
 
+    assert printed["valid_from"] == "2026-01-01" and printed["valid_to"] == "2027-12-31"
+    other_terms = sorted(set(Terms.__dataclass_fields__) - {"valid_from", "valid_to"})
+    assert len(other_terms) == 5, other_terms  # the premise: five terms besides the two
     must_not_travel = {
         "holder name": pass_.holder.name, "holder phone": pass_.holder.phone,
         "holder email": pass_.holder.email, "label": pass_.label,
         "enrolment id": "qr-1", "vehicle description": "silver", "link id": "link-1",
         "enrolment token": token["token"], "link token": link["token"],
         "enrolment digest": digest(token["token"]), "link digest": digest(link["token"]),
-        "terms": "valid_from",
+        **{f"term {name}": f'"{name}"' for name in other_terms},
+        "the stated lanes": '"L1"', "the allowance's count": '"count"',
+        "the window's minutes": '"start_minute"',
     }
     for what, value in must_not_travel.items():
         assert value not in text, f"the {what} travelled: {value!r}"
@@ -285,6 +305,7 @@ def test_a_pass_stored_unreadable_is_still_shown_and_the_field_is_named(app, own
     assert out["state"] == "active" and out["garages"] == ["Garage-tokyo", "garage-denver"]
     assert out["registrations"] == expected_rows()
     assert out["unreadable"] is not None
+    assert out["valid_from"] is None and out["valid_to"] is None, "unreadable terms: both null"
     assert out["unreadable"].code == f.REFUSAL_LANES_STATED_BUT_EMPTY
     assert out["unreadable"].field == "allowed_lanes"
     with tenant(app, tenant_id) as cursor, pytest.raises(f.Refused) as refused:
@@ -540,3 +561,46 @@ def test_every_writer_of_the_register_is_reflected_by_the_read(app, tenant_id):
         ("CAR-Y", "Garage-tokyo", date(2026, 8, 1), date(2026, 8, 15), "ended"),
         ("CAR-Y", "garage-denver", date(2026, 8, 1), date(2026, 8, 15), "ended"),
     ]
+
+
+# ---------------------------------------------------------------------------
+# the two valid days travel, and the read uses no clock
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.guarantee("G26")
+@store_test
+def test_the_two_valid_days_travel_and_the_stored_state_is_shown_whatever_the_day_says(
+    app, tenant_id, capsys, monkeypatch
+):
+    """A pass stored ``active`` whose ``valid_to`` is long past, and one whose
+    ``valid_from`` has not come: each shown with its bound and its STORED
+    state -- the read derives nothing from a day it does not have. A pass with
+    no range stated: both null (test 1); an unreadable pass: both null beside
+    the named refusal (test 4)."""
+    from fixtures import BOTH
+    from garage_pass.terms import Terms
+
+    over = a_pass(id="pass-over", garage_ids={DENVER.id},
+                  terms=Terms(directions=BOTH, valid_from=date(2020, 1, 1),
+                              valid_to=date(2020, 12, 31)))
+    ahead = a_pass(id="pass-ahead", garage_ids={DENVER.id},
+                   terms=Terms(directions=BOTH, valid_from=date(2099, 1, 1)))
+    with tenant(app, tenant_id) as cursor:
+        store_garage(cursor, tenant_id, DENVER)
+        for pass_ in (over, ahead):
+            create_pass(cursor, tenant_id, DENVER.id, pass_, by="seed", at=CREATED_AT)
+    app.commit()
+    _dsn_for_the_app(monkeypatch)
+    status, printed = run(["show-pass", "--tenant", str(tenant_id), "--garage", DENVER.id,
+                           "--pass-id", over.id], capsys)
+    assert status == 0 and set(printed) == KEYS
+    assert (printed["valid_from"], printed["valid_to"]) == ("2020-01-01", "2020-12-31")
+    assert printed["state"] == "active", "the stored state, not a derived expired"
+    status, printed = run(["show-pass", "--tenant", str(tenant_id), "--garage", DENVER.id,
+                           "--pass-id", ahead.id], capsys)
+    assert status == 0
+    assert (printed["valid_from"], printed["valid_to"]) == ("2099-01-01", None)
+    assert printed["state"] == "active"
+    # and nothing else of either pass's terms is in the text
+    assert '"directions"' not in json.dumps(printed)

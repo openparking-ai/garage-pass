@@ -2153,9 +2153,9 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
     ),
     "G26/label-travels": (
         G26, "store/records.py",
-        '        "state": pass_.state.value,\n        "garages": named,\n',
+        '        "state": pass_.state.value,\n        "valid_from"',
         '        "state": pass_.state.value,\n        "label": pass_.label,  # PLANTED\n'
-        '        "garages": named,\n',
+        '        "valid_from"',
         "one more key: the label, which the reader does not need, travels",
     ),
     "G26/unreadable-pass-refuses": (
@@ -2215,6 +2215,26 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
         "-- PLANTED: no constraint ties a registration's garage to the pass's set",
         "the constraint is gone: a raw insert outside the set is accepted and a membership "
         "row under a registration deletes",
+    ),
+    "G26/valid-to-dropped": (
+        G26, "store/records.py",
+        '        "valid_to": terms.valid_to if terms is not None else None,\n',
+        '        "valid_to": None,  # PLANTED: the end of the range never travels\n',
+        "valid_to is always null: a pass past its end reads like a live one",
+    ),
+    "G26/valid-from-dropped": (
+        G26, "store/records.py",
+        '        "valid_from": terms.valid_from if terms is not None else None,\n',
+        '        "valid_from": None,  # PLANTED: the start of the range never travels\n',
+        "valid_from is always null: a pass not yet valid reads like a live one",
+    ),
+    "G26/another-term-travels": (
+        G26, "store/records.py",
+        '        "valid_to": terms.valid_to if terms is not None else None,\n',
+        '        "valid_to": terms.valid_to if terms is not None else None,\n'
+        '        "windows": terms.windows if terms is not None else None,  # PLANTED\n',
+        "one more term -- the windows -- travels: the 'nothing more' of F1 is unguarded without "
+        "this",
     ),
     "G23/show-pass-renders-digest": (
         G23, "store/records.py",

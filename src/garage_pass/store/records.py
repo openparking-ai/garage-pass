@@ -892,11 +892,14 @@ def registrations_of(
 def show_pass(
     cursor: Any, tenant_id: Any, garage_external_id: str, pass_external_id: str
 ) -> dict:
-    """THE ONE READ OF A PASS: its id, its stored state, the garages it names
-    and EVERY registration it holds -- history included, ended rows too -- and
-    nothing else. No holder, no terms, no label, nothing from ``enrolments``
-    or ``holder_links``: a reader that needs the register does not need the
-    holder's name and phone, so they do not travel. It writes nothing. Every
+    """THE ONE READ OF A PASS: its id, its stored state, the two days its
+    terms bound it with (``valid_from`` and ``valid_to``, or ``None``), the
+    garages it names and EVERY registration it holds -- history included,
+    ended rows too -- and nothing else. No holder, no label, no term beyond
+    the two valid days (not the windows, the maximum stay, the allowance, the
+    lanes or the directions), nothing from ``enrolments`` or ``holder_links``:
+    a reader that needs the register needs to know WHEN the pass covers, not
+    HOW, and the holder's name and phone do not travel. It writes nothing. Every
     row in ``vehicle_registrations`` that names this pass is here, whatever
     its ``end_day``; the rows are selected by the pass alone, not through the
     garage set, so a row is never dropped for its garage -- and a row at a
@@ -919,6 +922,14 @@ def show_pass(
     unreadable (G17) is still shown, state and garages and registrations, and
     ``unreadable`` carries the refusal. A read that refused on unreadable data
     would hide exactly the rows a reader most needs to see.
+
+    **THE READ USES NO CLOCK, SO IT DERIVES NO ``expired``.** The stored state
+    is what is shown; ``expired`` is derived from ``valid_to`` against a day
+    (``states.effective_state``), and a pass spans garages in different
+    timezones, so WHICH day is the reader's call. The reader compares the two
+    valid days with its own day. A ``None`` bound is a bound the terms did not
+    state -- both are optional -- or terms the module cannot read, and the
+    second case is already named in ``unreadable``.
 
     **SORTED IN PYTHON, BY CODE POINT, NEVER BY ``ORDER BY``.** The database's
     collation orders text differently on macOS and on glibc for the same
@@ -949,9 +960,12 @@ def show_pass(
     ]
     registrations.sort(key=lambda r: (r["vehicle_identity"], r["effective_day"], r["garage"]))
     named = sorted(pass_.garage_ids)
+    terms = pass_.terms  # None on an unreadable pass: both bounds read None
     return {
         "pass": pass_external_id,
         "state": pass_.state.value,
+        "valid_from": terms.valid_from if terms is not None else None,
+        "valid_to": terms.valid_to if terms is not None else None,
         "garages": named,
         "garages_not_named": sorted({r["garage"] for r in registrations} - set(named)),
         "unreadable": pass_.unreadable,

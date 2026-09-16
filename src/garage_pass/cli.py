@@ -31,10 +31,11 @@ records who, when and why like a state change does), ``set-garage-enrols-at``
 no other), ``register-vehicle`` (one row per garage the pass names, together or
 not at all), ``end-registration``, ``set-state``,
 ``record-entry``, ``record-exit``, ``access-in-store``, ``show-pass`` (the one
-read of a pass: its state, its garages and every registration it holds,
-history included, sorted in Python by code point; it writes nothing, carries
-no holder, terms or label, and a pass or garage stored unreadable is still
-shown with the refusal named), and the enrolment:
+read of a pass: its state, its two valid days, its garages and every
+registration it holds, history included, sorted in Python by code point; it
+writes nothing, carries no holder, label or term beyond the two valid days,
+and a pass or garage stored unreadable is still shown with the refusal
+named), and the enrolment:
 ``issue-enrolment`` (mint the QR for a pass: the token is printed ONCE, here,
 and by nothing else), ``redeem-enrolment`` (the lane presents the QR with the
 vehicle identity it measured: the bind, and the access answer for that same
@@ -214,8 +215,8 @@ def _parser() -> argparse.ArgumentParser:
     s.add_argument("--at", required=True)
     s = store("access-in-store", "the access answer, from the store")
     _movement(s)
-    s = store("show-pass", "read a pass: its state, its garages and every registration it "
-              "holds, history included; writes nothing")
+    s = store("show-pass", "read a pass: its state, its valid days, its garages and every "
+              "registration it holds, history included; writes nothing")
     s.add_argument("--pass-id", required=True)
 
     def credential(name: str, help_: str, id_option: str) -> argparse.ArgumentParser:
