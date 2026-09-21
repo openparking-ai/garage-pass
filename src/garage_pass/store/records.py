@@ -974,6 +974,96 @@ def show_pass(
     }
 
 
+def show_garage_register(cursor: Any, tenant_id: Any, garage_external_id: str) -> dict:
+    """THE ONE READ OF A GARAGE'S REGISTER: every registration recorded AT THIS
+    GARAGE -- history included, ended rows too -- each as the identity as
+    stored, the pass it names, ``effective_day``, ``end_day`` and
+    ``ended_reason``; and, for every pass those rows name, the pass id, its
+    stored state and the two days its terms bound it with (``valid_from`` and
+    ``valid_to``, or ``None``). Nothing else: no holder, no label, no term
+    beyond the two valid days, nothing from ``enrolments`` or
+    ``holder_links``, and not the pass's other garages -- a reader that asks
+    at a garage needs to know WHICH vehicles a pass holds here and WHEN the
+    pass covers, not HOW, and personal data it does not need does not travel.
+    It writes nothing.
+
+    **IT ANSWERS THE QUESTION ``show_pass`` CANNOT**: that read takes one pass
+    and shows it whole; a reader that has to hold every entitlement at a
+    garage -- a lane refreshing what it decides from -- would have to know
+    every pass id first, and nothing told it. So the rows are selected BY THE
+    GARAGE, ``vehicle_registrations`` by ``garage_id`` and nothing through the
+    garage set: a row at this garage whose pass does not name it, were one to
+    exist, is shown and its pass named in ``passes_not_naming_garage``. The
+    database says one cannot (``vehicle_registrations_garage_of_pass``,
+    migration 0004, RESTRICT); the read does not lean on that.
+
+    **THE GARAGE ARGUMENT IS THE SAME ONE EVERY STORE CALL TAKES**, and a
+    garage the tenant does not have is refused by name. But this is a READ,
+    and it uses no clock: a garage stored with a timezone the running system
+    does not carry refuses no read (``load_garage``, never
+    ``load_readable_garage``) and is named in ``unreadable_garage`` with the
+    refusal that makes it so; a pass stored unreadable (G17) is still shown,
+    state and rows, and its ``unreadable`` carries the refusal. A read that
+    refused on unreadable data would hide exactly the rows a reader most
+    needs to see.
+
+    **THE READ USES NO CLOCK, SO IT DERIVES NO ``expired`` AND DROPS NO ENDED
+    ROW.** The stored state is what is shown; the reader compares
+    ``valid_from``, ``valid_to``, ``effective_day`` and ``end_day`` with its
+    own day, which is the reader's call at a garage in its own zone.
+
+    **SORTED IN PYTHON, BY CODE POINT, NEVER BY ``ORDER BY``.** The database's
+    collation orders text differently on macOS and on glibc for the same
+    ``en_US.UTF-8`` name, and a reader on another machine must get the same
+    bytes for the same rows. The registrations are sorted here on (identity,
+    effective day, pass external id) and the passes on their id; the queries
+    carry no ORDER BY.
+    """
+    tenant_uuid = as_uuid(tenant_id)
+    garage_uuid, garage = load_garage(cursor, tenant_uuid, garage_external_id)
+    cursor.execute(
+        "SELECT r.vehicle_identity, r.pass_id, p.external_id, r.effective_day, r.end_day, "
+        "r.ended_reason "
+        "FROM vehicle_registrations r "
+        "JOIN passes p ON p.tenant_id = r.tenant_id AND p.id = r.pass_id "
+        "WHERE r.tenant_id = %s AND r.garage_id = %s",
+        (tenant_uuid, garage_uuid),
+    )
+    rows = cursor.fetchall()
+    registrations = [
+        {"vehicle_identity": identity, "pass": pass_ext, "effective_day": effective,
+         "end_day": end, "ended_reason": reason}
+        for identity, _pass_uuid, pass_ext, effective, end, reason in rows
+    ]
+    registrations.sort(key=lambda r: (r["vehicle_identity"], r["effective_day"], r["pass"]))
+    named: dict[str, UUID] = {pass_ext: as_uuid(pass_uuid) for _i, pass_uuid, pass_ext, *_r in rows}
+    passes = []
+    not_naming = []
+    for pass_ext in sorted(named):
+        cursor.execute(
+            _PASS_COLUMNS + "WHERE p.tenant_id = %s AND p.id = %s", (tenant_uuid, named[pass_ext]),
+        )
+        pass_ = _pass_from_row(cursor, tenant_uuid, pass_ext, cursor.fetchone())
+        bounds = pass_.terms  # None on an unreadable pass: both days read None
+        passes.append({
+            "pass": pass_ext,
+            "state": pass_.state.value,
+            "valid_from": bounds.valid_from if bounds is not None else None,
+            "valid_to": bounds.valid_to if bounds is not None else None,
+            "unreadable": pass_.unreadable,
+        })
+        # a pass that does not name this garage -- the row the constraint forbids
+        if pass_.garage_ids.isdisjoint({garage_external_id}):
+            not_naming.append(pass_ext)
+    return {
+        "garage": garage_external_id,
+        "unreadable_garage": garage.unreadable,
+        "passes": passes,
+        "passes_not_naming_garage": not_naming,
+        "registrations": registrations,
+    }
+
+
 # ---------------------------------------------------------------------------
 # visits — the ledger
 # ---------------------------------------------------------------------------

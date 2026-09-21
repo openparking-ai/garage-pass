@@ -35,7 +35,11 @@ read of a pass: its state, its two valid days, its garages and every
 registration it holds, history included, sorted in Python by code point; it
 writes nothing, carries no holder, label or term beyond the two valid days,
 and a pass or garage stored unreadable is still shown with the refusal
-named), and the enrolment:
+named), ``show-garage-register`` (the one read of a garage's register: every
+registration recorded at that garage, history included, and the state and
+two valid days of every pass those rows name -- the same rules as
+``show-pass``, selected by the garage so a reader need know no pass id
+first), and the enrolment:
 ``issue-enrolment`` (mint the QR for a pass: the token is printed ONCE, here,
 and by nothing else), ``redeem-enrolment`` (the lane presents the QR with the
 vehicle identity it measured: the bind, and the access answer for that same
@@ -218,6 +222,9 @@ def _parser() -> argparse.ArgumentParser:
     s = store("show-pass", "read a pass: its state, its valid days, its garages and every "
               "registration it holds, history included; writes nothing")
     s.add_argument("--pass-id", required=True)
+    store("show-garage-register", "read a garage's register: every registration recorded at "
+          "it, history included, and the state and valid days of every pass those rows name; "
+          "writes nothing")
 
     def credential(name: str, help_: str, id_option: str) -> argparse.ArgumentParser:
         s = store(name, help_)
@@ -685,6 +692,8 @@ def _run(args: argparse.Namespace) -> int:
                 )
             elif args.command == "show-pass":
                 out = records.show_pass(cursor, args.tenant, args.garage, args.pass_id)
+            elif args.command == "show-garage-register":
+                out = records.show_garage_register(cursor, args.tenant, args.garage)
             elif args.command == "end-registration":
                 out = records.end_registration(
                     cursor, args.tenant, args.garage, args.pass_id, args.vehicle,

@@ -106,6 +106,7 @@ G23 = "tests/test_g23_the_token_is_never_stored_and_never_rendered.py"
 G24 = "tests/test_g24_a_holder_link_writes_two_columns_and_nothing_else.py"
 G25 = "tests/test_g25_a_pass_answers_only_at_the_garages_it_names.py"
 G26 = "tests/test_g26_a_pass_is_read_whole_and_the_read_writes_nothing.py"
+G27 = "tests/test_g27_a_garages_register_is_read_whole_and_the_read_writes_nothing.py"
 MIGRATION = "migrations/0001_garages_passes_registrations_and_rls.sql"
 MIGRATION_0002 = "migrations/0002_garage_changes_are_recorded.sql"
 MIGRATION_0003 = "migrations/0003_enrolments_holder_links_and_where_a_garage_enrols.sql"
@@ -2235,6 +2236,149 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
         '        "windows": terms.windows if terms is not None else None,  # PLANTED\n',
         "one more term -- the windows -- travels: the 'nothing more' of F1 is unguarded without "
         "this",
+    ),
+    # ---- G27: the one read of a garage's register ---------------------------
+    "G27/history-dropped": (
+        G27, "store/records.py",
+        '        "WHERE r.tenant_id = %s AND r.garage_id = %s",\n'
+        '        (tenant_uuid, garage_uuid),\n',
+        '        "WHERE r.tenant_id = %s AND r.garage_id = %s AND r.end_day IS NULL",  # PLANTED\n'
+        '        (tenant_uuid, garage_uuid),\n',
+        "the read drops ended rows: the garage's register loses its history",
+    ),
+    "G27/sort-removed": (
+        G27, "store/records.py",
+        '    registrations.sort(key=lambda r: (r["vehicle_identity"], r["effective_day"], '
+        'r["pass"]))\n',
+        '    pass  # PLANTED: the database\'s own order, whatever it is\n',
+        "no sort: the rows come out in the heap's order, which the test's premise proves is "
+        "not the code-point order",
+    ),
+    "G27/sort-reversed": (
+        G27, "store/records.py",
+        '    registrations.sort(key=lambda r: (r["vehicle_identity"], r["effective_day"], '
+        'r["pass"]))\n',
+        '    registrations.sort(key=lambda r: (r["vehicle_identity"], r["effective_day"], '
+        'r["pass"]), reverse=True)  # PLANTED\n',
+        "the order is deterministic but not the published one",
+    ),
+    "G27/passes-unsorted": (
+        G27, "store/records.py",
+        "    for pass_ext in sorted(named):\n",
+        "    for pass_ext in sorted(named, reverse=True):  # PLANTED\n",
+        "the pass list is not in code-point order",
+    ),
+    "G27/read-writes": (
+        G27, "store/records.py",
+        "    for pass_ext in sorted(named):\n",
+        "    cursor.execute(\"UPDATE garages SET transient_available = NOT transient_available "
+        "WHERE tenant_id = %s AND id = %s\", (tenant_uuid, garage_uuid))  # PLANTED: a read that "
+        "writes\n"
+        "    for pass_ext in sorted(named):\n",
+        "the read touches a row: the digests of every table before and after differ",
+    ),
+    "G27/label-travels": (
+        G27, "store/records.py",
+        '            "unreadable": pass_.unreadable,\n',
+        '            "unreadable": pass_.unreadable,\n'
+        '            "label": pass_.label,  # PLANTED\n',
+        "one more key per pass: the label, which the reader does not need, travels",
+    ),
+    "G27/other-garages-travel": (
+        G27, "store/records.py",
+        '            "unreadable": pass_.unreadable,\n',
+        '            "unreadable": pass_.unreadable,\n'
+        '            "garages": sorted(pass_.garage_ids),  # PLANTED\n',
+        "the pass's other garages travel: a reader at one garage learns the pass's whole set",
+    ),
+    "G27/unreadable-pass-refuses": (
+        G27, "store/records.py",
+        '        bounds = pass_.terms  # None on an unreadable pass: both days read None\n'
+        '        passes.append({\n',
+        '        if pass_.unreadable is not None:  # PLANTED: refuses on unreadable data\n'
+        '            raise Refused(pass_.unreadable.code, pass_.unreadable.field, "PLANTED")\n'
+        '        bounds = pass_.terms  # None on an unreadable pass: both days read None\n'
+        '        passes.append({\n',
+        "a pass stored unreadable is refused instead of shown",
+    ),
+    "G27/unreadable-garage-refuses": (
+        G27, "store/records.py",
+        "    garage_uuid, garage = load_garage(cursor, tenant_uuid, garage_external_id)\n"
+        "    cursor.execute(\n"
+        '        "SELECT r.vehicle_identity, r.pass_id, p.external_id, ',
+        "    garage_uuid, garage = load_readable_garage(cursor, tenant_uuid, "
+        "garage_external_id)  # PLANTED\n"
+        "    cursor.execute(\n"
+        '        "SELECT r.vehicle_identity, r.pass_id, p.external_id, ',
+        "the read goes through the write-side loader: an unreadable garage refuses the read",
+    ),
+    "G27/tenant-predicate": (
+        G27, "store/records.py",
+        '        "WHERE tenant_id = %s AND external_id = %s",\n'
+        '        (as_uuid(tenant_id), external_id),\n',
+        '        "WHERE external_id = %s",  # PLANTED: any tenant\'s garage\n'
+        '        (external_id,),\n',
+        "the garage is looked up by id alone: with row-level security off, one tenant reads "
+        "the other's register (with it on, the policy still holds -- which is why the test "
+        "runs both ways)",
+    ),
+    "G27/through-the-set": (
+        G27, "store/records.py",
+        '        "JOIN passes p ON p.tenant_id = r.tenant_id AND p.id = r.pass_id "\n'
+        '        "WHERE r.tenant_id = %s AND r.garage_id = %s",',
+        '        "JOIN passes p ON p.tenant_id = r.tenant_id AND p.id = r.pass_id "\n'
+        '        "JOIN pass_garages pg ON pg.tenant_id = r.tenant_id AND pg.pass_id = r.pass_id "\n'
+        '        "AND pg.garage_id = r.garage_id "  # PLANTED: through the set\n'
+        '        "WHERE r.tenant_id = %s AND r.garage_id = %s",',
+        "the rows are selected through the pass's garage set: a row whose pass does not name "
+        "the garage is silently dropped",
+    ),
+    "G27/not-naming-unnamed": (
+        G27, "store/records.py",
+        "        if pass_.garage_ids.isdisjoint({garage_external_id}):\n",
+        "        if False:  # PLANTED: a pass that does not name the garage is never named\n",
+        "a row whose pass does not name the garage is shown but the pass is not named",
+    ),
+    "G27/garage-of-pass-constraint": (
+        G27, MIGRATION_0004,
+        source(
+            "ALTER TABLE vehicle_registrations",
+            "  ADD CONSTRAINT vehicle_registrations_garage_of_pass",
+            "    FOREIGN KEY (tenant_id, pass_id, garage_id)",
+            "    REFERENCES pass_garages (tenant_id, pass_id, garage_id) ON DELETE RESTRICT;",
+        ),
+        "-- PLANTED: no constraint ties a registration's garage to the pass's set",
+        "the constraint is gone: a raw insert at a garage the pass does not name is accepted",
+    ),
+    "G27/valid-to-dropped": (
+        G27, "store/records.py",
+        '            "valid_to": bounds.valid_to if bounds is not None else None,\n',
+        '            "valid_to": None,  # PLANTED: the end of the range never travels\n',
+        "valid_to is always null: a pass past its end reads like a live one",
+    ),
+    "G27/valid-from-dropped": (
+        G27, "store/records.py",
+        '            "valid_from": bounds.valid_from if bounds is not None else None,\n',
+        '            "valid_from": None,  # PLANTED: the start of the range never travels\n',
+        "valid_from is always null: a pass not yet valid reads like a live one",
+    ),
+    "G27/state-derived": (
+        G27, "store/records.py",
+        '            "state": pass_.state.value,\n',
+        '            "state": "expired" if bounds is not None and bounds.valid_to is not None '
+        'and bounds.valid_to < date(2026, 1, 1) else pass_.state.value,  # PLANTED: a clock\n',
+        "the read derives expired against a day it invented: the stored state is not what is "
+        "shown",
+    ),
+    "G23/show-garage-register-renders-digest": (
+        G23, "store/records.py",
+        "    for pass_ext in sorted(named):\n",
+        "    for pass_ext in sorted(named):\n"
+        '        cursor.execute("SELECT token_sha256 FROM enrolments WHERE tenant_id = %s AND '
+        'pass_id = %s", (tenant_uuid, named[pass_ext]))  # PLANTED\n'
+        '        not_naming.extend(d for (d,) in cursor.fetchall())\n',
+        "the register read renders the credential's digest: G23's rendered scan must see it in "
+        "the read's output (the positive control that the scan covers the verb)",
     ),
     "G23/show-pass-renders-digest": (
         G23, "store/records.py",

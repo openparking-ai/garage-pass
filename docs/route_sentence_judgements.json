@@ -414,10 +414,10 @@
   "why": "CONTRACT's authored copy of the G20 registry claim: Garage.__post_init__, set_garage_enrols_at, and the CHECK exercised by a raw INSERT and UPDATE as the owner"
  },
  {
-  "sentence": "Against the store (``GARAGE_PASS_DSN``, ``--tenant``): ``create-garage``, ``set-garage-timezone`` (the repair for a garage stored with a timezone the system does not carry -- the one write that takes an unreadable garage, and it records who, when and why like a state change does), ``set-garage-enrols-at`` (where a garage enrols -- entry or exit -- recorded the same way), ``create-pass`` (the document's ``garage_ids`` names one or more garages, and ``--garage`` is one of them; the pass answers at every garage it names and at no other), ``register-vehicle`` (one row per garage the pass names, together or not at all), ``end-registration``, ``set-state``, ``record-entry``, ``record-exit``, ``access-in-store``, ``show-pass`` (the one read of a pass: its state, its two valid days, its garages and every registration it holds, history included, sorted in Python by code point; it writes nothing, carries no holder, label or term beyond the two valid days, and a pass or garage stored unreadable is still shown with the refusal named), and the enrolment: ``issue-enrolment`` (mint the QR for a pass: the token is printed ONCE, here, and by nothing else), ``redeem-enrolment`` (the lane presents the QR with the vehicle identity it measured: the bind, and the access answer for that same movement -- always, refused or not; exit status follows the answer's outcome, and the enrolment half is in the JSON), ``issue-holder-link`` and ``redeem-holder-link`` (the holder writes their own name and phone onto the pass and gets their QR).",
+  "sentence": "Against the store (``GARAGE_PASS_DSN``, ``--tenant``): ``create-garage``, ``set-garage-timezone`` (the repair for a garage stored with a timezone the system does not carry -- the one write that takes an unreadable garage, and it records who, when and why like a state change does), ``set-garage-enrols-at`` (where a garage enrols -- entry or exit -- recorded the same way), ``create-pass`` (the document's ``garage_ids`` names one or more garages, and ``--garage`` is one of them; the pass answers at every garage it names and at no other), ``register-vehicle`` (one row per garage the pass names, together or not at all), ``end-registration``, ``set-state``, ``record-entry``, ``record-exit``, ``access-in-store``, ``show-pass`` (the one read of a pass: its state, its two valid days, its garages and every registration it holds, history included, sorted in Python by code point; it writes nothing, carries no holder, label or term beyond the two valid days, and a pass or garage stored unreadable is still shown with the refusal named), ``show-garage-register`` (the one read of a garage's register: every registration recorded at that garage, history included, and the state and two valid days of every pass those rows name -- the same rules as ``show-pass``, selected by the garage so a reader need know no pass id first), and the enrolment: ``issue-enrolment`` (mint the QR for a pass: the token is printed ONCE, here, and by nothing else), ``redeem-enrolment`` (the lane presents the QR with the vehicle identity it measured: the bind, and the access answer for that same movement -- always, refused or not; exit status follows the answer's outcome, and the enrolment half is in the JSON), ``issue-holder-link`` and ``redeem-holder-link`` (the holder writes their own name and phone onto the pass and gets their QR).",
   "file": "src/garage_pass/cli.py",
   "verdict": "NOT-PUBLISHED",
-  "why": "cli module docstring (G2 rewrite of the judged verb list): the timezone repair is still the one write an unreadable garage takes -- set_garage_enrols_at, issue_*, redeem_holder_link go through load_readable_garage and redeem_enrolment carries the refusal (G17's derived write list exercises every one); the token is printed by the issue calls and by nothing else (G23) (G3a rewrite: create-pass's garage_ids and register-vehicle's per-garage rows, measured by G25 and the G25 walk) (G3b rewrite: show-pass added to the verb list -- the one read, measured by G26) (G3b fix: show-pass carries the two valid days -- G26)"
+  "why": "cli module docstring (G2 rewrite of the judged verb list): the timezone repair is still the one write an unreadable garage takes -- set_garage_enrols_at, issue_*, redeem_holder_link go through load_readable_garage and redeem_enrolment carries the refusal (G17's derived write list exercises every one); the token is printed by the issue calls and by nothing else (G23) (G3a rewrite: create-pass's garage_ids and register-vehicle's per-garage rows, measured by G25 and the G25 walk) (G3b rewrite: show-pass added to the verb list -- the one read, measured by G26) (G3b fix: show-pass carries the two valid days -- G26) (G27: show-garage-register added to the verb list -- the one read of a garage's register, selected by the garage; measured by G27, and G17's derived read list carries it past an unreadable garage)"
  },
  {
   "sentence": "The detail names the garage and the pass's own set; the database's key backs it for a raw write.",
@@ -526,5 +526,29 @@
   "file": "tests/_guarantees.py",
   "verdict": "TRUE",
   "why": "G26: measured -- the raw insert outside the set is refused naming vehicle_registrations_garage_of_pass and the membership DELETE is refused by the same name; a row planted past the constraint (triggers disabled) is shown; the unreadable pass and the unreadable garage are shown and named (G26 tests); the three refusals are asserted as data beside a shown control"
+ },
+ {
+  "sentence": "But this is a READ, and it uses no clock: a garage stored with a timezone the running system does not carry refuses no read (``load_garage``, never ``load_readable_garage``) and is named in ``unreadable_garage`` with the refusal that makes it so; a pass stored unreadable (G17) is still shown, state and rows, and its ``unreadable`` carries the refusal.",
+  "file": "src/garage_pass/store/records.py",
+  "verdict": "TRUE",
+  "why": "show_garage_register docstring (G27): the read loads the garage through load_garage and names it in unreadable_garage -- measured by G27 (the garage stored 'Mars/Olympus' is read and named, a write at it refuses) and by G17's derived read list; the unreadable pass is G17's raw row, shown by G27 with its code; the G27/unreadable-garage-refuses and G27/unreadable-pass-refuses controls plant the opposite"
+ },
+ {
+  "sentence": "A pass stored unreadable (G17) is still shown -- state and rows -- and its unreadable field is named with its code; the garage itself stored with a timezone the running system does not carry stops no read, since the read uses no clock: the register is shown and the garage is named in unreadable_garage with its code.",
+  "file": "tests/_guarantees.py",
+  "verdict": "TRUE",
+  "why": "G27: measured by test_a_pass_stored_unreadable_is_still_shown_and_the_field_is_named and test_the_garage_stored_with_a_zone_the_system_does_not_carry_stops_no_read, each with a write refusing as the control; planted red by G27/unreadable-pass-refuses and G27/unreadable-garage-refuses"
+ },
+ {
+  "sentence": "A garage the tenant does not have, or that exists only at another tenant, is refused by name as every store verb refuses it; a garage with no registration answers an empty register, never a refusal.",
+  "file": "tests/_guarantees.py",
+  "verdict": "TRUE",
+  "why": "G27: load_garage's REFUSAL_GARAGE_NOT_FOUND, measured by the no-such-garage test and by the third tenant in the two-tenant test (row policy on and off); the empty register is measured at ELSEWHERE, exit 0, through the library and the command line"
+ },
+ {
+  "sentence": "The garage itself stored with a timezone the system does not carry stops no read and is named in `unreadable_garage`; a garage with no registration answers an empty register, never a refusal; a garage the tenant does not have is refused by name.",
+  "file": "README.md",
+  "verdict": "TRUE",
+  "why": "README (G27): the same three claims as the G27 sentences above, measured by the same tests"
  }
 ]
