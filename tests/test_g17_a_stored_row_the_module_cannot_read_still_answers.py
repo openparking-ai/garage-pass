@@ -384,10 +384,11 @@ REPAIR = "set_garage_timezone"
 WHO_WHEN_WHY = dict(by="operator", at=NOON_MONDAY, reason="stored from a laptop, fixed")
 
 
-#: The ONE read that takes a garage's external id like a write does (G26's
-#: ``show_pass``): it is in the derived list below and is exercised apart --
-#: it must get PAST the unreadable garage, where every write stops at it.
-READS_AGAINST_A_GARAGE = ("show_pass",)
+#: The TWO reads that take a garage's external id like a write does (G26's
+#: ``show_pass`` and G27's ``show_garage_register``): they are in the derived
+#: list below and are exercised apart -- each must get PAST the unreadable
+#: garage, where every write stops at it.
+READS_AGAINST_A_GARAGE = ("show_garage_register", "show_pass")
 
 
 def writes_against_a_garage() -> list[str]:
@@ -473,6 +474,14 @@ def test_every_write_against_an_unreadable_garage_is_refused_by_name_and_the_rep
     app.rollback()
     assert read_refused.value.code == f.REFUSAL_PASS_NOT_FOUND, read_refused.value
     assert "Mars/Olympus" not in read_refused.value.detail
+    # the other READ: the garage's register is shown -- empty, since no pass was
+    # ever created here -- and the garage is named unreadable with its code
+    with tenant(app, tenant_id) as cursor:
+        register = records.show_garage_register(cursor, tenant_id, "g-badtz")
+    app.rollback()
+    assert register["registrations"] == [] and register["passes"] == []
+    assert register["unreadable_garage"].code == f.REFUSAL_TIMEZONE_UNKNOWN
+    assert "Mars/Olympus" in register["unreadable_garage"].detail
     for name, call in calls.items():
         with pytest.raises(f.Refused) as refused:
             with tenant(app, tenant_id) as cursor:

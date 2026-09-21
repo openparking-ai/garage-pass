@@ -108,7 +108,8 @@ def test_the_plaintext_is_rendered_by_the_issue_calls_and_by_nothing_else(
     """Everything rendered since this test began -- every Answer, every printed
     refusal (the suite's collector) and every line the command line printed --
     holds the tokens only in the two issue outputs -- and the pass read
-    (``show-pass``) renders neither a token nor its digest."""
+    (``show-pass``) and the garage's register read (``show-garage-register``)
+    render neither a token nor its digest."""
     from _rendered_sentences import rendered_so_far
     from garage_pass.cli import main
 
@@ -170,6 +171,11 @@ def test_the_plaintext_is_rendered_by_the_issue_calls_and_by_nothing_else(
     assert read["status"] == 0 and '"registrations"' in read["printed"]
     for name, needle in (("enrolment", digest(token)), ("link", digest(link_token))):
         assert needle not in read["printed"], f"the read rendered the {name} digest"
+    # and the one READ of a garage's register (G27), the same way
+    register = run(["show-garage-register", *T])
+    assert register["status"] == 0 and '"registrations"' in register["printed"]
+    for name, needle in (("enrolment", digest(token)), ("link", digest(link_token))):
+        assert needle not in register["printed"], f"the register read rendered the {name} digest"
     with tenant(app, tenant_id) as cursor:
         change_state(cursor, tenant_id, TRANSIENT_ENTRY.id, pass_.id, State.REVOKED, by="o",
                      at=at(date(2026, 6, 2), 9), reason="divorced")

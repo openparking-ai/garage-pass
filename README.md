@@ -41,6 +41,7 @@ $ garage-pass record-entry --tenant T --garage garage-downtown --pass-id pass-1 
 $ garage-pass access-in-store --tenant T --garage garage-downtown \
       --vehicle CAR-1 --lane L1 --direction exit --at 2026-06-01T12:00:00-06:00
 $ garage-pass show-pass --tenant T --garage garage-downtown --pass-id pass-1
+$ garage-pass show-garage-register --tenant T --garage garage-downtown
 ```
 
 ## What a pass is
@@ -184,6 +185,28 @@ the set whose timezone the running system does not carry stops no read, and is
 named. The same `--garage` every store command takes: a garage the pass does not
 name is refused naming the set (G25 — the read is not a way to look a pass up
 from a garage it does not answer at).
+
+### Reading a garage's register
+
+`show-garage-register` is the one read of a garage's register, for any reader,
+and it answers the question `show-pass` cannot: a reader that has to hold
+every entitlement at a garage — a lane refreshing what it decides from — was
+never told a pass id. It takes the two arguments every store command takes
+(`--tenant`, `--garage`) and prints **every** registration recorded at that
+garage, history included — ended rows too — each as the identity as recorded,
+the pass's id, `effective_day`, `end_day` and `ended_reason`; and, for every
+pass those rows name, the pass id, its stored state and its two valid days. The
+same rules as `show-pass`, and one more thing that does not travel: the pass's
+*other* garages — a reader at one garage learns which vehicles a pass holds
+there and when it covers, not where else it answers. The rows are selected by
+the garage alone, never through the pass's garage set; a row whose pass does
+not name the garage, were one to exist, is shown and its pass named in
+`passes_not_naming_garage`. It writes nothing, uses no clock, derives no
+`expired` and drops no ended row — the reader compares the four days with its
+own. The garage itself stored with a timezone the system does not carry stops
+no read and is named in `unreadable_garage`; a garage with no registration
+answers an empty register, never a refusal; a garage the tenant does not have
+is refused by name.
 
 ## The answer
 
