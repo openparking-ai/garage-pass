@@ -376,7 +376,9 @@ guarantee whose test did not run is not a guarantee.
 
 ## Licence
 
-AGPL-3.0. Contributions need a signed CLA — see [CONTRIBUTING.md](CONTRIBUTING.md).
+AGPL-3.0.
+
+Open Parking AI does not accept outside contributions. Pull requests, issues and comments are limited to the maintainers.
 
 ---
 
