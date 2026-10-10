@@ -167,6 +167,11 @@ class Registration:
     vehicle_identity: str
     effective_day: date
     end_day: date | None = None
+    #: The car was REPLACED on this pass by another car: it is not covered for
+    #: an entry, and at an exit the pass still covers it, so a car left inside
+    #: can leave. The store derives it from the car's QR (migration 0005); it is
+    #: never a second copy of that fact.
+    exit_only: bool = False
 
     def __post_init__(self) -> None:
         # Every field against its declared type, derived from the annotation

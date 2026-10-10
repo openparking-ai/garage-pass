@@ -242,9 +242,28 @@ def _parser() -> argparse.ArgumentParser:
     s.add_argument("--vehicle-description", help="the holder's own words for the car; decides "
                    "nothing")
     s = store("redeem-enrolment", "the lane presents the QR with the identity it measured: "
-              "the bind, and the access answer for the movement")
+              "the bind on first use, the car it is bound to after that, and the access answer "
+              "for the movement")
     s.add_argument("--token", required=True, help="what the QR carried, or the bare token")
     _movement(s)
+    s = store("replace-car", "replace the car on a pass in one step: the named QR's car stops "
+              "entering and keeps leaving (a QR that never bound is cancelled), and a new QR for "
+              "the replacement car is issued on the same pass; its token is printed once, here")
+    s.add_argument("--enrolment-id", required=True, help="the QR of the car being replaced")
+    s.add_argument("--new-enrolment-id", required=True, help="the id of the new QR")
+    s.add_argument("--starts-on", required=True, help="the new QR's first local day, YYYY-MM-DD")
+    _days_valid(s)
+    s.add_argument("--vehicle-description", help="the holder's own words for the new car; "
+                   "decides nothing")
+    s.add_argument("--by", required=True, help="who replaced it")
+    s.add_argument("--reason", required=True, help="why, for the QR's record")
+    s.add_argument("--at", required=True, help="when, as an ISO instant with an offset")
+    s = store("cancel-code", "cancel one QR, bound or not; the pass, its other QRs and its "
+              "registrations stay as they are")
+    s.add_argument("--enrolment-id", required=True, help="the QR to cancel")
+    s.add_argument("--by", required=True, help="who cancelled it")
+    s.add_argument("--reason", required=True, help="why, for the QR's record")
+    s.add_argument("--at", required=True, help="when, as an ISO instant with an offset")
     credential("issue-holder-link", "mint the one-time link for a pass's holder; the token is "
                "printed once, here", "--link-id")
     s = store("redeem-holder-link", "the holder writes their own name and phone onto the pass "
@@ -575,7 +594,8 @@ def _redemption(redemption: Any) -> dict[str, Any]:
     collector reads it -- and the access answer for the movement. The token is
     not in it: a redemption never renders the credential."""
     enrolment: dict[str, Any] = {"enrolment": redemption.enrolment,
-                                 "redeemed": redemption.redeemed}
+                                 "redeemed": redemption.redeemed,
+                                 "recognised": redemption.recognised}
     if redemption.refusal is not None:
         enrolment.update(_refusal(redemption.refusal))
     else:
@@ -664,6 +684,19 @@ def _run(args: argparse.Namespace) -> int:
                 connection.commit()
                 _print(_redemption(redemption))
                 return EXIT_BY_OUTCOME[redemption.answer.outcome]
+            elif args.command == "replace-car":
+                out = enrolments.replace_car(
+                    cursor, args.tenant, args.garage, args.enrolment_id, args.new_enrolment_id,
+                    _day(args.starts_on, "--starts-on"),
+                    _whole_number(args.days_valid, "--days-valid"),
+                    by=args.by, at=_at(args.at), reason=args.reason,
+                    vehicle_description=args.vehicle_description,
+                )
+            elif args.command == "cancel-code":
+                out = enrolments.cancel_code(
+                    cursor, args.tenant, args.garage, args.enrolment_id,
+                    by=args.by, at=_at(args.at), reason=args.reason,
+                )
             elif args.command == "issue-holder-link":
                 out = enrolments.issue_holder_link(
                     cursor, args.tenant, args.garage, args.pass_id, args.link_id,

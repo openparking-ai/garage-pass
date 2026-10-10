@@ -102,9 +102,11 @@ answers first (without a clock nothing else can be read). Then the blank
 identity and lane. Then, at entry, the transient mode. Then which pass. Per
 pass: revoked outranks everything (revoked is revoked); then an unreadable
 pass (its expiry cannot be derived); then expiry, which is derived; then the
-typed state; then the terms: direction, lane, window, and -- at entry -- the
-visit allowance; at exit, the maximum stay. The first thing that fails is the
-reason; nothing after it is evaluated or reported.
+typed state; then, at entry, a car REPLACED on the pass (``EXIT_ONLY``: it
+leaves on the pass and does not enter on it); then the terms: direction, lane,
+window, and -- at entry -- the visit allowance; at exit, the maximum stay. The
+first thing that fails is the reason; nothing after it is evaluated or
+reported.
 """
 
 from __future__ import annotations
@@ -122,6 +124,7 @@ from garage_pass.findings import (
     DUPLICATED_GARAGE_ID,
     DUPLICATED_PASS_ID,
     EXIT_IS_NEVER_REFUSED,
+    EXIT_ONLY,
     EXPIRED,
     GARAGE_UNREADABLE,
     MEANS_COVERED,
@@ -458,6 +461,11 @@ def access(
             f"no registration of {identity!r} at garage {garage.id!r} on {today}.",
         )
 
+    # A car REPLACED on a pass enters on it no more and still leaves on it
+    # (``Registration.exit_only``). Read per pass from the registrations in
+    # force today; the exit half never consults it.
+    exit_only_on = {r.pass_id for r in effective if r.exit_only}
+
     def evaluate(pass_: Pass) -> Answer:
         """One pass, in the order that is the contract."""
         # --- the state ------------------------------------------------------
@@ -495,6 +503,13 @@ def access(
             return not_covered(
                 NOT_STARTED,
                 f"pass {pass_.id!r} valid_from {terms.valid_from} is after {today}.",
+                pass_,
+            )
+        if not is_exit and pass_.id in exit_only_on:
+            return not_covered(
+                EXIT_ONLY,
+                f"{identity!r} was replaced on pass {pass_.id!r} ({pass_.label}) by another "
+                "car; it may leave on the pass and not enter on it.",
                 pass_,
             )
 

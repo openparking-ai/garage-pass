@@ -550,5 +550,17 @@
   "file": "README.md",
   "verdict": "TRUE",
   "why": "README (G27): the same three claims as the G27 sentences above, measured by the same tests"
+ },
+ {
+  "sentence": "An enrolment binds one car on first use and then answers for that car; this refusal reaches an enrolment only when another lane bound it between this lane's read and its write.",
+  "file": "src/garage_pass/findings.py",
+  "verdict": "TRUE",
+  "why": "_present_bound refuses a bound QR WRONG_CAR/CANCELLED/EXIT_ONLY under the lock; ALREADY_USED for an enrolment is raised only by _spend's rowcount backstop (G19 test_the_backstop_holds_one_spend_with_the_lock_removed) and _one_row; the holder link keeps it from _refuse_unless_redeemable"
+ },
+ {
+  "sentence": "Asked only at the end this garage does not enrol at: a bound QR answers at both ends, so the wrong-end refusal is for a QR that has not bound yet.",
+  "file": "src/garage_pass/store/enrolments.py",
+  "verdict": "TRUE",
+  "why": "_is_bound is called only in redeem_enrolment's `direction.value != end` test; G19 test_a_bound_qr_keeps_working_for_its_own_car_in_and_out_and_writes_nothing presents a bound QR at both ends of all three garage shapes; G21 census keeps WRONG_END for every unbound situation at the other end"
  }
 ]

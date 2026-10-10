@@ -37,7 +37,7 @@ from enrolment_harness import (
 )
 from fixtures import at
 from garage_pass import findings as f
-from garage_pass.enrolment import digest
+from garage_pass.enrolment import digest, register_hash_of
 from garage_pass.passes import State
 from garage_pass.store.postgres import all_tables, tenant
 from garage_pass.store.records import change_state
@@ -154,7 +154,7 @@ def test_the_plaintext_is_rendered_by_the_issue_calls_and_by_nothing_else(
     assert redeemed["status"] == 0 and '"redeemed": true' in redeemed["printed"]
     used = run(["redeem-enrolment", *T, "--token", token, "--vehicle", "CAR-2", "--lane", "L1",
                 "--direction", "entry", "--at", "2026-06-02T12:00:00-06:00"])
-    assert '"REFUSAL_CREDENTIAL_ALREADY_USED"' in used["printed"]
+    assert '"REFUSAL_CREDENTIAL_WRONG_CAR"' in used["printed"]
     from_link = run(["redeem-holder-link", *T, "--token", link_token, "--name", "A Holder",
                      "--phone", "+1 555 0100", "--enrolment-id", "qr-from-link", "--starts-on",
                      "2026-06-01", "--days-valid", "3", "--at", "2026-06-01T12:00:00-06:00"])
@@ -164,6 +164,18 @@ def test_the_plaintext_is_rendered_by_the_issue_calls_and_by_nothing_else(
                      "1", "--enrolment-id", "qr-2", "--starts-on", "2026-06-01", "--days-valid",
                      "3", "--at", "2026-06-01T12:00:00-06:00"])
     assert '"REFUSAL_CREDENTIAL_ALREADY_USED"' in used_link["printed"]
+    # the two writes on one QR (0005): replace-car ISSUES and returns the new QR's
+    # token -- the one return -- and renders neither the old one's nor its digest;
+    # cancel-code renders no token at all
+    replaced = run(["replace-car", *T, "--enrolment-id", "qr-cli", "--new-enrolment-id",
+                    "qr-replacement", "--starts-on", "2026-06-02", "--days-valid", "3", "--by",
+                    "desk", "--reason", "rental swapped", "--at", "2026-06-02T08:00:00-06:00"])
+    assert replaced["status"] == 0, replaced["printed"]
+    replacement_token = json.loads(replaced["printed"])["new"]["token"]
+    assert digest(token) not in replaced["printed"]
+    cancelled_one = run(["cancel-code", *T, "--enrolment-id", "qr-replacement", "--by", "desk",
+                         "--reason", "never received", "--at", "2026-06-02T08:05:00-06:00"])
+    assert cancelled_one["status"] == 0, cancelled_one["printed"]
     # the one READ of a pass (G26) is a door too: it renders neither the
     # plaintext (the loop below reads its output with every other command's)
     # nor the digest -- nothing from the credential tables travels
@@ -174,8 +186,14 @@ def test_the_plaintext_is_rendered_by_the_issue_calls_and_by_nothing_else(
     # and the one READ of a garage's register (G27), the same way
     register = run(["show-garage-register", *T])
     assert register["status"] == 0 and '"registrations"' in register["printed"]
-    for name, needle in (("enrolment", digest(token)), ("link", digest(link_token))):
+    for name, needle in (("enrolment", digest(token)), ("link", digest(link_token)),
+                         ("replacement", digest(replacement_token))):
         assert needle not in register["printed"], f"the register read rendered the {name} digest"
+    # its positive control: the register DOES carry each QR, by its register hash (the
+    # hash of the digest), which is what a lane matches -- so the scan above reads the
+    # very output the QRs are in
+    for needle in (register_hash_of(token), register_hash_of(replacement_token)):
+        assert needle in register["printed"], "the register lost a QR's register hash"
     with tenant(app, tenant_id) as cursor:
         change_state(cursor, tenant_id, TRANSIENT_ENTRY.id, pass_.id, State.REVOKED, by="o",
                      at=at(date(2026, 6, 2), 9), reason="divorced")
@@ -188,11 +206,13 @@ def test_the_plaintext_is_rendered_by_the_issue_calls_and_by_nothing_else(
         assert not any(isinstance(v, str) and (token in v or link_token in v)
                        for v in vars(read).values()), f"a read of the {kind} carried a token"
     # THE RENDERED SCAN, and its positive control: the scan sees the token where it IS returned
-    tokens = {"enrolment token": token, "link token": link_token, "second token": second_token}
+    tokens = {"enrolment token": token, "link token": link_token, "second token": second_token,
+              "replacement token": replacement_token}
     for name, needle in tokens.items():
         where = [command for command, text in printed if needle in text]
         expected = {"enrolment token": ["issue-enrolment"], "link token": ["issue-holder-link"],
-                    "second token": ["redeem-holder-link"]}[name]
+                    "second token": ["redeem-holder-link"],
+                    "replacement token": ["replace-car"]}[name]
         assert where == expected, f"the {name} was printed by {where}"
         rendered = [d for d, _stack in rendered_so_far()[started:] if needle in d]
         assert rendered == [], f"the {name} reached a rendered detail: {rendered}"

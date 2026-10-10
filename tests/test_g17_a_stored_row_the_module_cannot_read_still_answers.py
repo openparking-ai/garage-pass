@@ -460,6 +460,12 @@ def test_every_write_against_an_unreadable_garage_is_refused_by_name_and_the_rep
             c, tenant_id, "g-badtz", "no-such-token", name="A", phone="1",
             enrolment_external_id="e-1", starts_on=date(2026, 6, 1), days_valid=3,
             at=NOON_MONDAY),
+        # 0005: the two writes on one QR
+        "replace_car": lambda c: enrolments.replace_car(
+            c, tenant_id, "g-badtz", "e-1", "e-2", date(2026, 6, 1), 3, by="desk",
+            at=NOON_MONDAY, reason="rental swapped"),
+        "cancel_code": lambda c: enrolments.cancel_code(
+            c, tenant_id, "g-badtz", "e-1", by="desk", at=NOON_MONDAY, reason="never received"),
     }
     # the redemption is the one write that CARRIES its refusal instead of raising
     # it, because the lane must still be answered: exercised below on its own
@@ -479,7 +485,7 @@ def test_every_write_against_an_unreadable_garage_is_refused_by_name_and_the_rep
     with tenant(app, tenant_id) as cursor:
         register = records.show_garage_register(cursor, tenant_id, "g-badtz")
     app.rollback()
-    assert register["registrations"] == [] and register["passes"] == []
+    assert register["registrations"] == [] and register["passes"] == [] and register["codes"] == []
     assert register["unreadable_garage"].code == f.REFUSAL_TIMEZONE_UNKNOWN
     assert "Mars/Olympus" in register["unreadable_garage"].detail
     for name, call in calls.items():

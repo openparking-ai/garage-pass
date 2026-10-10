@@ -34,11 +34,18 @@ product's number is three ("one-time use, valid 3 days from the starting
 day"); it is documented, never defaulted: ``days_valid`` is STATED, and
 ``require_days_valid`` refuses an absent one by name.
 
-**ONE QR PER CAR.** A redeemed enrolment is TERMINAL and binds exactly one
-vehicle identity. Several outstanding enrolments on one pass are allowed and
-intended -- a pass may carry several vehicles -- and each redeems to one car
-and dies. Nobody should build a one-outstanding-per-pass rule: his pooling
-forbids it.
+**ONE QR PER CAR, AND IT KEEPS WORKING FOR THAT CAR.** A redeemed enrolment
+is BOUND to exactly one vehicle identity, the one the lane measured at its
+first use. Shown again by that car it answers for that car, in and out, for as
+long as the pass covers it -- the car is recognised after its first entry and
+the QR stays its backup, so a lane that reads no identity at all is answered
+for the car the QR is bound to. Shown by a different car it is refused by name
+(wrong car), never "already used". Several outstanding enrolments on one pass
+are allowed and intended -- a pass may carry several vehicles -- and each binds
+one car. Nobody should build a one-outstanding-per-pass rule: his pooling
+forbids it. A bound QR whose car was replaced on the pass is EXIT ONLY: it
+answers at an exit and is refused at an entry (migration 0005). A holder link
+is still used once.
 """
 
 from __future__ import annotations
@@ -106,6 +113,22 @@ def mint() -> MintedToken:
 def digest(token: str) -> str:
     """The SHA-256 hex digest of a token -- the only form the store compares."""
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def register_hash(token_sha256: str) -> str:
+    """What a garage's register publishes for a QR: the SHA-256 of its stored
+    digest (the hex text), so a lane that caches the register can decide on a
+    QR with no database -- it hashes the token it read twice and looks the
+    result up. ONE-WAY TWICE: the register yields no working QR, and it is
+    never the digest the row holds, so a copy of the register matches no
+    stored value either (G23: the digest is never rendered)."""
+    return hashlib.sha256(token_sha256.encode("ascii")).hexdigest()
+
+
+def register_hash_of(presented: str) -> str:
+    """The lane's half: the register hash of what a QR carried (the payload or
+    the bare token)."""
+    return register_hash(digest(token_of(presented)))
 
 
 def payload_of(token: str) -> str:
@@ -214,6 +237,12 @@ class Credential:
     redeemed_at: datetime | None = None
     cancelled_at: datetime | None = None
     cancelled_reason: str | None = None
+    #: The car this enrolment is bound to, once it was used; None before, and
+    #: always None for a holder link. Kept when the enrolment is cancelled.
+    bound_identity: str | None = None
+    #: When the bound car was replaced on the pass: from then the QR opens no
+    #: entry and still answers at an exit. Enrolments only.
+    exit_only_at: datetime | None = None
 
     def __post_init__(self) -> None:
         require_typed(self)

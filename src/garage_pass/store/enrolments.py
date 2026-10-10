@@ -131,11 +131,14 @@ from garage_pass.enrolment import (
 from garage_pass.findings import (
     REFUSAL_CONSTRAINT,
     REFUSAL_CREDENTIAL_ALREADY_EXISTS,
+    REFUSAL_CREDENTIAL_ALREADY_REPLACED,
     REFUSAL_CREDENTIAL_ALREADY_USED,
     REFUSAL_CREDENTIAL_CANCELLED,
+    REFUSAL_CREDENTIAL_EXIT_ONLY,
     REFUSAL_CREDENTIAL_EXPIRED,
     REFUSAL_CREDENTIAL_NOT_STARTED,
     REFUSAL_CREDENTIAL_UNKNOWN,
+    REFUSAL_CREDENTIAL_WRONG_CAR,
     REFUSAL_DIRECTION_OUTSIDE_THE_PASS_TERMS,
     REFUSAL_ENROLMENT_AT_WRONG_END,
     REFUSAL_FIELD_BLANK,
@@ -180,6 +183,7 @@ class Redemption:
 
     #: The enrolment's external id, once the token matched one; None before.
     enrolment: str | None
+    #: True only on the FIRST use: the QR bound the car now.
     redeemed: bool
     #: The named refusal when ``redeemed`` is False. Nothing was written.
     refusal: Refused | None
@@ -191,6 +195,11 @@ class Redemption:
     #: The access answer for this same movement, from the module's own access
     #: path -- on the rows as written, or as they stood when refused.
     answer: Answer
+    #: True when an ALREADY-BOUND QR was shown by its own car (or by a car
+    #: whose identity the lane could not read: the QR vouches for the car it is
+    #: bound to). Nothing is written; the answer is the access answer for that
+    #: car. ``redeemed`` is False: nothing was bound now.
+    recognised: bool = False
 
 
 def _require_day(value: object, field: str) -> date:
@@ -365,11 +374,13 @@ class PassGarages:
 def _credential_from_row(kind: str, row: tuple) -> tuple[UUID, UUID, PassGarages, Credential]:
     (uuid, pass_uuid, garage_uuids, garage_exts, pass_ext, ext, starts_on, days_valid, state,
      issued_by, issued_at, redeemed_at, cancelled_at, cancelled_reason, *rest) = row
+    description, bound, exit_only_at = rest if rest else (None, None, None)
     credential = Credential(
         kind=kind, id=ext, pass_id=pass_ext, starts_on=starts_on, days_valid=days_valid,
         state=CredentialState(state), issued_by=issued_by, issued_at=issued_at,
-        vehicle_description=rest[0] if rest else None, redeemed_at=redeemed_at,
+        vehicle_description=description, redeemed_at=redeemed_at,
         cancelled_at=cancelled_at, cancelled_reason=cancelled_reason,
+        bound_identity=bound, exit_only_at=exit_only_at,
     )
     garages = PassGarages(
         uuids=frozenset(as_uuid(u) for u in (garage_uuids or ())),
@@ -379,7 +390,8 @@ def _credential_from_row(kind: str, row: tuple) -> tuple[UUID, UUID, PassGarages
 
 
 def _select(kind: str, where: str) -> str:
-    extra = ", c.vehicle_description" if kind == ENROLMENT else ""
+    extra = (", c.vehicle_description, c.redeemed_vehicle_identity, c.exit_only_at"
+             if kind == ENROLMENT else "")
     return (
         f"SELECT {_COLUMNS}{extra} FROM {_TABLE[kind]} c "
         "JOIN passes p ON p.tenant_id = c.tenant_id AND p.id = c.pass_id "
@@ -488,14 +500,66 @@ def _refuse_unless_redeemable(
         )
 
 
+def _is_bound(cursor: Any, tenant_uuid: UUID, presented: str) -> bool:
+    """Whether the token presented is an enrolment that is ALREADY BOUND to a
+    car (redeemed, or cancelled after it was). Asked only at the end this
+    garage does not enrol at: a bound QR answers at both ends, so the
+    wrong-end refusal is for a QR that has not bound yet. Anything else -- an
+    unknown token, a blank one, an unbound QR -- is False, and the wrong-end
+    refusal stands exactly as it was."""
+    try:
+        _uuid, _pass_uuid, _garages, glimpse = _by_token(cursor, ENROLMENT, tenant_uuid, presented)
+    except Refused:
+        return False
+    return glimpse.bound_identity is not None
+
+
+def _present_bound(
+    enrolment: Credential, vehicle_identity: str, direction: Direction, tz: ZoneInfo,
+) -> None:
+    """A BOUND QR shown again, judged on the row re-read under the locks. In
+    this order: cancelled; then the car -- the identity the lane measured must
+    be the one the QR is bound to, exact text, or it is refused WRONG CAR (a
+    lane that measured no identity at all is answered for the bound car: the
+    QR is the car's backup, so it vouches); then, at an entry, a QR whose car
+    was replaced on the pass is refused EXIT ONLY. It writes nothing."""
+    assert enrolment.bound_identity is not None
+    if enrolment.state is CredentialState.CANCELLED:
+        raise Refused(
+            REFUSAL_CREDENTIAL_CANCELLED, ENROLMENT,
+            f"{ENROLMENT} {enrolment.id!r} was cancelled at "
+            f"{local(enrolment.cancelled_at, tz).isoformat()}: {enrolment.cancelled_reason}.",
+        )
+    if not (isinstance(vehicle_identity, str) and not vehicle_identity.strip()):
+        identity = require_text(vehicle_identity, "vehicle_identity")
+        if identity != enrolment.bound_identity:
+            raise Refused(
+                REFUSAL_CREDENTIAL_WRONG_CAR, "vehicle_identity",
+                f"{ENROLMENT} {enrolment.id!r} is bound to another car since "
+                f"{local(enrolment.redeemed_at, tz).isoformat()}.",
+            )
+    if direction is Direction.ENTRY and enrolment.exit_only_at is not None:
+        raise Refused(
+            REFUSAL_CREDENTIAL_EXIT_ONLY, "direction",
+            f"{ENROLMENT} {enrolment.id!r}'s car was replaced on pass {enrolment.pass_id!r} "
+            f"at {local(enrolment.exit_only_at, tz).isoformat()}; it answers at an exit only.",
+        )
+
+
 def redeem_enrolment(
     cursor: Any, tenant_id: Any, garage_external_id: str, presented: str,
     vehicle_identity: str, lane: str, direction: Direction, at: datetime,
 ) -> Redemption:
-    """THE LANE BIND. See the module docstring for the lock order, the
-    atomicity and the answer that is always returned. A garage that does not
-    exist is the one refusal raised rather than carried: there is no lane to
-    answer."""
+    """THE LANE BIND, AND A BOUND QR SHOWN AGAIN. See the module docstring for
+    the lock order, the atomicity and the answer that is always returned. A
+    garage that does not exist is the one refusal raised rather than carried:
+    there is no lane to answer.
+
+    A QR that is ALREADY BOUND is not bound again: shown by its own car it is
+    ``recognised`` and answered for that car, at either end; shown by another
+    car it is refused WRONG CAR; at an entry after its car was replaced, EXIT
+    ONLY. A lane that measured no identity is answered for the bound car --
+    the QR is the car's backup. Nothing is written on any of those paths."""
     tenant_uuid = as_uuid(tenant_id)
     require_aware(at, "at")
     if not isinstance(direction, Direction):
@@ -505,6 +569,9 @@ def redeem_enrolment(
     registration: dict | None = None
     change: dict | None = None
     refusal: Refused | None = None
+    #: the car the access answer is about: the one the lane measured -- or, for
+    #: a bound QR shown where the lane measured none, the car the QR is bound to
+    answer_for = vehicle_identity
     cursor.execute(f"SAVEPOINT {SAVEPOINT}")
     try:
         # everything below the savepoint is taken back on EVERY exception (X2):
@@ -518,7 +585,7 @@ def redeem_enrolment(
                 "with set-garage-timezone before a QR can be redeemed there.",
             )
         end = where_enrolment_happens(garage)
-        if direction.value != end:
+        if direction.value != end and not _is_bound(cursor, tenant_uuid, presented):
             raise Refused(
                 REFUSAL_ENROLMENT_AT_WRONG_END, "garage.enrols_at",
                 f"garage {garage_external_id!r} enrols at {end}; this lane ({lane!r}) is an "
@@ -544,6 +611,22 @@ def redeem_enrolment(
         )
         tz = zone(garage.timezone)
         today = day_of(at, tz)
+        if enrolment.bound_identity is not None:
+            # ALREADY BOUND: judged on the row re-read under the locks -- a QR
+            # that another lane bound an instant ago is answered here, by name
+            # (wrong car, or recognised), never bound a second time
+            if isinstance(vehicle_identity, str) and not vehicle_identity.strip():
+                answer_for = enrolment.bound_identity
+            _present_bound(enrolment, vehicle_identity, direction, tz)
+            cursor.execute(f"RELEASE SAVEPOINT {SAVEPOINT}")
+            answer = answer_in_transaction(
+                cursor, tenant_uuid, garage_external_id, enrolment.bound_identity, lane,
+                direction, at,
+            )
+            return Redemption(
+                enrolment=enrolment_id, redeemed=False, refusal=None, registration=None,
+                pass_state_change=None, answer=answer, recognised=True,
+            )
         _refuse_unless_redeemable(ENROLMENT, enrolment, today, tz)
         _pass_uuid, pass_ = load_pass(cursor, tenant_uuid, garage_uuid, enrolment.pass_id)
         _refuse_unless_registrable(pass_, enrolment.pass_id, today, "a redemption")
@@ -607,7 +690,7 @@ def redeem_enrolment(
     # 4. the access answer for this same movement, from the module's own access
     #    path -- on the rows as written, or as they stood when the bind was refused
     answer = answer_in_transaction(
-        cursor, tenant_uuid, garage_external_id, vehicle_identity, lane, direction, at,
+        cursor, tenant_uuid, garage_external_id, answer_for, lane, direction, at,
     )
     return Redemption(
         enrolment=enrolment_id, redeemed=refusal is None, refusal=refusal,
@@ -669,3 +752,164 @@ def redeem_holder_link(
         HOLDER_LINK: link.id, "pass": link.pass_id, "holder_name": holder_name,
         "holder_phone": holder_phone, "redeemed_at": at, "enrolment": issued,
     }
+
+
+# ---------------------------------------------------------------------------
+# The two writes on one QR: replace its car, cancel it. Each takes LOCK_ORDER
+# (the pass row, then the QR's row), re-reads the QR under those locks, and
+# sits under a savepoint that is rolled back on EVERY exception -- a refusal
+# writes nothing even in a caller that commits afterwards, the redemption's
+# rule (X2) applied here.
+# ---------------------------------------------------------------------------
+
+#: The savepoint a replacement or a cancellation sits under.
+WRITE_SAVEPOINT = "garage_pass_code_write"
+
+
+def _locked_code(
+    cursor: Any, tenant_uuid: UUID, garage_external_id: str, enrolment_external_id: str,
+) -> tuple[UUID, UUID, Credential]:
+    """The QR by its id, at a garage its pass names, locked in LOCK_ORDER and
+    re-read under the locks. A QR of a pass that does not name this garage is
+    refused by name, as the redemption refuses it."""
+    garage_uuid, _garage = load_readable_garage(cursor, tenant_uuid, garage_external_id)
+    external_id = require_text(enrolment_external_id, "enrolment.id")
+    cursor.execute(_select(ENROLMENT, "c.external_id = %s"), (tenant_uuid, external_id))
+    row = cursor.fetchone()
+    if row is None:
+        raise Refused(REFUSAL_CREDENTIAL_UNKNOWN, "enrolment.id", f"no enrolment {external_id!r}.")
+    uuid, pass_uuid, pass_garages, glimpse = _credential_from_row(ENROLMENT, row)
+    if garage_uuid not in pass_garages.uuids:
+        raise Refused(
+            REFUSAL_GARAGE_MISMATCH, "garage",
+            f"enrolment {glimpse.id!r} belongs to pass {glimpse.pass_id!r}, which names "
+            f"garages {list(pass_garages.external_ids)}, not {garage_external_id!r}.",
+        )
+    lock_pass_row(cursor, tenant_uuid, pass_uuid)
+    uuid, pass_uuid, _same, code = _lock_credential(cursor, ENROLMENT, tenant_uuid, uuid)
+    return uuid, pass_uuid, code
+
+
+def _one_row(cursor: Any, what: str, code: Credential) -> None:
+    """The write's backstop: exactly one row, or the named refusal -- the row
+    moved between the read under the lock and the write, which only a caller
+    that skipped the lock can produce."""
+    if cursor.rowcount != 1:
+        raise Refused(
+            REFUSAL_CREDENTIAL_ALREADY_USED, ENROLMENT,
+            f"enrolment {code.id!r} was no longer in the state {what} needs: "
+            f"{cursor.rowcount} row(s) matched. Roll back and read again.",
+        )
+
+
+def _under_savepoint(cursor: Any, write: Any) -> Any:
+    cursor.execute(f"SAVEPOINT {WRITE_SAVEPOINT}")
+    try:
+        result = write()
+    except BaseException:
+        cursor.execute(f"ROLLBACK TO SAVEPOINT {WRITE_SAVEPOINT}")
+        raise
+    cursor.execute(f"RELEASE SAVEPOINT {WRITE_SAVEPOINT}")
+    return result
+
+
+def replace_car(
+    cursor: Any, tenant_id: Any, garage_external_id: str, enrolment_external_id: str,
+    new_enrolment_external_id: str, starts_on: date, days_valid: object, *, by: str,
+    at: datetime, reason: str, vehicle_description: str | None = None,
+) -> dict:
+    """REPLACE THE CAR ON A PASS, ONE STEP. The named QR's car stops entering
+    and keeps leaving: a BOUND QR is marked exit only (who, when, why), so the
+    car left inside can go; a QR that never bound has no car inside and is
+    cancelled instead. A new QR is issued on the SAME pass for the replacement
+    car -- its token returned once, here. All of it or none of it. A QR that
+    was cancelled, or whose car was already replaced, is refused by name."""
+    tenant_uuid = as_uuid(tenant_id)
+    require_aware(at, "at")
+    by = require_text(by, "by")
+    reason = require_text(reason, "reason")
+    new_id = require_text(new_enrolment_external_id, "new_enrolment.id")
+
+    def write() -> dict:
+        _uuid, _pass_uuid, code = _locked_code(
+            cursor, tenant_uuid, garage_external_id, enrolment_external_id,
+        )
+        tz = zone(load_readable_garage(cursor, tenant_uuid, garage_external_id)[1].timezone)
+        if code.state is CredentialState.CANCELLED:
+            raise Refused(
+                REFUSAL_CREDENTIAL_CANCELLED, ENROLMENT,
+                f"enrolment {code.id!r} was cancelled at "
+                f"{local(code.cancelled_at, tz).isoformat()}: {code.cancelled_reason}.",
+            )
+        if code.exit_only_at is not None:
+            raise Refused(
+                REFUSAL_CREDENTIAL_ALREADY_REPLACED, ENROLMENT,
+                f"enrolment {code.id!r}'s car was replaced at "
+                f"{local(code.exit_only_at, tz).isoformat()}.",
+            )
+        why = f"car replaced, new QR {new_id!r}: {reason}"
+        if code.bound_identity is not None:
+            cursor.execute(
+                "UPDATE enrolments SET exit_only_at = %s, exit_only_by = %s, "
+                "exit_only_reason = %s WHERE tenant_id = %s AND id = %s "
+                "AND state = %s AND exit_only_at IS NULL",
+                (at, by, why, tenant_uuid, _uuid, CredentialState.REDEEMED.value),
+            )
+            _one_row(cursor, "a replacement", code)
+            old = {"enrolment": code.id, "vehicle_identity": code.bound_identity,
+                   "now": "exit_only", "at": at}
+        else:
+            cursor.execute(
+                "UPDATE enrolments SET state = %s, cancelled_by = %s, cancelled_at = %s, "
+                "cancelled_reason = %s WHERE tenant_id = %s AND id = %s AND state = %s",
+                (CredentialState.CANCELLED.value, by, at, why, tenant_uuid, _uuid,
+                 CredentialState.ISSUED.value),
+            )
+            _one_row(cursor, "a replacement", code)
+            old = {"enrolment": code.id, "vehicle_identity": None, "now": "cancelled",
+                   "at": at}
+        issued = issue_enrolment(
+            cursor, tenant_uuid, garage_external_id, code.pass_id, new_id, starts_on,
+            days_valid, by=by, at=at, vehicle_description=vehicle_description,
+        )
+        return {"pass": code.pass_id, "replaced": old, "reason": reason, "new": issued}
+
+    return _under_savepoint(cursor, write)
+
+
+def cancel_code(
+    cursor: Any, tenant_id: Any, garage_external_id: str, enrolment_external_id: str, *,
+    by: str, at: datetime, reason: str,
+) -> dict:
+    """CANCEL ONE QR, AND ONLY IT. Bound or not; the pass, its other QRs and
+    every registration stay exactly as they were -- a car the QR had bound
+    stays on the pass (ending the car is end-registration's). A QR already
+    cancelled is refused by name. Issue a fresh QR with issue-enrolment."""
+    tenant_uuid = as_uuid(tenant_id)
+    require_aware(at, "at")
+    by = require_text(by, "by")
+    reason = require_text(reason, "reason")
+
+    def write() -> dict:
+        _uuid, _pass_uuid, code = _locked_code(
+            cursor, tenant_uuid, garage_external_id, enrolment_external_id,
+        )
+        tz = zone(load_readable_garage(cursor, tenant_uuid, garage_external_id)[1].timezone)
+        if code.state is CredentialState.CANCELLED:
+            raise Refused(
+                REFUSAL_CREDENTIAL_CANCELLED, ENROLMENT,
+                f"enrolment {code.id!r} was cancelled at "
+                f"{local(code.cancelled_at, tz).isoformat()}: {code.cancelled_reason}.",
+            )
+        cursor.execute(
+            "UPDATE enrolments SET state = %s, cancelled_by = %s, cancelled_at = %s, "
+            "cancelled_reason = %s WHERE tenant_id = %s AND id = %s AND state = %s",
+            (CredentialState.CANCELLED.value, by, at, reason, tenant_uuid, _uuid,
+             code.state.value),
+        )
+        _one_row(cursor, "a cancellation", code)
+        return {"enrolment": code.id, "pass": code.pass_id, "was": code.state.value,
+                "vehicle_identity": code.bound_identity, "state": "cancelled",
+                "cancelled_by": by, "cancelled_at": at, "reason": reason}
+
+    return _under_savepoint(cursor, write)

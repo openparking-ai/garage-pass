@@ -53,7 +53,8 @@ from datetime import date, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
-from garage_pass.enrolment import CANCELLED_BY_REVOCATION, CredentialState
+from garage_pass.enrolment import CANCELLED_BY_REVOCATION, CredentialState, register_hash
+from garage_pass.enrolment import last_day as credential_last_day
 from garage_pass.findings import (
     REFUSAL_CONSTRAINT,
     REFUSAL_EXIT_BEFORE_ENTRY,
@@ -607,14 +608,19 @@ def change_state(
         # OUTSTANDING enrolment and holder link on the pass is cancelled here,
         # in the same transaction as the revocation -- by the revoker, at the
         # revocation instant, for the one reason this module cancels anything.
-        # Redeemed and already-cancelled ones are terminal and are not touched.
-        # This is the revoked branch of set-state, not a second command.
-        for table in ("enrolments", "holder_links"):
+        # An enrolment BOUND to a car is live too -- it answers for that car
+        # (migration 0005) -- so it is cancelled with the rest, its bind kept
+        # on the row. A used holder link and anything already cancelled are
+        # terminal and are not touched. This is the revoked branch of
+        # set-state, not a second command.
+        for table, live in (("enrolments", (CredentialState.ISSUED.value,
+                                            CredentialState.REDEEMED.value)),
+                            ("holder_links", (CredentialState.ISSUED.value,))):
             cursor.execute(
                 f"UPDATE {table} SET state = %s, cancelled_by = %s, cancelled_at = %s, "
-                "cancelled_reason = %s WHERE tenant_id = %s AND pass_id = %s AND state = %s",
+                "cancelled_reason = %s WHERE tenant_id = %s AND pass_id = %s AND state = ANY(%s)",
                 (CredentialState.CANCELLED.value, change.changed_by, change.changed_at,
-                 CANCELLED_BY_REVOCATION, tenant_uuid, pass_uuid, CredentialState.ISSUED.value),
+                 CANCELLED_BY_REVOCATION, tenant_uuid, pass_uuid, list(live)),
             )
             cancelled[table] = cursor.rowcount
         # one UPDATE per garage of the pass, in the fan-out's one order, each
@@ -871,10 +877,23 @@ def end_registration(
 def registrations_of(
     cursor: Any, tenant_id: Any, garage_uuid: UUID, identity: str
 ) -> list[tuple[UUID, Registration]]:
-    """Every registration of the identity at the garage, as (pass uuid, value)."""
+    """Every registration of the identity at the garage, as (pass uuid, value).
+
+    ``exit_only`` is DERIVED here from the car's QRs on that pass, never stored
+    on the registration (migration 0005): the car was replaced -- a QR bound to
+    it carries ``exit_only_at`` -- and no QR bound to it on the pass is still
+    live. One fact, one place."""
     cursor.execute(
         """
-        SELECT r.pass_id, p.external_id, r.effective_day, r.end_day
+        SELECT r.pass_id, p.external_id, r.effective_day, r.end_day,
+               EXISTS (SELECT 1 FROM enrolments e
+                       WHERE e.tenant_id = r.tenant_id AND e.pass_id = r.pass_id
+                         AND e.redeemed_vehicle_identity = r.vehicle_identity
+                         AND e.exit_only_at IS NOT NULL)
+               AND NOT EXISTS (SELECT 1 FROM enrolments e
+                       WHERE e.tenant_id = r.tenant_id AND e.pass_id = r.pass_id
+                         AND e.redeemed_vehicle_identity = r.vehicle_identity
+                         AND e.state = 'redeemed' AND e.exit_only_at IS NULL)
         FROM vehicle_registrations r
         JOIN passes p ON p.tenant_id = r.tenant_id AND p.id = r.pass_id
         WHERE r.tenant_id = %s AND r.garage_id = %s AND r.vehicle_identity = %s
@@ -884,8 +903,8 @@ def registrations_of(
     )
     return [
         (as_uuid(pid), Registration(pass_id=ext, vehicle_identity=identity,
-                                    effective_day=eff, end_day=end))
-        for pid, ext, eff, end in cursor.fetchall()
+                                    effective_day=eff, end_day=end, exit_only=exit_only))
+        for pid, ext, eff, end, exit_only in cursor.fetchall()
     ]
 
 
@@ -980,12 +999,15 @@ def show_garage_register(cursor: Any, tenant_id: Any, garage_external_id: str) -
     stored, the pass it names, ``effective_day``, ``end_day`` and
     ``ended_reason``; and, for every pass those rows name, the pass id, its
     stored state and the two days its terms bound it with (``valid_from`` and
-    ``valid_to``, or ``None``). Nothing else: no holder, no label, no term
-    beyond the two valid days, nothing from ``enrolments`` or
-    ``holder_links``, and not the pass's other garages -- a reader that asks
-    at a garage needs to know WHICH vehicles a pass holds here and WHEN the
-    pass covers, not HOW, and personal data it does not need does not travel.
-    It writes nothing.
+    ``valid_to``, or ``None``) -- of every pass those rows and the QRs below
+    name; and EVERY QR of every pass that names this garage (``_codes_at``),
+    by its register hash, so a lane decides on a QR with no database. Nothing
+    else: no holder, no label, no term beyond the two valid days, no token and
+    no stored digest, no vehicle description, nothing from ``holder_links``,
+    and not the pass's other garages -- a reader that asks at a garage needs
+    to know WHICH vehicles and QRs a pass holds here and WHEN the pass covers,
+    not HOW, and personal data it does not need does not travel. It writes
+    nothing.
 
     **IT ANSWERS THE QUESTION ``show_pass`` CANNOT**: that read takes one pass
     and shows it whole; a reader that has to hold every entitlement at a
@@ -1037,6 +1059,9 @@ def show_garage_register(cursor: Any, tenant_id: Any, garage_external_id: str) -
     ]
     registrations.sort(key=lambda r: (r["vehicle_identity"], r["effective_day"], r["pass"]))
     named: dict[str, UUID] = {pass_ext: as_uuid(pass_uuid) for _i, pass_uuid, pass_ext, *_r in rows}
+    codes, code_passes = _codes_at(cursor, tenant_uuid, garage_uuid)
+    # a pass a QR here names is a pass the lane may be asked about, car or not
+    named.update(code_passes)
     passes = []
     not_naming = []
     for pass_ext in sorted(named):
@@ -1061,7 +1086,41 @@ def show_garage_register(cursor: Any, tenant_id: Any, garage_external_id: str) -
         "passes": passes,
         "passes_not_naming_garage": not_naming,
         "registrations": registrations,
+        "codes": codes,
     }
+
+
+def _codes_at(
+    cursor: Any, tenant_uuid: UUID, garage_uuid: UUID,
+) -> tuple[list[dict], dict[str, UUID]]:
+    """EVERY QR OF EVERY PASS THAT NAMES THIS GARAGE -- the QRs a lane here may
+    be shown -- so a lane that caches the register decides on a QR with no
+    database: its ``register_hash`` (the SHA-256 of the stored digest; never
+    the token, never the digest), its id and pass, its state as stored, the
+    car it is bound to (or None), whether that car was replaced (exit only),
+    and the local days an unbound QR may first be used on. Selected by
+    membership, because a QR redeems at any garage its pass names. No clock:
+    nothing is derived, the reader compares the days with its own. Sorted in
+    Python by code point (pass, then QR id), never by ORDER BY."""
+    cursor.execute(
+        "SELECT e.token_sha256, e.external_id, p.external_id, e.state, "
+        "e.redeemed_vehicle_identity, e.exit_only_at IS NOT NULL, e.starts_on, e.days_valid, "
+        "e.pass_id "
+        "FROM enrolments e "
+        "JOIN passes p ON p.tenant_id = e.tenant_id AND p.id = e.pass_id "
+        "JOIN pass_garages pg ON pg.tenant_id = e.tenant_id AND pg.pass_id = e.pass_id "
+        "WHERE e.tenant_id = %s AND pg.garage_id = %s",
+        (tenant_uuid, garage_uuid),
+    )
+    rows = cursor.fetchall()
+    codes = [
+        {"register_hash": register_hash(sha), "enrolment": ext, "pass": pass_ext,
+         "state": state, "bound_identity": bound, "exit_only": exit_only,
+         "starts_on": starts_on, "last_day": credential_last_day(starts_on, days)}
+        for sha, ext, pass_ext, state, bound, exit_only, starts_on, days, _p in rows
+    ]
+    codes.sort(key=lambda c: (c["pass"], c["enrolment"]))
+    return codes, {row[2]: as_uuid(row[8]) for row in rows}
 
 
 # ---------------------------------------------------------------------------

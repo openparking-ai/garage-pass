@@ -64,11 +64,45 @@ def unknown_token(app, owner, tenant_id, garage):
     return "no-such-token", "CAR-1", "L1", NOON_MONDAY, f.REFUSAL_CREDENTIAL_UNKNOWN
 
 
-def already_used(app, owner, tenant_id, garage):
+def wrong_car(app, owner, tenant_id, garage):
+    """A QR bound to CAR-9, shown by CAR-1. A BOUND QR answers at both ends, so
+    the other end refuses it by the same name, never the wrong end."""
     pass_ = seeded(app, tenant_id, garage)
     token = issue(app, tenant_id, garage, pass_)["token"]
     assert redeem(app, tenant_id, garage, token, "CAR-9").redeemed
-    return token, "CAR-1", "L1", at(date(2026, 6, 2), 9), f.REFUSAL_CREDENTIAL_ALREADY_USED
+    return token, "CAR-1", "L1", at(date(2026, 6, 2), 9), f.REFUSAL_CREDENTIAL_WRONG_CAR
+
+
+def bound_then_cancelled(app, owner, tenant_id, garage):
+    """A QR bound to CAR-1, then cancelled on its own (cancel-code), shown by
+    CAR-1: cancelled, at both ends -- it is a bound QR."""
+    from garage_pass.store.enrolments import cancel_code
+
+    pass_ = seeded(app, tenant_id, garage)
+    token = issue(app, tenant_id, garage, pass_)["token"]
+    assert redeem(app, tenant_id, garage, token, "CAR-1").redeemed
+    with tenant(app, tenant_id) as cursor:
+        cancel_code(cursor, tenant_id, garage.id, "qr-1", by="desk", at=NOON_MONDAY,
+                    reason="never received")
+    app.commit()
+    return token, "CAR-1", "L1", at(date(2026, 6, 2), 9), f.REFUSAL_CREDENTIAL_CANCELLED
+
+
+def one_code_cancelled(app, owner, tenant_id, garage):
+    """A QR cancelled on its own before it bound, the pass left as it was."""
+    from garage_pass.store.enrolments import cancel_code
+
+    pass_ = seeded(app, tenant_id, garage)
+    token = issue(app, tenant_id, garage, pass_)["token"]
+    with tenant(app, tenant_id) as cursor:
+        cancel_code(cursor, tenant_id, garage.id, "qr-1", by="desk", at=NOON_MONDAY,
+                    reason="never received")
+    app.commit()
+    return token, "CAR-1", "L1", at(date(2026, 6, 2), 9), f.REFUSAL_CREDENTIAL_CANCELLED
+
+
+#: The situations whose QR is BOUND: refused by their own name at both ends.
+BOUND = {"wrong_car", "bound_then_cancelled"}
 
 
 def cancelled(app, owner, tenant_id, garage):
@@ -173,7 +207,8 @@ def unreadable_garage(app, owner, tenant_id, garage):
     return token, "CAR-1", "L1", NOON_MONDAY, f.REFUSAL_TIMEZONE_UNKNOWN
 
 
-SITUATIONS = [unknown_token, already_used, cancelled, expired, not_started, pass_suspended,
+SITUATIONS = [unknown_token, wrong_car, bound_then_cancelled, one_code_cancelled,
+              cancelled, expired, not_started, pass_suspended,
               pass_revoked_with_the_cancellation_put_back, pass_expired, lane_outside_the_terms,
               direction_outside_the_terms, identity_on_another_pass, blank_identity,
               unreadable_garage]
@@ -209,6 +244,8 @@ def test_every_refusal_at_every_end_is_answered_and_an_exit_is_never_refused(
         out = answered(app, tenant_id, garage, token, identity, lane, direction, when)
         assert not out.redeemed and out.refusal is not None
         expected = code if direction is end else f.REFUSAL_ENROLMENT_AT_WRONG_END
+        if situation.__name__ in BOUND:
+            expected = code  # a bound QR answers at both ends: refused by its own name
         if situation is unreadable_garage:
             expected = code  # answered before the end is asked: no clock
         assert out.refusal.code == expected, (direction, out.refusal)
@@ -218,7 +255,7 @@ def test_every_refusal_at_every_end_is_answered_and_an_exit_is_never_refused(
         CENSUS.append((garage.id, situation.__name__, direction.value, out.refusal.code))
     assert registrations(app, tenant_id) == before, "a refused redemption wrote a registration"
     assert query(app, tenant_id, "SELECT count(*) FROM enrolments WHERE state = 'redeemed'") == [
-        (1 if situation is already_used else 0,)
+        (1 if situation is wrong_car else 0,)
     ]
 
 
@@ -316,7 +353,7 @@ def test_every_refusal_door_is_rendered_through_the_command_line_and_the_collect
             situation.__name__, out["enrolment"])
         assert "answer" in out, "the movement is answered beside the refusal"
         seen[situation.__name__] = out["enrolment"]["detail"]
-    assert len(seen) == len(doors) == 14, "every refusal kind, and the garage mismatch"
+    assert len(seen) == len(doors) == 16, "every refusal kind, and the garage mismatch"
     rendered = rendered_so_far()[started:]
     assert len(rendered) >= len(doors), "the collector saw a detail for every door"
     for name, detail in seen.items():

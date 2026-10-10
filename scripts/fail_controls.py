@@ -107,6 +107,8 @@ G24 = "tests/test_g24_a_holder_link_writes_two_columns_and_nothing_else.py"
 G25 = "tests/test_g25_a_pass_answers_only_at_the_garages_it_names.py"
 G26 = "tests/test_g26_a_pass_is_read_whole_and_the_read_writes_nothing.py"
 G27 = "tests/test_g27_a_garages_register_is_read_whole_and_the_read_writes_nothing.py"
+G28 = "tests/test_g28_replace_car_is_one_step_and_the_old_car_still_gets_out.py"
+G29 = "tests/test_g29_one_qr_can_be_cancelled_and_nothing_else_moves.py"
 MIGRATION = "migrations/0001_garages_passes_registrations_and_rls.sql"
 MIGRATION_0002 = "migrations/0002_garage_changes_are_recorded.sql"
 MIGRATION_0003 = "migrations/0003_enrolments_holder_links_and_where_a_garage_enrols.sql"
@@ -1463,8 +1465,10 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
     ),
     "G19/revocation-cancels": (
         G19, "store/records.py",
-        '        for table in ("enrolments", "holder_links"):',
-        "        for table in ():  # PLANTED: revocation leaves the credentials outstanding",
+        '                "cancelled_reason = %s WHERE tenant_id = %s AND pass_id = %s '
+        'AND state = ANY(%s)",',
+        '                "cancelled_reason = %s WHERE false AND tenant_id = %s AND pass_id = %s '
+        'AND state = ANY(%s)",  # PLANTED: revocation leaves the credentials outstanding',
         "a revoked pass's outstanding QRs and links stay issued: the credential outlives "
         "the pass (the state check still refuses the redemption -- G19's in-test control "
         "proves which layer is load-bearing)",
@@ -1621,15 +1625,13 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
         G20, "store/enrolments.py",
         source(
             "    answer = answer_in_transaction(",
-            "        cursor, tenant_uuid, garage_external_id, vehicle_identity, lane, direction, "
-            "at,",
+            "        cursor, tenant_uuid, garage_external_id, answer_for, lane, direction, at,",
             "    )",
             "    return Redemption(",
         ),
         source(
             "    answer = answer_in_transaction(",
-            "        cursor, tenant_uuid, garage_external_id, vehicle_identity, lane, direction, "
-            "at,",
+            "        cursor, tenant_uuid, garage_external_id, answer_for, lane, direction, at,",
             "    )",
             '    answer = Answer(**{**answer.__dict__, "detail": "PLANTED: opened by the '
             'enrolment"})',
@@ -1682,7 +1684,7 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
     ),
     "G20/wrong-end": (
         G20, "store/enrolments.py",
-        "        if direction.value != end:",
+        "        if direction.value != end and not _is_bound(cursor, tenant_uuid, presented):",
         "        if False:  # PLANTED: a QR at either end is redeemed",
         "a QR is redeemed at the end the garage does not enrol at",
     ),
@@ -2389,6 +2391,73 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
         '    unreadable_garages["PLANTED"] = [d for (d,) in cursor.fetchall()]\n',
         "the read renders the credential's digest: G23's rendered scan must see it in the "
         "read's output (the positive control that the scan covers the verb)",
+    ),
+    # --- a code keeps working for its own car (registry R1, migration 0005) ---
+    "G19/bound-qr-spent": (
+        G19, "store/enrolments.py",
+        "        if enrolment.bound_identity is not None:\n",
+        "        if False:  # PLANTED: a bound QR is spent on first use, as before\n",
+        "spend-on-first-use put back: the same car showing its own QR again is refused "
+        "already-used, so the QR is no backup after the first entry (the brief's check 1)",
+    ),
+    "G19/wrong-car-reads-already-used": (
+        G19, "store/enrolments.py",
+        '                REFUSAL_CREDENTIAL_WRONG_CAR, "vehicle_identity",\n',
+        '                REFUSAL_CREDENTIAL_ALREADY_USED, "vehicle_identity",  # PLANTED\n',
+        "a bound QR on a different car is refused 'already used' instead of 'wrong car' "
+        "(the brief's check 2)",
+    ),
+    "G19/unread-identity-refused": (
+        G19, "store/enrolments.py",
+        "    if not (isinstance(vehicle_identity, str) and not vehicle_identity.strip()):\n",
+        "    if True:  # PLANTED: a lane that read no identity is refused; the QR vouches for "
+        "nothing\n",
+        "a bound QR shown where the lane read no identity is refused blank: the QR is not the "
+        "car's backup",
+    ),
+    "G28/old-qr-still-enters": (
+        G28, "store/enrolments.py",
+        "    if direction is Direction.ENTRY and enrolment.exit_only_at is not None:\n",
+        "    if False:  # PLANTED: a replaced car's QR still opens the entry\n",
+        "the old QR still enters after its car was replaced (the brief's check 3, first plant)",
+    ),
+    "G28/old-qr-refused-at-exit": (
+        G28, "store/enrolments.py",
+        "    if direction is Direction.ENTRY and enrolment.exit_only_at is not None:\n",
+        "    if enrolment.exit_only_at is not None:  # PLANTED: refused at the exit too\n",
+        "the old QR is refused at the exit too, so a car left inside cannot leave on its QR "
+        "(the brief's check 3, second plant)",
+    ),
+    "G28/engine-ignores-exit-only": (
+        G28, "access.py",
+        "        if not is_exit and pass_.id in exit_only_on:\n",
+        "        if False:  # PLANTED: the replaced car enters by its identity\n",
+        "the replaced car, read by its identity alone, is covered at an entry: the QR is "
+        "exit only and the car is not",
+    ),
+    "G28/write-not-taken-back": (
+        G28, "store/enrolments.py",
+        '        cursor.execute(f"ROLLBACK TO SAVEPOINT {WRITE_SAVEPOINT}")\n',
+        "        pass  # PLANTED: a refused replacement leaves its first write standing\n",
+        "the new QR's issue refuses after the old QR was marked exit only, and a caller that "
+        "commits keeps half a replacement",
+    ),
+    "G29/cancel-revokes-the-pass": (
+        G29, "store/enrolments.py",
+        '        _one_row(cursor, "a cancellation", code)\n',
+        '        _one_row(cursor, "a cancellation", code)\n'
+        "        change_state(cursor, tenant_uuid, garage_external_id, code.pass_id, "
+        "State.REVOKED, by=by, at=at, reason=reason)  # PLANTED: cancelling one QR revokes "
+        "the pass\n",
+        "cancelling one QR revokes its pass: the pass's other QRs and its cars stop working "
+        "(the brief's check 4)",
+    ),
+    "G27/register-renders-the-digest": (
+        G27, "store/records.py",
+        '        {"register_hash": register_hash(sha), "enrolment": ext, "pass": pass_ext,\n',
+        '        {"register_hash": sha, "enrolment": ext, "pass": pass_ext,  # PLANTED\n',
+        "the register publishes the stored digest in place of the register hash (the brief's "
+        "check 5: what the lane caches is not what the row holds)",
     ),
 }
 

@@ -917,9 +917,10 @@ def test_two_lanes_one_token_on_a_three_garage_pass_exactly_one_redeems_three_ro
     app, owner, tenant_id
 ):
     """H5 control (c): the G2 race, unchanged, on a three-garage pass. The
-    winner writes three rows; the loser is refused ALREADY_USED by name and
-    writes none -- never a partial fan-out. Deterministic interleaving: B
-    blocks on A's lock, observed, never assumed."""
+    winner writes three rows; the loser -- another car with the QR the winner
+    has just bound -- is refused WRONG CAR by name and writes none -- never a
+    partial fan-out. Deterministic interleaving: B blocks on A's lock,
+    observed, never assumed."""
     from enrolment_harness import enrolment_row, race
     from garage_pass.store.enrolments import redeem_enrolment
 
@@ -937,7 +938,7 @@ def test_two_lanes_one_token_on_a_three_garage_pass_exactly_one_redeems_three_ro
     a, b = race(owner, tenant_id, lane("CAR-A", "L1"), lane("CAR-B", "L2"))
     assert not isinstance(a, BaseException) and not isinstance(b, BaseException), (a, b)
     assert a.redeemed and not b.redeemed
-    assert b.refusal.code == f.REFUSAL_CREDENTIAL_ALREADY_USED, b.refusal
+    assert b.refusal.code == f.REFUSAL_CREDENTIAL_WRONG_CAR, b.refusal
     rows = registration_rows(app, tenant_id)
     assert [(r[1], r[2]) for r in rows] == [("garage-a", "CAR-A"), ("garage-b", "CAR-A"),
                                             ("garage-c", "CAR-A")]
