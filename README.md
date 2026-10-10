@@ -123,19 +123,27 @@ Revoking the pass cancels every QR on it, bound or not.
 
 **A QR is made for one car, by its licence plate.** `issue-enrolment`,
 `replace-car` (the new car's) and the holder's own link all require `--plate`;
-without it — or blank once spaces, dashes and dots are taken out — nothing is
-made. The plate is kept as typed for display, and compared in one normal form:
-capitals, with no space, dash or dot, so `abc-123` typed and `ABC 123` read are
-the same car. The QR is **bound to that plate from the moment it is made**: the
-plate is registered on the pass in the same transaction (a plate another pass
-holds is refused there, at the desk), the garage's register shows it before
+without it — or blank once spaces, invisible characters, dashes and dots are
+taken out — nothing is made. The plate is kept as typed for display, and
+compared in one normal form: capitals, with no space of any kind (a
+non-breaking or other Unicode space included), no invisible character
+(zero-width space, joiner and non-joiner, byte-order mark), no dash and no dot,
+so `abc-123` typed and `ABC 123` read are the same car. The QR is **bound to
+that plate from the moment it is made**: the plate is registered on the pass in
+the same transaction (a plate another pass holds is refused there, at the desk;
+a plate THIS pass already holds — a QR reissued for the same car, a replaced
+car coming back — keeps the registration it has, never registered twice and
+never refused as another pass), the garage's register shows it before
 any use, and the QR's first use binds nothing new — it is recognised, and moves
 a pass still waiting for its first car to active. A car whose plate is asked
 about without a QR is asked about in that normal form. At the lane **the plate
 supports the picture match and never refuses on its own**: the exact plate is
 recognised; anything else — nothing read, part of it, a misread, another plate —
 is a picture match against the registered plate, carrying what was read, and
-only the match's own "no" (`confirm-match`) is wrong car. A QR stored before
+only the match's own "no" (`confirm-match`) is wrong car. Nothing opens on the
+QR while a match is pending; the answer beside it is the answer for what was
+read, so another plate with its own valid pass is let through on that pass,
+never on this QR. A QR stored before
 plates were required has no plate and binds whatever car first uses it, exactly
 as before.
 
@@ -145,7 +153,7 @@ at either end, in and out as often as needed, for as long as the pass covers it
 (past the QR's own `--days-valid`, which only bounds the first use) — and
 nothing is written. **A car whose identity the lane did not read is never let in
 blind**: the bound QR answers `match_required`, with the QR's id and the car it
-is bound to, and opens nothing; the lane matches the car's picture against that
+is bound to, and nothing opens on that QR; the lane matches the car's picture against that
 car's earlier ones (its fingerprint, or an outside picture check when that is
 unclear) and answers with `confirm-match` — matched is a recognised use, not
 matched is wrong car — and every answer is kept on the QR's record with its
@@ -167,7 +175,7 @@ is cancelled instead. All of it or none of it. **Cancelling one QR**
 (`cancel-code`) cancels that QR alone, bound or not — the pass, its other QRs
 and its registrations stay as they were (a car the QR had bound stays on the
 pass; ending the car is `end-registration`) — and a fresh QR is issued with
-`issue-enrolment`.
+`issue-enrolment`, for the same plate, on the registration the car already has.
 
 The holder's own details: a one-time link (`issue-holder-link`), the same
 primitive scoped to the pass, lets the holder write their name and phone onto

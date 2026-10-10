@@ -220,3 +220,169 @@ def test_a_qr_stored_without_a_plate_keeps_its_first_use_binding(app, tenant_id)
     assert first.redeemed and first.registration["vehicle_identity"] == "any-car 9"
     other = redeem(app, tenant_id, TRANSIENT_ENTRY, token, "ANY-CAR-9", at=LATER)
     assert other.refusal.code == f.REFUSAL_CREDENTIAL_WRONG_CAR, "exact text, as it always was"
+
+
+# ---------------------------------------------------------------------------
+# The gate's fixes (F1, F2): the same car on the same pass is never "another
+# pass", and the one normal form takes out every space and invisible character.
+# ---------------------------------------------------------------------------
+
+def _cancel(app, tenant_id, external_id, when=LATER):
+    from garage_pass.store.enrolments import cancel_code
+
+    with tenant(app, tenant_id) as cursor:
+        cancel_code(cursor, tenant_id, TRANSIENT_ENTRY.id, external_id, by="desk", at=when,
+                    reason="never received")
+    app.commit()
+
+
+def _replace(app, tenant_id, old, new, plate, starts_on, when):
+    with tenant(app, tenant_id) as cursor:
+        out = replace_car(cursor, tenant_id, TRANSIENT_ENTRY.id, old, new, starts_on, 3,
+                          by="desk", at=when, reason="swap", plate=plate)
+    app.commit()
+    return out
+
+
+def _minted(make) -> dict:
+    """The call's result, or an assertion naming the refusal: a reissue for the
+    same car that is refused is the subject of these checks, not an error."""
+    try:
+        return make()
+    except f.Refused as refused:
+        raise AssertionError(f"the same car on the same pass was refused: {refused}") from None
+
+
+def _held(app, tenant_id, plate) -> list[tuple]:
+    return [r for r in registrations(app, tenant_id) if r[1] == plate]
+
+
+@pytest.mark.guarantee("G31")
+@pytest.mark.parametrize("used", [False, True], ids=["unused", "used"])
+def test_a_cancelled_qr_is_reissued_for_the_same_car_on_its_one_registration(
+    app, tenant_id, used
+):
+    """GATE FIX CHECK 1, his rule: the desk reselects the guest and reissues the
+    code. Issue -> cancel -> reissue, same plate, same pass: the reissue is
+    minted, the pass still holds ONE registration for the plate, and the new
+    QR is recognised on that plate."""
+    pass_ = seeded(app, tenant_id, TRANSIENT_ENTRY)
+    first = issue_plate(app, tenant_id, TRANSIENT_ENTRY, pass_, "ABC-123")["token"]
+    if used:
+        assert redeem(app, tenant_id, TRANSIENT_ENTRY, first, "ABC123", at=LATER).recognised
+    held = _held(app, tenant_id, "ABC123")
+    assert len(held) == 1
+    _cancel(app, tenant_id, "qr-1")
+    fresh = _minted(lambda: issue_plate(app, tenant_id, TRANSIENT_ENTRY, pass_, "abc 123",
+                                        external_id="qr-2", starts_on=date(2026, 6, 2)))
+    assert fresh["plate_key"] == "ABC123"
+    assert _held(app, tenant_id, "ABC123") == held, "the car was registered a second time"
+    shown = redeem(app, tenant_id, TRANSIENT_ENTRY, fresh["token"], "ABC 123",
+                   at=at(date(2026, 6, 2), 10))
+    assert shown.recognised and shown.refusal is None, shown.refusal
+    assert shown.answer.outcome is Outcome.COVERED
+    old = redeem(app, tenant_id, TRANSIENT_ENTRY, first, "ABC123", at=at(date(2026, 6, 2), 11))
+    assert old.refusal is not None and old.refusal.code == f.REFUSAL_CREDENTIAL_CANCELLED
+
+
+@pytest.mark.guarantee("G31")
+def test_a_replaced_car_coming_back_gets_a_new_qr_on_its_registration(app, tenant_id):
+    """GATE FIX CHECK 2. replace-car OLD -> NEW, then NEW -> OLD on the same
+    pass: minted, OLD's new QR is recognised and enters, and NEW is the car
+    that is exit only now."""
+    pass_ = seeded(app, tenant_id, TRANSIENT_ENTRY)
+    issue_plate(app, tenant_id, TRANSIENT_ENTRY, pass_, "OLD-1")
+    to_new = _replace(app, tenant_id, "qr-1", "qr-2", "NEW-2", date(2026, 6, 2), LATER)
+    back = _minted(lambda: _replace(app, tenant_id, "qr-2", "qr-3", "old 1", date(2026, 6, 3),
+                                    at(date(2026, 6, 3), 9)))
+    assert back["new"]["plate_key"] == "OLD1" and len(_held(app, tenant_id, "OLD1")) == 1
+    when = at(date(2026, 6, 3), 10)
+    entry = redeem(app, tenant_id, TRANSIENT_ENTRY, back["new"]["token"], "OLD1",
+                   direction=Direction.ENTRY, at=when)
+    assert entry.recognised and entry.refusal is None, entry.refusal
+    assert entry.answer.outcome is Outcome.COVERED
+    by_plate = access_from_store(app, tenant_id, TRANSIENT_ENTRY.id, "OLD1", "L1",
+                                 Direction.ENTRY, when)
+    assert by_plate.outcome is Outcome.COVERED, "OLD came back and still reads exit only"
+    new_in = redeem(app, tenant_id, TRANSIENT_ENTRY, to_new["new"]["token"], "NEW2",
+                    direction=Direction.ENTRY, at=when)
+    assert new_in.refusal is not None and new_in.refusal.code == f.REFUSAL_CREDENTIAL_EXIT_ONLY
+
+
+#: The same plate as the desk or a lane might hand it in: an ASCII space, a
+#: non-breaking space, a zero-width space and a leading byte-order mark.
+UNICODE_PLATES = ("ABC 123", "ABC 123", "ABC​123", "﻿ABC123",
+                  "abc -　123", "A‌B‍C123")
+
+
+@pytest.mark.guarantee("G31")
+@pytest.mark.parametrize("typed", UNICODE_PLATES, ids=ascii)
+def test_every_space_and_invisible_character_is_out_of_the_one_normal_form(
+    app, tenant_id, typed
+):
+    """GATE FIX CHECK 4. Typed at issue and read at the lane, each is ABC123."""
+    assert plate_key(typed) == "ABC123"
+    pass_ = seeded(app, tenant_id, TRANSIENT_ENTRY)
+    issued = issue_plate(app, tenant_id, TRANSIENT_ENTRY, pass_, typed)
+    assert issued["plate_key"] == "ABC123" and issued["plate"] == typed.strip()
+    for read in UNICODE_PLATES:
+        out = redeem(app, tenant_id, TRANSIENT_ENTRY, issued["token"], read, at=LATER)
+        assert out.recognised and not out.match_required, (ascii(typed), ascii(read))
+
+
+@pytest.mark.guarantee("G31")
+def test_a_plate_of_only_spaces_and_invisibles_is_refused_by_name_never_by_the_database(
+    app, tenant_id
+):
+    """GATE FIX CHECK 4. Every character str.isspace() calls a space, and the
+    four invisibles, alone: refused by name -- never a raw constraint error."""
+    import sys
+
+    spaces = [chr(c) for c in range(sys.maxunicode + 1) if chr(c).isspace()]
+    invisibles = ["​", "‌", "‍", "﻿"]
+    pass_ = seeded(app, tenant_id, TRANSIENT_ENTRY)
+    before = written(app, tenant_id)
+    for plate in [*spaces, *invisibles, "".join(spaces + invisibles)]:
+        with pytest.raises(f.Refused) as refused:
+            issue_plate(app, tenant_id, TRANSIENT_ENTRY, pass_, plate)
+        app.rollback()
+        assert refused.value.code == f.REFUSAL_PLATE_NOT_STATED, ascii(plate)
+    assert written(app, tenant_id) == before
+    # and inside a plate, each is taken out -- none reaches the plate CHECK
+    for i, ch in enumerate(spaces + invisibles):
+        if ch in "\t\n\v\f\r\x1c\x1d\x1e\x1f\x85":
+            continue  # control characters: refused by name (require_text), below
+        issued = issue_plate(app, tenant_id, TRANSIENT_ENTRY, pass_, f"Q{ch}{i}",
+                             external_id=f"qr-sp-{i}")
+        assert issued["plate_key"] == f"Q{i}", ascii(ch)
+    with pytest.raises(f.Refused) as refused:
+        issue_plate(app, tenant_id, TRANSIENT_ENTRY, pass_, "Q\t1", external_id="qr-tab")
+    app.rollback()
+    assert refused.value.code == f.REFUSAL_TEXT_HAS_CONTROL_CHARACTERS
+
+
+@pytest.mark.guarantee("G31")
+def test_another_plate_read_is_answered_on_its_own_pass_never_on_the_qr(app, tenant_id):
+    """GATE FIX F3, the words measured: a picture match is pending and nothing
+    opens on the QR, but the answer beside it is for what was read -- a car
+    with its own valid pass is covered on THAT pass."""
+    from garage_pass.passes import State
+    from garage_pass.store.records import register_vehicle
+
+    pass_ = seeded(app, tenant_id, TRANSIENT_ENTRY, state=State.ACTIVE)
+    token = issue_plate(app, tenant_id, TRANSIENT_ENTRY, pass_, "ABC123")["token"]
+    other = a_pass(id="pass-other", garage_ids={TRANSIENT_ENTRY.id}, state=State.ACTIVE)
+    with tenant(app, tenant_id) as cursor:
+        create_pass(cursor, tenant_id, TRANSIENT_ENTRY.id, other, by="seed", at=LATER)
+        register_vehicle(cursor, tenant_id, TRANSIENT_ENTRY.id, "pass-other", "XYZ789",
+                         date(2026, 6, 1))
+    app.commit()
+    # the read as round 4's lane sends it, in the one normal form (the access
+    # answer is for the read as sent; this round changes words, not behaviour)
+    out = redeem(app, tenant_id, TRANSIENT_ENTRY, token, plate_key("XYZ 789"),
+                 direction=Direction.ENTRY, at=LATER)
+    assert out.match_required and not out.recognised and out.refusal is None
+    assert out.answer.outcome is Outcome.COVERED and out.answer.pass_id == "pass-other"
+    unread = redeem(app, tenant_id, TRANSIENT_ENTRY, token, "", direction=Direction.ENTRY,
+                    at=LATER)
+    assert unread.match_required and unread.answer.outcome is not Outcome.COVERED

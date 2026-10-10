@@ -206,9 +206,12 @@ class Redemption:
     recognised: bool = False
     #: True when a BOUND QR was shown where the lane measured NO identity, or --
     #: on a QR made for a plate -- read anything but that plate: the module
-    #: neither opens nor refuses on its own. The lane matches the car's
+    #: neither opens nor refuses ON THIS QR. The lane matches the car's
     #: picture to the bound car's earlier ones and answers with
-    #: ``confirm_match``; until then the answer opens nothing. Nothing written.
+    #: ``confirm_match``; until then nothing opens on this QR. The answer is
+    #: the access answer for what the lane read: nothing read opens nothing;
+    #: another plate read is that car's own answer -- a car with its own valid
+    #: pass is let through on that pass, never on this QR. Nothing written.
     match_required: bool = False
     #: The identity the QR is bound to, when a match is required: the car whose
     #: earlier pictures the lane matches against. None otherwise.
@@ -356,6 +359,31 @@ def require_plate(plate: object) -> tuple[str, str]:
     return typed, plate_key(typed)
 
 
+def _held_by_this_pass(
+    cursor: Any, tenant_uuid: UUID, pass_external_id: str, key: str, starts_on: date,
+) -> bool:
+    """Whether THIS pass already holds the plate from ``starts_on`` on -- a
+    registration of it on this pass overlapping that day onwards, at EVERY
+    garage the pass names. Then a new QR for the same car (reissued after a
+    cancel, or a replaced car coming back) REUSES that registration: the car
+    is registered once, and the same car on the same pass is never "another
+    pass". A plate another pass holds is not looked at here; register_vehicle
+    refuses it by name, as before."""
+    cursor.execute(
+        "SELECT count(DISTINCT r.garage_id), "
+        "(SELECT count(*) FROM pass_garages pg WHERE pg.tenant_id = p.tenant_id "
+        "AND pg.pass_id = p.id) "
+        "FROM passes p JOIN vehicle_registrations r "
+        "ON r.tenant_id = p.tenant_id AND r.pass_id = p.id "
+        "WHERE p.tenant_id = %s AND p.external_id = %s AND r.vehicle_identity = %s "
+        "AND daterange(r.effective_day, r.end_day, '[)') && daterange(%s, NULL, '[)') "
+        "GROUP BY p.id, p.tenant_id",
+        (tenant_uuid, pass_external_id, key, starts_on),
+    )
+    row = cursor.fetchone()
+    return row is not None and row[0] == row[1]
+
+
 def issue_enrolment(
     cursor: Any, tenant_id: Any, garage_external_id: str, pass_external_id: str,
     external_id: str, starts_on: date, days_valid: object, *, by: str, at: datetime,
@@ -367,8 +395,11 @@ def issue_enrolment(
     transaction, under a savepoint, the plate (in ``plate_key`` form) is
     registered on the pass from ``starts_on`` -- one car, one pass: a plate
     held by another pass is refused by name here, at the desk, not at the
-    lane. The pass's state is not touched: its move to active is still the
-    lane's, at the QR's first use, which binds nothing new.
+    lane. A plate THIS pass already holds from ``starts_on`` (a QR reissued
+    for the same car after a cancel, or a replaced car coming back) is not
+    registered a second time: the registration it has is reused. The pass's
+    state is not touched: its move to active is still the lane's, at the QR's
+    first use, which binds nothing new.
     ``days_valid`` is STATED -- ``None`` is refused by name, never defaulted --
     and bounds only a QR stored without a plate; this one answers for its car
     for as long as the pass covers it."""
@@ -381,8 +412,9 @@ def issue_enrolment(
             days_valid, by=by, at=at, vehicle_description=vehicle_description, plate=plate_pair,
         )
         typed, key = plate_pair
-        register_vehicle(cursor, tenant_uuid, garage_external_id, pass_external_id, key,
-                         starts_on)
+        if not _held_by_this_pass(cursor, tenant_uuid, pass_external_id, key, starts_on):
+            register_vehicle(cursor, tenant_uuid, garage_external_id, pass_external_id, key,
+                             starts_on)
         return {**issued, "plate": typed, "plate_key": key}
 
     return _under_savepoint(cursor, write, "issue")
@@ -631,9 +663,12 @@ def redeem_enrolment(
     A QR that is ALREADY BOUND is not bound again: shown by its own car it is
     ``recognised`` and answered for that car, at either end; shown by another
     car it is refused WRONG CAR; at an entry after its car was replaced, EXIT
-    ONLY. Shown where the lane measured no identity, it is ``match_required``:
-    nothing opens on it until the lane's picture match is confirmed
-    (``confirm_match``). Nothing is written on any of those paths."""
+    ONLY. Shown where the lane measured no identity -- or, on a QR made for a
+    plate, read anything but that plate -- it is ``match_required``: nothing
+    opens on THIS QR until the lane's picture match is confirmed
+    (``confirm_match``); the answer is the access answer for what was read, so
+    another plate with its own valid pass is let through on that pass. Nothing
+    is written on any of those paths."""
     tenant_uuid = as_uuid(tenant_id)
     require_aware(at, "at")
     if not isinstance(direction, Direction):
@@ -691,9 +726,11 @@ def redeem_enrolment(
             match_required = _present_bound(enrolment, vehicle_identity, direction, tz)
             cursor.execute(f"RELEASE SAVEPOINT {SAVEPOINT}")
             if match_required:
-                # NOTHING OPENS ON IT: the answer is for the identity the lane
-                # measured -- none -- so an entry is refused an answer and an
-                # exit is not covered (and still never refused)
+                # NOTHING OPENS ON THIS QR: the answer is for the identity the
+                # lane measured, never the QR's car. Nothing read: an entry is
+                # refused an answer and an exit is not covered (and still never
+                # refused). Another plate read: that car's own answer -- a car
+                # with its own valid pass is let through on THAT pass
                 return Redemption(
                     enrolment=enrolment_id, redeemed=False, refusal=None, registration=None,
                     pass_state_change=None, answer=answer_in_transaction(
@@ -702,7 +739,8 @@ def redeem_enrolment(
                     ),
                     match_required=True, match_for=enrolment.bound,
                     match_read=(vehicle_identity.strip() or None
-                                if isinstance(vehicle_identity, str) else None),
+                                if isinstance(vehicle_identity, str)
+                                and plate_key(vehicle_identity) else None),
                 )
             # RECOGNISED. A QR bound from issue (its plate) on a pass still
             # waiting for its first car moves the pass to active here, at its
@@ -1042,7 +1080,8 @@ def confirm_match(
     one (``match_required``). Matched, and no other identity read: a
     RECOGNISED use, answered for the bound car (an entry on a replaced car is
     still refused EXIT ONLY). Not matched, or an identity read that is not the
-    bound car's: refused WRONG CAR, answered for what was read -- nothing opens.
+    bound car's: refused WRONG CAR -- nothing opens on this QR; the answer is
+    for what was read (another plate with its own valid pass, on that pass).
     EVERY ANSWER IS KEPT on the QR's own row (``enrolments.matches``), in
     order, with its instant, so a car that keeps needing a match is visible;
     the record and the outcome are one write under the lock order and a

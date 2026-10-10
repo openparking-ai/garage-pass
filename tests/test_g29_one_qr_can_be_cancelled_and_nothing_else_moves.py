@@ -20,6 +20,7 @@ from enrolment_harness import (
     TRANSIENT_ENTRY,
     enrolment_row,
     issue,
+    issue_plate,
     pass_state,
     redeem,
     registrations,
@@ -90,14 +91,17 @@ def test_cancelling_one_qr_leaves_the_pass_its_other_qrs_and_its_registrations(
 
 @pytest.mark.guarantee("G29")
 def test_a_fresh_qr_reissued_after_the_cancel_binds_the_car(app, tenant_id):
-    """His words: the desk reselects the guest and reissues the code."""
+    """His words: the desk reselects the guest and reissues the code -- with a
+    QR made the one way the module makes one now, for the car's plate: the
+    fresh QR keeps the registration the car already has."""
     pass_ = seeded(app, tenant_id, TRANSIENT_ENTRY)
-    issue(app, tenant_id, TRANSIENT_ENTRY, pass_, "qr-1")
+    issue_plate(app, tenant_id, TRANSIENT_ENTRY, pass_, "CAR-1", "qr-1")
     cancelled(app, tenant_id, "qr-1")
-    fresh = issue(app, tenant_id, TRANSIENT_ENTRY, pass_, "qr-2",
-                  starts_on=date(2026, 6, 2))["token"]
-    bound = redeem(app, tenant_id, TRANSIENT_ENTRY, fresh, "CAR-1", at=at(date(2026, 6, 2), 10))
-    assert bound.redeemed and bound.answer.outcome is Outcome.COVERED
+    fresh = issue_plate(app, tenant_id, TRANSIENT_ENTRY, pass_, "car 1", "qr-2",
+                        starts_on=date(2026, 6, 2))["token"]
+    shown = redeem(app, tenant_id, TRANSIENT_ENTRY, fresh, "CAR1", at=at(date(2026, 6, 2), 10))
+    assert shown.recognised and shown.answer.outcome is Outcome.COVERED
+    assert [r[1] for r in registrations(app, tenant_id)] == ["CAR1"], "registered twice"
 
 
 @pytest.mark.guarantee("G29")

@@ -2536,6 +2536,54 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
         "the register publishes the stored digest in place of the register hash (the brief's "
         "check 5: what the lane caches is not what the row holds)",
     ),
+    # --- the gate's fixes: F1 (the same car on the same pass), F2 (the normal form)
+    "G31/reissue-registers-twice": (
+        G31, "store/enrolments.py",
+        "        if not _held_by_this_pass(cursor, tenant_uuid, pass_external_id, key, "
+        "starts_on):\n",
+        "        if True:  # PLANTED: the same car is registered on its pass a second time\n",
+        "a QR reissued for the same car on the same pass registers the plate again, and the "
+        "pass's own registration refuses it (the gate fixes' check 1)",
+    ),
+    "G31/reissue-is-another-pass": (
+        G31, "store/enrolments.py",
+        "        if not _held_by_this_pass(cursor, tenant_uuid, pass_external_id, key, "
+        "starts_on):\n",
+        "        if _held_by_this_pass(cursor, tenant_uuid, pass_external_id, key, starts_on):"
+        "  # PLANTED\n"
+        "            from garage_pass.findings import REFUSAL_VEHICLE_ON_ANOTHER_PASS\n"
+        "            raise Refused(REFUSAL_VEHICLE_ON_ANOTHER_PASS, \"vehicle_identity\", "
+        "\"PLANTED\")\n"
+        "        if not _held_by_this_pass(cursor, tenant_uuid, pass_external_id, key, "
+        "starts_on):\n",
+        "the same car on the same pass is refused as another pass (the gate fixes' check 1)",
+    ),
+    "G31/car-coming-back-refused": (
+        G31, "store/enrolments.py",
+        "        issued = issue_enrolment(\n"
+        "            cursor, tenant_uuid, garage_external_id, code.pass_id, new_id, starts_on,\n",
+        "        if _held_by_this_pass(cursor, tenant_uuid, code.pass_id, plate_key(plate), "
+        "starts_on):  # PLANTED\n"
+        "            raise Refused(REFUSAL_PASS_NOT_REGISTRABLE, \"plate\", \"PLANTED\")\n"
+        "        issued = issue_enrolment(\n"
+        "            cursor, tenant_uuid, garage_external_id, code.pass_id, new_id, starts_on,\n",
+        "replace-car back to a car the pass held earlier is refused (the gate fixes' check 2)",
+    ),
+    "G31/another-pass-reused": (
+        G31, "store/enrolments.py",
+        "    return row is not None and row[0] == row[1]\n",
+        "    return True  # PLANTED: a plate any pass holds is taken as this pass's\n",
+        "a plate registered on a DIFFERENT pass is minted for without a registration, "
+        "instead of refused as another pass (the gate fixes' check 3)",
+    ),
+    "G31/ascii-space-only": (
+        G31, "enrolment.py",
+        "        ch for ch in text.upper() if not ch.isspace() and ch not in _PLATE_SEPARATORS\n",
+        "        ch for ch in text.upper() if ch not in \" -.\"  # PLANTED: ASCII space only\n",
+        "the one normal form takes out the ASCII space only: a non-breaking or zero-width "
+        "space keeps a plate from matching, or reaches the plate CHECK (the gate fixes' "
+        "check 4)",
+    ),
 }
 
 

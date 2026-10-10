@@ -115,16 +115,24 @@ def digest(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
-#: What is not part of a plate when two plates are compared: spaces, dashes and
-#: dots, wherever they are. "abc-123", "ABC 123" and "ABC.123" are one plate.
-_PLATE_SEPARATORS = frozenset(" \t-.")
+#: What is not part of a plate when two plates are compared, wherever it is:
+#: the dash and the dot, and -- besides every character ``str.isspace()`` calls
+#: a space (the ASCII ones, non-breaking, thin, ideographic and the rest) --
+#: the invisible ones a pasted plate carries: zero-width space, zero-width
+#: non-joiner and joiner, and the byte-order mark. "abc-123", "ABC 123",
+#: "ABC.123" and "ABC\u00a0123" are one plate.
+_PLATE_SEPARATORS = frozenset("-.\u200b\u200c\u200d\ufeff")
+
 
 def plate_key(text: str) -> str:
     """THE ONE NORMAL FORM a plate is compared in -- on the stored side and on
-    the read side alike: capitals, with no space, dash or dot anywhere. The
-    plate as typed is kept beside it for display; this is what is matched.
-    Blank once normalised is the empty string, which the callers name."""
-    return "".join(ch for ch in text.upper() if ch not in _PLATE_SEPARATORS)
+    the read side alike: capitals, with no space (any Unicode space), no
+    invisible character, no dash and no dot anywhere. The plate as typed is
+    kept beside it for display; this is what is matched. Blank once normalised
+    is the empty string, which the callers name -- never a database error."""
+    return "".join(
+        ch for ch in text.upper() if not ch.isspace() and ch not in _PLATE_SEPARATORS
+    )
 
 
 def register_hash(token_sha256: str) -> str:
