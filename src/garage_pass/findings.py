@@ -389,14 +389,12 @@ REFUSALS: dict[str, str] = {
         "the pass left as it was. The detail names when and why. Nothing is written."
     ),
     REFUSAL_CREDENTIAL_WRONG_CAR: (
-        "This QR is bound to another car: the plate it was made for (or, on a QR stored "
-        "before plates were required, the car that first used it), and it answers for that "
-        "car only. Shown by a car whose plate is clearly different -- two or more characters "
-        "that are not look-alikes -- it is refused, with no exception, and the driver is "
-        "sent to the person who issued it; a read that differs only by look-alike "
-        "characters and at most one other character is a picture match instead. The detail "
-        "names "
-        "the QR and when it was bound, never the other car. Nothing is written. The "
+        "This QR is bound to another car, and it answers for that car only. On a QR made for "
+        "a plate, this is the picture match's own answer -- the lane's match said it is not "
+        "the car the plate was registered for; a plate read never refuses on its own. On a "
+        "QR stored before plates were required, it is a car other than the one that first "
+        "used it. Refused with no exception, and the driver is sent to the person who issued "
+        "the QR. The detail names the QR, never the other car. Nothing is written. The "
         "movement itself still gets its access answer, and an exit is never refused."
     ),
     REFUSAL_CREDENTIAL_EXIT_ONLY: (

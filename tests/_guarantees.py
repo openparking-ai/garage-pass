@@ -563,10 +563,12 @@ GUARANTEES: dict[str, str] = {
         "use. At the lane, against that plate: the same plate is RECOGNISED, at either end, "
         "for as long as the pass covers it; its first use writes no registration and moves "
         "a pass still waiting for its first car to active (recorded, the QR as the actor); "
-        "nothing read, a read that differs only by look-alike characters (O/0, I/1, B/8, S/5, "
-        "Z/2) and at most one other character, is a PICTURE MATCH (G30) and never wrong car -- a "
-        "camera misread must not send a driver to the desk; a read two or more characters "
-        "away that are not look-alikes is WRONG CAR. A QR stored before plates were required "
+        "THE PLATE SUPPORTS THE PICTURE MATCH AND NEVER REFUSES ON ITS OWN: anything else -- "
+        "nothing read, part of it, a misread, another plate -- is a PICTURE MATCH (G30) "
+        "carrying the registered plate and what was read, never wrong car; a QR made for a "
+        "plate is WRONG CAR only by the match's own no (confirm-match), and a yes, whatever "
+        "was read, is a recognised use that moves a pass still waiting for its first car to "
+        "active as a recognised read does. A QR stored before plates were required "
         "carries no plate and keeps its first-use binding, exact text, unchanged."
     ),
 }

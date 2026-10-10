@@ -2462,8 +2462,8 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
     ),
     "G30/unread-recognised": (
         G30, "store/enrolments.py",
-        "    return unread  # an unread or a close read: a picture match decides, never this "
-        "module\n",
+        "    return unread  # unread, or a plate read that is not the plate: a picture match "
+        "decides\n",
         "    return False  # PLANTED: an unread identity is recognised blind\n",
         "a bound QR shown with no identity read is recognised and opens the barrier with no "
         "picture match (the fix brief's check 1)",
@@ -2492,26 +2492,35 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
     ),
     "G31/raw-text-compare": (
         G31, "store/enrolments.py",
-        "            seen = compare_plates(plate_key(identity), enrolment.plate)\n",
-        "            seen = compare_plates(identity, enrolment.plate)  # PLANTED: raw text\n",
+        "            unread = plate_key(identity) != enrolment.plate\n",
+        "            unread = identity != enrolment.plate  # PLANTED: raw text\n",
         "the lane's read is compared as typed, not in the one normal form: 'ABC 123' is not "
         "'abc-123' (the brief's check 2)",
     ),
-    "G31/close-read-is-wrong-car": (
-        G31, "enrolment.py",
-        "    return PLATE_CLOSE if _edits_at_most_one(fold(read), fold(plate)) else "
-        "PLATE_DIFFERENT\n",
-        "    return PLATE_DIFFERENT  # PLANTED: a misread is another car\n",
-        "a look-alike or one-character misread is refused wrong car and the driver sent to "
-        "the desk (the brief's check 3)",
+    "G31/a-different-read-is-wrong-car": (
+        G31, "store/enrolments.py",
+        "            unread = plate_key(identity) != enrolment.plate\n",
+        "            if plate_key(identity) != enrolment.plate:  # PLANTED: the plate refuses\n"
+        "                raise Refused(REFUSAL_CREDENTIAL_WRONG_CAR, \"vehicle_identity\", "
+        "\"PLANTED\")\n"
+        "            unread = False\n",
+        "a plate read that is not the plate is refused wrong car on its own, with no picture "
+        "match (this brief's check 1)",
     ),
-    "G31/far-read-asks-a-match": (
-        G31, "enrolment.py",
-        "    return PLATE_CLOSE if _edits_at_most_one(fold(read), fold(plate)) else "
-        "PLATE_DIFFERENT\n",
-        "    return PLATE_CLOSE  # PLANTED: every other plate asks for a picture match\n",
-        "a clearly different plate asks for a picture match instead of being refused wrong "
-        "car (the brief's check 4)",
+    "G31/no-is-recognised": (
+        G31, "store/enrolments.py",
+        "        if not matched or (read is not None and not _same_car(read, code)):\n",
+        "        if read is not None and not _same_car(read, code):  # PLANTED: a 'no' "
+        "is a recognised use\n",
+        "the picture match's 'no' after a different plate read is recorded as a recognised "
+        "use and the car is let in (this brief's check 2)",
+    ),
+    "G31/exact-read-asks-a-match": (
+        G31, "store/enrolments.py",
+        "            unread = plate_key(identity) != enrolment.plate\n",
+        "            unread = True  # PLANTED: even the exact plate asks for a picture match\n",
+        "the exact plate read is answered with a picture match instead of recognised (this "
+        "brief's check 3)",
     ),
     "G31/register-hides-the-plate": (
         G31, "store/records.py",

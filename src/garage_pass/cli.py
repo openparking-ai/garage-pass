@@ -616,7 +616,8 @@ def _redemption(redemption: Any) -> dict[str, Any]:
                                  "redeemed": redemption.redeemed,
                                  "recognised": redemption.recognised,
                                  "match_required": redemption.match_required,
-                                 "match_for": redemption.match_for}
+                                 "match_for": redemption.match_for,
+                                 "match_read": redemption.match_read}
     if redemption.refusal is not None:
         enrolment.update(_refusal(redemption.refusal))
     else:

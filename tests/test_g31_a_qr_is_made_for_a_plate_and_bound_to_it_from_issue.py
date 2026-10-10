@@ -4,16 +4,18 @@
 replace-car, the holder's own link): without it, refused by name and nothing
 minted. Plates are compared in ONE normal form on both sides -- capitals, no
 space, dash or dot -- so "abc-123" typed and "ABC 123" read are one car. Against
-the plate: the same plate is RECOGNISED; nothing read, a look-alike read (O/0,
-I/1, B/8, S/5, Z/2) or a read one character off is a PICTURE MATCH; a read two or
-more characters away is WRONG CAR. A new QR is bound from issue -- its plate is
+the plate -- which SUPPORTS the picture match and never refuses on its own: the
+same plate is RECOGNISED; anything else -- nothing read, part of it, a misread,
+another plate -- is a PICTURE MATCH carrying the registered plate and what was
+read, and only the match's own "no" is WRONG CAR. A new QR is bound from issue --
+its plate is
 registered on the pass when it is made, its first use binds nothing new, and the
 register shows the plate before any use. A QR stored before plates were required
 keeps its first-use behaviour, unchanged (G19 proves it whole).
 
-Controls: a QR minted without a plate; plates compared as raw text; a close read
-answered wrong car; a far read answered with a match; the register showing no
-identity until first use.
+Controls: a QR minted without a plate; plates compared as raw text; a different
+read answered wrong car; an exact read answered with a match; a 'no' match
+recorded as recognised; the register showing no identity until first use.
 """
 
 from __future__ import annotations
@@ -36,7 +38,7 @@ from enrolment_harness import (
 from fixtures import a_pass, at
 from garage_pass import findings as f
 from garage_pass.access import Outcome
-from garage_pass.enrolment import compare_plates, plate_key, where_enrolment_happens
+from garage_pass.enrolment import plate_key, where_enrolment_happens
 from garage_pass.store.access import access_from_store
 from garage_pass.store.enrolments import redeem_holder_link, replace_car
 from garage_pass.store.postgres import tenant
@@ -55,13 +57,9 @@ def written(app, tenant_id) -> tuple:
 
 
 @pytest.mark.guarantee("G31")
-def test_the_normal_form_and_the_comparison_are_one_function_each():
+def test_the_normal_form_is_one_function():
     assert plate_key("abc-123") == plate_key("ABC 123") == plate_key("a.b.c 1-2-3") == "ABC123"
-    assert compare_plates(plate_key("ABC 123"), "ABC123") == "same"
-    for read in ("ABC1Z3", "A8C123", "ABCI23", "ABC12", "ABC1234", "0BC123"):
-        assert compare_plates(plate_key(read), "ABC123") == "close", read
-    for read in ("XYZ789", "ABD124", "AB", "ABC123XY"):
-        assert compare_plates(plate_key(read), "ABC123") == "different", read
+    assert plate_key(" - . ") == ""
 
 
 @pytest.mark.guarantee("G31")
@@ -102,7 +100,8 @@ def test_issue_replace_and_the_holder_link_without_a_plate_are_refused_and_mint_
 def test_typed_one_way_and_read_another_is_the_same_car_recognised_at_either_end(
     app, tenant_id, garage
 ):
-    """CHECK 2."""
+    """The plate-at-issue brief's check 2, and this brief's CHECK 3: the exact
+    plate, in the one normal form, is recognised -- never a match."""
     pass_ = seeded(app, tenant_id, garage)
     token = issue_plate(app, tenant_id, garage, pass_, "abc-123")["token"]
     end = Direction(where_enrolment_happens(garage))
@@ -113,32 +112,52 @@ def test_typed_one_way_and_read_another_is_the_same_car_recognised_at_either_end
 
 
 @pytest.mark.guarantee("G31")
-@pytest.mark.parametrize("read", ["ABC1Z3", "A8C123", "", "ABC12"])
-def test_a_misread_one_character_or_look_alike_off_asks_for_a_picture_match(
-    app, tenant_id, read
-):
-    """CHECK 3. Never wrong car: a camera misread must not send a guest to the
-    desk. The match is asked against the registered plate, and nothing opens."""
+@pytest.mark.parametrize("read", ["ABC1Z3", "A8C123", "XYZ789", "ABC12", "AB", "", "   "])
+def test_any_read_but_the_plate_asks_for_a_match_and_never_refuses(app, tenant_id, read):
+    """CHECK 1. A misread, part of the plate, another plate or nothing at all:
+    each a picture match against the registered plate, carrying what was read,
+    never wrong car; nothing opens and nothing is written."""
     pass_ = seeded(app, tenant_id, TRANSIENT_ENTRY)
     token = issue_plate(app, tenant_id, TRANSIENT_ENTRY, pass_, "ABC123")["token"]
     before = written(app, tenant_id)
-    out = redeem(app, tenant_id, TRANSIENT_ENTRY, token, read, at=LATER)
-    assert out.match_required and out.match_for == "ABC123", out.refusal
-    assert out.refusal is None and not out.recognised
-    assert out.answer.outcome is not Outcome.COVERED
+    for direction in (Direction.ENTRY, Direction.EXIT):
+        out = redeem(app, tenant_id, TRANSIENT_ENTRY, token, read, direction=direction, at=LATER)
+        assert out.match_required and out.refusal is None, out.refusal
+        assert not out.recognised and not out.redeemed
+        assert out.match_for == "ABC123" and out.match_read == (read.strip() or None)
+        assert out.answer.outcome is not Outcome.COVERED
     assert written(app, tenant_id) == before
 
 
 @pytest.mark.guarantee("G31")
-@pytest.mark.parametrize("read", ["XYZ789", "ABD124"])
-def test_a_clearly_different_plate_is_wrong_car(app, tenant_id, read):
-    """CHECK 4."""
+@pytest.mark.parametrize("read", ["XYZ789", "ABC1Z3"])
+def test_the_match_decides_no_is_wrong_car_and_yes_is_a_recognised_use(app, tenant_id, read):
+    """CHECK 2. Only the picture match's own answer turns a different read into
+    wrong car; a yes, whatever was read, is a recognised use, and both are kept."""
+    from garage_pass.store.enrolments import confirm_match
+
     pass_ = seeded(app, tenant_id, TRANSIENT_ENTRY)
     token = issue_plate(app, tenant_id, TRANSIENT_ENTRY, pass_, "ABC123")["token"]
-    out = redeem(app, tenant_id, TRANSIENT_ENTRY, token, read, at=LATER)
-    assert out.refusal is not None and out.refusal.code == f.REFUSAL_CREDENTIAL_WRONG_CAR
-    assert not out.match_required and not out.recognised
-    assert "ABC123" not in out.refusal.detail, "the bound plate is not named to this lane"
+    assert redeem(app, tenant_id, TRANSIENT_ENTRY, token, read, at=LATER).match_required
+
+    def confirm(matched):
+        with tenant(app, tenant_id) as cursor:
+            out = confirm_match(cursor, tenant_id, TRANSIENT_ENTRY.id, "qr-1", matched=matched,
+                                identity_read=read, decided_by="fingerprint", lane="L1",
+                                direction=Direction.ENTRY, at=LATER)
+        app.commit()
+        return out
+
+    no = confirm(False)
+    assert no.refusal is not None and no.refusal.code == f.REFUSAL_CREDENTIAL_WRONG_CAR
+    assert not no.recognised and no.answer.outcome is not Outcome.COVERED
+    yes = confirm(True)
+    assert yes.recognised and yes.refusal is None
+    assert yes.answer.outcome is Outcome.COVERED and yes.answer.vehicle_identity == "ABC123"
+    assert yes.pass_state_change["to"] == "active", "the match was the first use: draft to active"
+    kept = query(app, tenant_id, "SELECT matches FROM enrolments")[0][0]
+    assert [(m["matched"], m["identity_read"], m["outcome"]) for m in kept] == [
+        (False, read, f.REFUSAL_CREDENTIAL_WRONG_CAR), (True, read, "recognised")]
 
 
 @pytest.mark.guarantee("G31")

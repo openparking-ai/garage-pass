@@ -104,10 +104,10 @@ def test_the_enrolment_the_link_issues_names_the_link_as_its_issuer_and_the_link
     assert link_row(app, tenant_id, "link-7") == ("redeemed", when, None, None, None)
     assert credential(app, tenant_id, "link-7", HOLDER_LINK).redeemed_at == when
     # the QR it issued is bound to the holder's plate from issue, like any other:
-    # their car is recognised, and another car is not
+    # their car is recognised, and another plate asks for a picture match
     assert redeem(app, tenant_id, NO_TRANSIENT, issued["token"], "CAR-1", at=when).recognised
     other = redeem(app, tenant_id, NO_TRANSIENT, issued["token"], "VAN-99", at=when)
-    assert other.refusal.code == f.REFUSAL_CREDENTIAL_WRONG_CAR
+    assert other.match_required and other.match_for == "CAR1" and other.refusal is None
 
 
 @pytest.mark.guarantee("G24")

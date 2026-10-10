@@ -559,6 +559,7 @@ def test_the_enrolment_commands_render_every_refusal_and_the_redemption_exits_by
     assert status == 1, printed
     assert printed["enrolment"] == {"enrolment": None, "redeemed": False, "recognised": False,
                                     "match_required": False, "match_for": None,
+                                    "match_read": None,
                                     "refused": f.REFUSAL_CREDENTIAL_UNKNOWN, "field": "token",
                                     "detail": printed["enrolment"]["detail"]}
     assert printed["answer"]["outcome"] == "not_covered"
@@ -582,8 +583,16 @@ def test_the_enrolment_commands_render_every_refusal_and_the_redemption_exits_by
     assert status == 0 and printed["enrolment"]["recognised"] is True
     assert "refused" not in printed["enrolment"] and printed["enrolment"]["redeemed"] is False
     assert printed["answer"]["outcome"] == "covered"
+    # another plate read: the plate never refuses on its own -- a picture match,
+    # carrying what was read; the match's "no" is what makes it wrong car
     other_car = [a if a != "CAR-1" else "VAN-99" for a in MOVE]
     status, printed = run(["redeem-enrolment", *T, "--token", token, *other_car], capsys)
+    assert status == 1 and printed["enrolment"]["match_required"] is True
+    assert printed["enrolment"]["match_for"] == "CAR1"
+    assert printed["enrolment"]["match_read"] == "VAN-99"
+    status, printed = run(["confirm-match", *T, "--enrolment-id", "qr-1", "--matched", "no",
+                           "--vehicle", "VAN-99", "--decided-by", "fingerprint", *MOVE[2:]],
+                          capsys)
     assert status == 1 and printed["enrolment"]["refused"] == f.REFUSAL_CREDENTIAL_WRONG_CAR
     assert printed["answer"]["outcome"] == "not_covered"
     # the two writes on one QR, each refusal rendered through the one seam, exit 3

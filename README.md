@@ -131,12 +131,13 @@ plate is registered on the pass in the same transaction (a plate another pass
 holds is refused there, at the desk), the garage's register shows it before
 any use, and the QR's first use binds nothing new — it is recognised, and moves
 a pass still waiting for its first car to active. A car whose plate is asked
-about without a QR is asked about in that normal form. At the lane, a read that
-differs from the plate only by look-alike characters (O/0, I/1, B/8, S/5, Z/2)
-and at most one other character is a picture match, not wrong car: a camera misread must
-not send a driver to the desk. Two or more characters apart is wrong car. A QR
-stored before plates were required has no plate and binds whatever car first
-uses it, exactly as before.
+about without a QR is asked about in that normal form. At the lane **the plate
+supports the picture match and never refuses on its own**: the exact plate is
+recognised; anything else — nothing read, part of it, a misread, another plate —
+is a picture match against the registered plate, carrying what was read, and
+only the match's own "no" (`confirm-match`) is wrong car. A QR stored before
+plates were required has no plate and binds whatever car first uses it, exactly
+as before.
 
 **One QR per car, and it keeps working for that car.** Once bound, the QR is
 the car's: shown again by that car it is *recognised* — answered for that car,

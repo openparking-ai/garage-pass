@@ -156,6 +156,10 @@ def test_the_plaintext_is_rendered_by_the_issue_calls_and_by_nothing_else(
     assert '"recognised": true' in other_end["printed"]
     used = run(["redeem-enrolment", *T, "--token", token, "--vehicle", "VAN-99", "--lane", "L1",
                 "--direction", "entry", "--at", "2026-06-02T12:00:00-06:00"])
+    assert '"match_required": true' in used["printed"]
+    used = run(["confirm-match", *T, "--enrolment-id", "qr-cli", "--matched", "no",
+                "--vehicle", "VAN-99", "--decided-by", "api", "--lane", "L1", "--direction",
+                "entry", "--at", "2026-06-02T12:00:00-06:00"])
     assert '"REFUSAL_CREDENTIAL_WRONG_CAR"' in used["printed"]
     from_link = run(["redeem-holder-link", *T, "--token", link_token, "--name", "A Holder",
                      "--phone", "+1 555 0100", "--enrolment-id", "qr-from-link", "--plate",

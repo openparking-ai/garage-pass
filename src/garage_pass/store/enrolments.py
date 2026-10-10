@@ -118,12 +118,9 @@ from zoneinfo import ZoneInfo
 from garage_pass.access import Answer
 from garage_pass.enrolment import (
     EXPIRED_CREDENTIAL,
-    PLATE_CLOSE,
-    PLATE_DIFFERENT,
     Credential,
     CredentialState,
     MintedToken,
-    compare_plates,
     digest,
     last_day,
     mint,
@@ -207,14 +204,17 @@ class Redemption:
     #: the access answer for that car. ``redeemed`` is False: nothing was bound
     #: now.
     recognised: bool = False
-    #: True when a BOUND QR was shown where the lane measured NO identity: the
-    #: module neither opens nor refuses blind. The lane matches the car's
+    #: True when a BOUND QR was shown where the lane measured NO identity, or --
+    #: on a QR made for a plate -- read anything but that plate: the module
+    #: neither opens nor refuses on its own. The lane matches the car's
     #: picture to the bound car's earlier ones and answers with
     #: ``confirm_match``; until then the answer opens nothing. Nothing written.
     match_required: bool = False
     #: The identity the QR is bound to, when a match is required: the car whose
     #: earlier pictures the lane matches against. None otherwise.
     match_for: str | None = None
+    #: What the lane read, when a match is required: None when it read nothing.
+    match_read: str | None = None
 
 
 def _require_day(value: object, field: str) -> date:
@@ -598,17 +598,12 @@ def _present_bound(
     if not unread:
         identity = require_text(vehicle_identity, "vehicle_identity")
         if enrolment.plate is not None:
-            # A QR MADE FOR A PLATE: compared in the one normal form; a read
-            # that is only a look-alike or one character off is a picture
-            # match, never a refusal -- a camera misread is not another car
-            seen = compare_plates(plate_key(identity), enrolment.plate)
-            if seen == PLATE_DIFFERENT:
-                raise Refused(
-                    REFUSAL_CREDENTIAL_WRONG_CAR, "vehicle_identity",
-                    f"{ENROLMENT} {enrolment.id!r} was made for another plate on "
-                    f"{local(enrolment.issued_at, tz).isoformat()}.",
-                )
-            unread = seen == PLATE_CLOSE
+            # A QR MADE FOR A PLATE: the plate SUPPORTS the match and never
+            # refuses on its own. The same plate, in the one normal form, is
+            # recognised; any other read -- part of it, a misread, another
+            # plate -- is a picture match against the registered plate, and
+            # only the match's own "no" (confirm_match) is wrong car
+            unread = plate_key(identity) != enrolment.plate
         elif identity != enrolment.bound_identity:
             raise Refused(
                 REFUSAL_CREDENTIAL_WRONG_CAR, "vehicle_identity",
@@ -621,7 +616,7 @@ def _present_bound(
             f"{ENROLMENT} {enrolment.id!r}'s car was replaced on pass {enrolment.pass_id!r} "
             f"at {local(enrolment.exit_only_at, tz).isoformat()}; it answers at an exit only.",
         )
-    return unread  # an unread or a close read: a picture match decides, never this module
+    return unread  # unread, or a plate read that is not the plate: a picture match decides
 
 
 def redeem_enrolment(
@@ -706,6 +701,8 @@ def redeem_enrolment(
                         direction, at,
                     ),
                     match_required=True, match_for=enrolment.bound,
+                    match_read=(vehicle_identity.strip() or None
+                                if isinstance(vehicle_identity, str) else None),
                 )
             # RECOGNISED. A QR bound from issue (its plate) on a pass still
             # waiting for its first car moves the pass to active here, at its
@@ -1023,11 +1020,11 @@ def cancel_code(
 
 def _same_car(read: str, code: Credential) -> bool:
     """Whether an identity the lane read can be the QR's car once a picture
-    matched it: a plate QR takes a look-alike or one-character read (the
-    picture decided); a QR stored without a plate takes its bound identity
-    exactly."""
+    matched it: on a QR made for a plate the picture decides whatever was read
+    (the plate supports the match, it never refuses on its own); a QR stored
+    without a plate takes its bound identity exactly, as it always did."""
     if code.plate is not None:
-        return compare_plates(plate_key(read), code.plate) != PLATE_DIFFERENT
+        return True
     return read == code.bound_identity
 
 
@@ -1070,7 +1067,7 @@ def confirm_match(
                                               and not identity_read.strip())
             else require_text(identity_read, "vehicle_identity"))
 
-    def write() -> tuple[Credential, Refused | None]:
+    def write() -> tuple[Credential, Refused | None, dict | None]:
         uuid, _pass_uuid, code = _locked_code(
             cursor, tenant_uuid, garage_external_id, enrolment_external_id,
         )
@@ -1110,14 +1107,26 @@ def confirm_match(
             (json.dumps([record]), tenant_uuid, uuid),
         )
         _one_row(cursor, "a picture match", code)
-        return code, refusal
+        change = None
+        if refusal is None:
+            # a recognised use is a USE: a pass still waiting for its first car
+            # moves to active here as it does on a recognised read
+            garage_uuid, _g = load_readable_garage(cursor, tenant_uuid, garage_external_id)
+            _u, pass_now = load_pass(cursor, tenant_uuid, garage_uuid, code.pass_id)
+            if pass_now.state in (State.DRAFT, State.AWAITING_ENROLMENT):
+                change = change_state(
+                    cursor, tenant_uuid, garage_external_id, code.pass_id, State.ACTIVE,
+                    by=code.id, at=at, reason=f"first use at lane {lane_name!r}, by a picture "
+                    f"match ({decided_by})",
+                )
+        return code, refusal, change
 
-    code, refusal = _under_savepoint(cursor, write, "match")
+    code, refusal, change = _under_savepoint(cursor, write, "match")
     answer = answer_in_transaction(
         cursor, tenant_uuid, garage_external_id,
         code.bound if refusal is None else (read or ""), lane_name, direction, at,
     )
     return Redemption(
         enrolment=code.id, redeemed=False, refusal=refusal, registration=None,
-        pass_state_change=None, answer=answer, recognised=refusal is None,
+        pass_state_change=change, answer=answer, recognised=refusal is None,
     )
