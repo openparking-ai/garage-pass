@@ -180,7 +180,7 @@ def test_nothing_carries_over_to_the_next_stay(app, tenant_id):
         assert old.answer.pass_id != a.id, "the earlier stay answered after it ended"
     with tenant(app, tenant_id) as cursor:
         matched = confirm_match(cursor, tenant_id, TRANSIENT_ENTRY.id, "qr-a", matched=True,
-                                identity_read=None, decided_by="fingerprint", lane="L1",
+                                identity_read=None, decided_by="opa_id", lane="L1",
                                 direction=Direction.EXIT, at=at(OCT[13], 15))
     app.commit()
     assert matched.refusal is not None

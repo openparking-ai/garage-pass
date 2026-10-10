@@ -158,7 +158,7 @@ at either end, in and out as often as needed, for its stay — and nothing is
 written. **A car whose identity the lane did not read is never let in
 blind**: the bound QR answers `match_required`, with the QR's id and the car it
 is bound to, and nothing opens on that QR; the lane matches the car's picture against that
-car's earlier ones (its fingerprint, or an outside picture check when that is
+car's earlier ones (its OPA ID, or an outside picture check when that is
 unclear) and answers with `confirm-match` — matched is a recognised use, not
 matched is wrong car — and every answer is kept on the QR's record with its
 time, so a car that keeps needing a match is visible. Shown by a **different**
@@ -221,7 +221,7 @@ $ garage-pass replace-car --tenant T --garage garage-downtown --enrolment-id qr-
       --new-enrolment-id qr-2 --plate "XYZ 789" --starts-on 2026-06-02 --days-valid 3 --by desk \
       --reason "rental car swapped" --at ...
 $ garage-pass confirm-match --tenant T --garage garage-downtown --enrolment-id qr-1 \
-      --matched yes --decided-by fingerprint --lane L1 --direction entry --at ...
+      --matched yes --decided-by opa_id --lane L1 --direction entry --at ...
 $ garage-pass cancel-code --tenant T --garage garage-downtown --enrolment-id qr-2 \
       --by desk --reason "never received" --at ...
 ```

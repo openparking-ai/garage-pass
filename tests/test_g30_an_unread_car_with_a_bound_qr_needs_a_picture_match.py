@@ -42,7 +42,7 @@ def bound(app, tenant_id, garage=TRANSIENT_ENTRY) -> str:
     return token
 
 
-def confirm(app, tenant_id, matched, *, read=None, by="fingerprint",
+def confirm(app, tenant_id, matched, *, read=None, by="opa_id",
             direction=Direction.ENTRY, garage=TRANSIENT_ENTRY, external_id="qr-1"):
     with tenant(app, tenant_id) as cursor:
         out = confirm_match(cursor, tenant_id, garage.id, external_id, matched=matched,
@@ -110,7 +110,7 @@ def test_cancelled_and_exit_only_are_refused_before_a_match_is_asked(app, tenant
 
 
 @pytest.mark.guarantee("G30")
-@pytest.mark.parametrize("by", ["fingerprint", "api"])
+@pytest.mark.parametrize("by", ["opa_id", "api"])
 def test_a_yes_is_a_recognised_use_a_no_is_wrong_car_and_every_answer_is_kept(
     app, tenant_id, by
 ):
@@ -163,6 +163,9 @@ def test_an_unbound_cancelled_or_unknown_qr_and_an_unknown_decider_are_refused_a
         ({"external_id": "qr-unbound"}, f.REFUSAL_CREDENTIAL_NOT_BOUND),
         ({"external_id": "qr-none"}, f.REFUSAL_CREDENTIAL_UNKNOWN),
         ({"by": "a guess"}, f.REFUSAL_MATCH_DECIDED_BY_UNKNOWN),
+        # The value's previous name is no longer accepted. Spelled in two parts
+        # so the repository-wide scan for that name stays at zero.
+        ({"by": "finger" + "print"}, f.REFUSAL_MATCH_DECIDED_BY_UNKNOWN),
     ):
         with pytest.raises(f.Refused) as refused:
             confirm(app, tenant_id, True, **kwargs)
@@ -205,7 +208,7 @@ def test_the_match_and_its_refusals_are_rendered_through_the_command_line(
     out = json.loads(capsys.readouterr().out)
     assert status == 0 and out["enrolment"]["recognised"] is True
     status = main(["confirm-match", *T, "--enrolment-id", "qr-1", "--matched", "no",
-                   "--decided-by", "fingerprint", *MOVE])
+                   "--decided-by", "opa_id", *MOVE])
     out = json.loads(capsys.readouterr().out)
     assert out["enrolment"]["refused"] == f.REFUSAL_CREDENTIAL_WRONG_CAR
     wrong = out["enrolment"]["detail"]

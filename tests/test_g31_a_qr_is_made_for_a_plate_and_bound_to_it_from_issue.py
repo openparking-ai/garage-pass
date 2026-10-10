@@ -143,7 +143,7 @@ def test_the_match_decides_no_is_wrong_car_and_yes_is_a_recognised_use(app, tena
     def confirm(matched):
         with tenant(app, tenant_id) as cursor:
             out = confirm_match(cursor, tenant_id, TRANSIENT_ENTRY.id, "qr-1", matched=matched,
-                                identity_read=read, decided_by="fingerprint", lane="L1",
+                                identity_read=read, decided_by="opa_id", lane="L1",
                                 direction=Direction.ENTRY, at=LATER)
         app.commit()
         return out

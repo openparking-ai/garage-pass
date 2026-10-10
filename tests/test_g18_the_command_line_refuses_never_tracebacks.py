@@ -591,7 +591,7 @@ def test_the_enrolment_commands_render_every_refusal_and_the_redemption_exits_by
     assert printed["enrolment"]["match_for"] == "CAR1"
     assert printed["enrolment"]["match_read"] == "VAN-99"
     status, printed = run(["confirm-match", *T, "--enrolment-id", "qr-1", "--matched", "no",
-                           "--vehicle", "VAN-99", "--decided-by", "fingerprint", *MOVE[2:]],
+                           "--vehicle", "VAN-99", "--decided-by", "opa_id", *MOVE[2:]],
                           capsys)
     assert status == 1 and printed["enrolment"]["refused"] == f.REFUSAL_CREDENTIAL_WRONG_CAR
     assert printed["answer"]["outcome"] == "not_covered"
