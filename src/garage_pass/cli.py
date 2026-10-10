@@ -258,6 +258,16 @@ def _parser() -> argparse.ArgumentParser:
     s.add_argument("--by", required=True, help="who replaced it")
     s.add_argument("--reason", required=True, help="why, for the QR's record")
     s.add_argument("--at", required=True, help="when, as an ISO instant with an offset")
+    s = store("confirm-match", "the lane's answer after a picture match, for a bound QR shown "
+              "with no identity read: yes is a recognised use, no is wrong car; every answer is "
+              "kept on the QR's record")
+    s.add_argument("--enrolment-id", required=True, help="the QR that asked for a match")
+    s.add_argument("--matched", required=True, choices=["yes", "no"])
+    s.add_argument("--vehicle", default="", help="the identity the lane read, if any")
+    s.add_argument("--decided-by", required=True, help="fingerprint or api")
+    s.add_argument("--lane", required=True)
+    s.add_argument("--direction", required=True, choices=[d.value for d in Direction])
+    s.add_argument("--at", required=True, help="ISO instant with an offset")
     s = store("cancel-code", "cancel one QR, bound or not; the pass, its other QRs and its "
               "registrations stay as they are")
     s.add_argument("--enrolment-id", required=True, help="the QR to cancel")
@@ -595,7 +605,9 @@ def _redemption(redemption: Any) -> dict[str, Any]:
     not in it: a redemption never renders the credential."""
     enrolment: dict[str, Any] = {"enrolment": redemption.enrolment,
                                  "redeemed": redemption.redeemed,
-                                 "recognised": redemption.recognised}
+                                 "recognised": redemption.recognised,
+                                 "match_required": redemption.match_required,
+                                 "match_for": redemption.match_for}
     if redemption.refusal is not None:
         enrolment.update(_refusal(redemption.refusal))
     else:
@@ -692,6 +704,16 @@ def _run(args: argparse.Namespace) -> int:
                     by=args.by, at=_at(args.at), reason=args.reason,
                     vehicle_description=args.vehicle_description,
                 )
+            elif args.command == "confirm-match":
+                redemption = enrolments.confirm_match(
+                    cursor, args.tenant, args.garage, args.enrolment_id,
+                    matched=args.matched == "yes", identity_read=args.vehicle,
+                    decided_by=args.decided_by, lane=args.lane,
+                    direction=Direction(args.direction), at=_at(args.at),
+                )
+                connection.commit()
+                _print(_redemption(redemption))
+                return EXIT_BY_OUTCOME[redemption.answer.outcome]
             elif args.command == "cancel-code":
                 out = enrolments.cancel_code(
                     cursor, args.tenant, args.garage, args.enrolment_id,

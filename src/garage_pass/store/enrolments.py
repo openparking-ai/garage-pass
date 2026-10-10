@@ -136,6 +136,7 @@ from garage_pass.findings import (
     REFUSAL_CREDENTIAL_CANCELLED,
     REFUSAL_CREDENTIAL_EXIT_ONLY,
     REFUSAL_CREDENTIAL_EXPIRED,
+    REFUSAL_CREDENTIAL_NOT_BOUND,
     REFUSAL_CREDENTIAL_NOT_STARTED,
     REFUSAL_CREDENTIAL_UNKNOWN,
     REFUSAL_CREDENTIAL_WRONG_CAR,
@@ -144,6 +145,7 @@ from garage_pass.findings import (
     REFUSAL_FIELD_BLANK,
     REFUSAL_GARAGE_MISMATCH,
     REFUSAL_LANE_OUTSIDE_THE_PASS_TERMS,
+    REFUSAL_MATCH_DECIDED_BY_UNKNOWN,
     REFUSAL_PASS_NOT_REGISTRABLE,
     Refused,
 )
@@ -195,11 +197,19 @@ class Redemption:
     #: The access answer for this same movement, from the module's own access
     #: path -- on the rows as written, or as they stood when refused.
     answer: Answer
-    #: True when an ALREADY-BOUND QR was shown by its own car (or by a car
-    #: whose identity the lane could not read: the QR vouches for the car it is
-    #: bound to). Nothing is written; the answer is the access answer for that
-    #: car. ``redeemed`` is False: nothing was bound now.
+    #: True when an ALREADY-BOUND QR was shown by its own car -- read by the
+    #: lane, or confirmed by a picture match (``confirm_match``). The answer is
+    #: the access answer for that car. ``redeemed`` is False: nothing was bound
+    #: now.
     recognised: bool = False
+    #: True when a BOUND QR was shown where the lane measured NO identity: the
+    #: module neither opens nor refuses blind. The lane matches the car's
+    #: picture to the bound car's earlier ones and answers with
+    #: ``confirm_match``; until then the answer opens nothing. Nothing written.
+    match_required: bool = False
+    #: The identity the QR is bound to, when a match is required: the car whose
+    #: earlier pictures the lane matches against. None otherwise.
+    match_for: str | None = None
 
 
 def _require_day(value: object, field: str) -> date:
@@ -516,13 +526,15 @@ def _is_bound(cursor: Any, tenant_uuid: UUID, presented: str) -> bool:
 
 def _present_bound(
     enrolment: Credential, vehicle_identity: str, direction: Direction, tz: ZoneInfo,
-) -> None:
+) -> bool:
     """A BOUND QR shown again, judged on the row re-read under the locks. In
-    this order: cancelled; then the car -- the identity the lane measured must
-    be the one the QR is bound to, exact text, or it is refused WRONG CAR (a
-    lane that measured no identity at all is answered for the bound car: the
-    QR is the car's backup, so it vouches); then, at an entry, a QR whose car
-    was replaced on the pass is refused EXIT ONLY. It writes nothing."""
+    this order: cancelled; then, where the lane measured NO identity, an entry
+    on a replaced car is refused EXIT ONLY and anything else needs a PICTURE
+    MATCH -- the module neither opens nor refuses blind, it returns True and
+    the lane matches the car to the bound car's earlier pictures and answers
+    with ``confirm_match``; where it measured one, the identity must be the
+    one the QR is bound to, exact text, or it is refused WRONG CAR, and then
+    an entry on a replaced car is refused EXIT ONLY. It writes nothing."""
     assert enrolment.bound_identity is not None
     if enrolment.state is CredentialState.CANCELLED:
         raise Refused(
@@ -530,7 +542,8 @@ def _present_bound(
             f"{ENROLMENT} {enrolment.id!r} was cancelled at "
             f"{local(enrolment.cancelled_at, tz).isoformat()}: {enrolment.cancelled_reason}.",
         )
-    if not (isinstance(vehicle_identity, str) and not vehicle_identity.strip()):
+    unread = isinstance(vehicle_identity, str) and not vehicle_identity.strip()
+    if not unread:
         identity = require_text(vehicle_identity, "vehicle_identity")
         if identity != enrolment.bound_identity:
             raise Refused(
@@ -544,6 +557,7 @@ def _present_bound(
             f"{ENROLMENT} {enrolment.id!r}'s car was replaced on pass {enrolment.pass_id!r} "
             f"at {local(enrolment.exit_only_at, tz).isoformat()}; it answers at an exit only.",
         )
+    return unread  # an unread identity: a picture match decides, never this module
 
 
 def redeem_enrolment(
@@ -558,8 +572,9 @@ def redeem_enrolment(
     A QR that is ALREADY BOUND is not bound again: shown by its own car it is
     ``recognised`` and answered for that car, at either end; shown by another
     car it is refused WRONG CAR; at an entry after its car was replaced, EXIT
-    ONLY. A lane that measured no identity is answered for the bound car --
-    the QR is the car's backup. Nothing is written on any of those paths."""
+    ONLY. Shown where the lane measured no identity, it is ``match_required``:
+    nothing opens on it until the lane's picture match is confirmed
+    (``confirm_match``). Nothing is written on any of those paths."""
     tenant_uuid = as_uuid(tenant_id)
     require_aware(at, "at")
     if not isinstance(direction, Direction):
@@ -569,9 +584,6 @@ def redeem_enrolment(
     registration: dict | None = None
     change: dict | None = None
     refusal: Refused | None = None
-    #: the car the access answer is about: the one the lane measured -- or, for
-    #: a bound QR shown where the lane measured none, the car the QR is bound to
-    answer_for = vehicle_identity
     cursor.execute(f"SAVEPOINT {SAVEPOINT}")
     try:
         # everything below the savepoint is taken back on EVERY exception (X2):
@@ -614,11 +626,22 @@ def redeem_enrolment(
         if enrolment.bound_identity is not None:
             # ALREADY BOUND: judged on the row re-read under the locks -- a QR
             # that another lane bound an instant ago is answered here, by name
-            # (wrong car, or recognised), never bound a second time
-            if isinstance(vehicle_identity, str) and not vehicle_identity.strip():
-                answer_for = enrolment.bound_identity
-            _present_bound(enrolment, vehicle_identity, direction, tz)
+            # (wrong car, recognised, or a picture match required), never bound
+            # a second time
+            match_required = _present_bound(enrolment, vehicle_identity, direction, tz)
             cursor.execute(f"RELEASE SAVEPOINT {SAVEPOINT}")
+            if match_required:
+                # NOTHING OPENS ON IT: the answer is for the identity the lane
+                # measured -- none -- so an entry is refused an answer and an
+                # exit is not covered (and still never refused)
+                return Redemption(
+                    enrolment=enrolment_id, redeemed=False, refusal=None, registration=None,
+                    pass_state_change=None, answer=answer_in_transaction(
+                        cursor, tenant_uuid, garage_external_id, vehicle_identity, lane,
+                        direction, at,
+                    ),
+                    match_required=True, match_for=enrolment.bound_identity,
+                )
             answer = answer_in_transaction(
                 cursor, tenant_uuid, garage_external_id, enrolment.bound_identity, lane,
                 direction, at,
@@ -690,7 +713,7 @@ def redeem_enrolment(
     # 4. the access answer for this same movement, from the module's own access
     #    path -- on the rows as written, or as they stood when the bind was refused
     answer = answer_in_transaction(
-        cursor, tenant_uuid, garage_external_id, answer_for, lane, direction, at,
+        cursor, tenant_uuid, garage_external_id, vehicle_identity, lane, direction, at,
     )
     return Redemption(
         enrolment=enrolment_id, redeemed=refusal is None, refusal=refusal,
@@ -913,3 +936,96 @@ def cancel_code(
                 "cancelled_by": by, "cancelled_at": at, "reason": reason}
 
     return _under_savepoint(cursor, write)
+
+
+#: Who may decide a picture match: the car's own fingerprint against its earlier
+#: pictures, or an outside picture check when the fingerprint was unclear.
+MATCH_DECIDERS = ("fingerprint", "api")
+
+
+def confirm_match(
+    cursor: Any, tenant_id: Any, garage_external_id: str, enrolment_external_id: str, *,
+    matched: bool, identity_read: str | None, decided_by: str, lane: str,
+    direction: Direction, at: datetime,
+) -> Redemption:
+    """THE LANE'S ANSWER AFTER A PICTURE MATCH, for a bound QR that asked for
+    one (``match_required``). Matched, and no other identity read: a
+    RECOGNISED use, answered for the bound car (an entry on a replaced car is
+    still refused EXIT ONLY). Not matched, or an identity read that is not the
+    bound car's: refused WRONG CAR, answered for what was read -- nothing opens.
+    EVERY ANSWER IS KEPT on the QR's own row (``enrolments.matches``), in
+    order, with its instant, so a car that keeps needing a match is visible;
+    the record and the outcome are one write under the lock order and a
+    savepoint. A QR that does not exist, is not bound or is cancelled, and a
+    decider this module does not record, are refused by name and write
+    nothing."""
+    import json
+
+    tenant_uuid = as_uuid(tenant_id)
+    require_aware(at, "at")
+    if not isinstance(direction, Direction):
+        raise TypeError(f"direction must be a Direction, not {direction!r}")
+    if not isinstance(matched, bool):
+        raise TypeError(f"matched must be a bool, not {matched!r}")
+    if decided_by not in MATCH_DECIDERS:
+        raise Refused(
+            REFUSAL_MATCH_DECIDED_BY_UNKNOWN, "decided_by",
+            f"{decided_by!r}; a match is decided by one of {list(MATCH_DECIDERS)}.",
+        )
+    lane_name = require_text(lane, "lane")
+    read = (None if identity_read is None or (isinstance(identity_read, str)
+                                              and not identity_read.strip())
+            else require_text(identity_read, "vehicle_identity"))
+
+    def write() -> tuple[Credential, Refused | None]:
+        uuid, _pass_uuid, code = _locked_code(
+            cursor, tenant_uuid, garage_external_id, enrolment_external_id,
+        )
+        tz = zone(load_readable_garage(cursor, tenant_uuid, garage_external_id)[1].timezone)
+        if code.bound_identity is None:
+            raise Refused(
+                REFUSAL_CREDENTIAL_NOT_BOUND, ENROLMENT,
+                f"enrolment {code.id!r} is bound to no car.",
+            )
+        if code.state is CredentialState.CANCELLED:
+            raise Refused(
+                REFUSAL_CREDENTIAL_CANCELLED, ENROLMENT,
+                f"enrolment {code.id!r} was cancelled at "
+                f"{local(code.cancelled_at, tz).isoformat()}: {code.cancelled_reason}.",
+            )
+        refusal: Refused | None = None
+        if not matched or (read is not None and read != code.bound_identity):
+            refusal = Refused(
+                REFUSAL_CREDENTIAL_WRONG_CAR, "vehicle_identity",
+                f"{ENROLMENT} {code.id!r} is bound to another car since "
+                f"{local(code.redeemed_at, tz).isoformat()}; the picture match ({decided_by}) "
+                f"did not find it.",
+            )
+        elif direction is Direction.ENTRY and code.exit_only_at is not None:
+            refusal = Refused(
+                REFUSAL_CREDENTIAL_EXIT_ONLY, "direction",
+                f"{ENROLMENT} {code.id!r}'s car was replaced on pass {code.pass_id!r} at "
+                f"{local(code.exit_only_at, tz).isoformat()}; it answers at an exit only.",
+            )
+        record = {
+            "at": at.isoformat(), "matched": matched, "identity_read": read,
+            "decided_by": decided_by, "lane": lane_name, "direction": direction.value,
+            "outcome": "recognised" if refusal is None else refusal.code,
+        }
+        cursor.execute(
+            "UPDATE enrolments SET matches = matches || %s::jsonb "
+            "WHERE tenant_id = %s AND id = %s",
+            (json.dumps([record]), tenant_uuid, uuid),
+        )
+        _one_row(cursor, "a picture match", code)
+        return code, refusal
+
+    code, refusal = _under_savepoint(cursor, write)
+    answer = answer_in_transaction(
+        cursor, tenant_uuid, garage_external_id,
+        code.bound_identity if refusal is None else (read or ""), lane_name, direction, at,
+    )
+    return Redemption(
+        enrolment=code.id, redeemed=False, refusal=refusal, registration=None,
+        pass_state_change=None, answer=answer, recognised=refusal is None,
+    )

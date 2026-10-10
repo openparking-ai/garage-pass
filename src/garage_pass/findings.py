@@ -153,6 +153,8 @@ REFUSAL_LANES_GARAGE_REPEATED = "REFUSAL_LANES_GARAGE_REPEATED"
 REFUSAL_CREDENTIAL_WRONG_CAR = "REFUSAL_CREDENTIAL_WRONG_CAR"
 REFUSAL_CREDENTIAL_EXIT_ONLY = "REFUSAL_CREDENTIAL_EXIT_ONLY"
 REFUSAL_CREDENTIAL_ALREADY_REPLACED = "REFUSAL_CREDENTIAL_ALREADY_REPLACED"
+REFUSAL_CREDENTIAL_NOT_BOUND = "REFUSAL_CREDENTIAL_NOT_BOUND"
+REFUSAL_MATCH_DECIDED_BY_UNKNOWN = "REFUSAL_MATCH_DECIDED_BY_UNKNOWN"
 
 REFUSALS: dict[str, str] = {
     REFUSAL_VALID_TO_BEFORE_VALID_FROM: (
@@ -396,6 +398,17 @@ REFUSALS: dict[str, str] = {
         "This QR's car was replaced on its pass, so the QR no longer opens an entry. It "
         "still answers at an exit, so a car left inside can leave. The detail names the "
         "QR and when it was replaced. Nothing is written."
+    ),
+    REFUSAL_CREDENTIAL_NOT_BOUND: (
+        "A picture match was answered for a QR that is bound to no car, so there is no "
+        "earlier picture it could have been matched against. A QR that has not bound is "
+        "presented with the identity the lane read, and binds it. Nothing is written."
+    ),
+    REFUSAL_MATCH_DECIDED_BY_UNKNOWN: (
+        "A picture match names who decided it, and the field named beside this code is "
+        "not one of the two this module records: 'fingerprint' (the car's own fingerprint "
+        "against its earlier pictures) or 'api' (an outside picture check, when the "
+        "fingerprint was unclear). Nothing is written."
     ),
     REFUSAL_CREDENTIAL_ALREADY_REPLACED: (
         "This QR's car was already replaced on its pass. A replacement is made once, from "

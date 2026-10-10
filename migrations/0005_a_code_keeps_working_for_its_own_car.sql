@@ -15,6 +15,14 @@
 --     inside can go. All three or none, and only on a code that was bound: an
 --     unbound code that is replaced is cancelled instead, there being no car to
 --     let out.
+--   * PICTURE MATCHES -- `matches`: a bound code shown where the lane read no
+--     identity opens nothing on its own; the lane matches the car's picture to
+--     the bound car's earlier ones and answers (`confirm-match`). EACH answer
+--     is kept on the code's own row, in order, with its instant, whether it
+--     matched, what identity was read if any, who decided (the fingerprint or
+--     the outside picture check) and the outcome -- so a car that keeps
+--     needing a match is visible on its code. A JSON array, appended to by the
+--     module and never rewritten by it.
 --   * A BOUND CODE CAN BE CANCELLED. 0003 tied `state = 'redeemed'` to
 --     `redeemed_at` both ways, so a cancelled row could not carry a bind. The
 --     rule becomes one-way: a redeemed row has its bind, an issued row has none,
@@ -32,7 +40,9 @@ ALTER TABLE enrolments
   ADD COLUMN exit_only_at     timestamptz,
   ADD COLUMN exit_only_by     text CHECK (exit_only_by IS NULL OR length(btrim(exit_only_by)) > 0),
   ADD COLUMN exit_only_reason text CHECK (exit_only_reason IS NULL
-                                          OR length(btrim(exit_only_reason)) > 0);
+                                          OR length(btrim(exit_only_reason)) > 0),
+  ADD COLUMN matches          jsonb NOT NULL DEFAULT '[]'::jsonb
+                              CHECK (jsonb_typeof(matches) = 'array');
 
 ALTER TABLE enrolments
   ADD CONSTRAINT enrolments_exit_only_is_all_or_nothing CHECK (

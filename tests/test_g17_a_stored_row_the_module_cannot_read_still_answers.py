@@ -466,6 +466,9 @@ def test_every_write_against_an_unreadable_garage_is_refused_by_name_and_the_rep
             at=NOON_MONDAY, reason="rental swapped"),
         "cancel_code": lambda c: enrolments.cancel_code(
             c, tenant_id, "g-badtz", "e-1", by="desk", at=NOON_MONDAY, reason="never received"),
+        "confirm_match": lambda c: enrolments.confirm_match(
+            c, tenant_id, "g-badtz", "e-1", matched=True, identity_read=None,
+            decided_by="fingerprint", lane="L1", direction=Direction.ENTRY, at=NOON_MONDAY),
     }
     # the redemption is the one write that CARRIES its refusal instead of raising
     # it, because the lane must still be answered: exercised below on its own

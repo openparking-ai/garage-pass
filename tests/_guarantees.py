@@ -266,7 +266,7 @@ GUARANTEES: dict[str, str] = {
         "is never bound again: shown again by that car it is RECOGNISED and answered for "
         "that car, at either end, in and out as often as needed, past its own issue window "
         "for as long as the pass covers the car, and writes nothing; shown with no identity "
-        "measured it is answered for the car it is bound to (the QR is the car's backup); "
+        "measured it opens nothing on its own and asks for a picture match (G30); "
         "shown by a DIFFERENT car it is refused WRONG CAR, by that name and never 'already "
         "used', naming the QR and the instant of the bind and never the bound car, writing "
         "nothing. An unbound QR cannot be bound when it is expired (derived from starts_on "
@@ -530,6 +530,23 @@ GUARANTEES: dict[str, str] = {
         "ending the car is end-registration's). The cancelled QR is refused CANCELLED "
         "wherever it is shown, and a fresh QR is issued with issue-enrolment. Cancelling a "
         "QR already cancelled, or one that does not exist, is refused by name."
+    ),
+    "G30": (
+        "A CAR WHOSE IDENTITY WAS NOT READ IS NEVER LET IN BLIND ON A BOUND QR. Shown where "
+        "the lane measured no identity, a bound QR is neither recognised nor refused: the "
+        "redemption answers MATCH REQUIRED, carrying the QR's id and the car it is bound to "
+        "so the lane can match the car's picture against that car's earlier ones, writes "
+        "nothing, and its access answer opens nothing -- an entry is refused an answer for "
+        "want of an identity, an exit is not covered and never refused. (A cancelled QR is "
+        "refused CANCELLED, and an entry on a replaced car EXIT ONLY, first.) The lane then "
+        "answers with confirm-match, naming who decided -- the fingerprint, or an outside "
+        "picture check -- and the identity it read, if any: matched, with no other identity "
+        "read, is a RECOGNISED use answered for the bound car; not matched, or another "
+        "identity read, is refused WRONG CAR and opens nothing. EVERY answer is kept on the "
+        "QR's own row, in order, with its instant, whether it matched, the identity read, "
+        "who decided and the outcome, so a car that keeps needing a match is visible. A QR "
+        "that does not exist, is bound to no car or is cancelled, and a decider the module "
+        "does not record, are refused by name and keep nothing."
     ),
 }
 

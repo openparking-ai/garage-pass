@@ -552,6 +552,7 @@ def test_the_enrolment_commands_render_every_refusal_and_the_redemption_exits_by
     status, printed = run(["redeem-enrolment", *T, "--token", "nothing", *MOVE], capsys)
     assert status == 1, printed
     assert printed["enrolment"] == {"enrolment": None, "redeemed": False, "recognised": False,
+                                    "match_required": False, "match_for": None,
                                     "refused": f.REFUSAL_CREDENTIAL_UNKNOWN, "field": "token",
                                     "detail": printed["enrolment"]["detail"]}
     assert printed["answer"]["outcome"] == "not_covered"

@@ -37,9 +37,9 @@ day"); it is documented, never defaulted: ``days_valid`` is STATED, and
 **ONE QR PER CAR, AND IT KEEPS WORKING FOR THAT CAR.** A redeemed enrolment
 is BOUND to exactly one vehicle identity, the one the lane measured at its
 first use. Shown again by that car it answers for that car, in and out, for as
-long as the pass covers it -- the car is recognised after its first entry and
-the QR stays its backup, so a lane that reads no identity at all is answered
-for the car the QR is bound to. Shown by a different car it is refused by name
+long as the pass covers it. Shown where the lane read no identity at all it
+opens nothing on its own: a picture match decides (``confirm_match``). Shown
+by a different car it is refused by name
 (wrong car), never "already used". Several outstanding enrolments on one pass
 are allowed and intended -- a pass may carry several vehicles -- and each binds
 one car. Nobody should build a one-outstanding-per-pass rule: his pooling

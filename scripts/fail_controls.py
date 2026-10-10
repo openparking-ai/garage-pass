@@ -109,6 +109,7 @@ G26 = "tests/test_g26_a_pass_is_read_whole_and_the_read_writes_nothing.py"
 G27 = "tests/test_g27_a_garages_register_is_read_whole_and_the_read_writes_nothing.py"
 G28 = "tests/test_g28_replace_car_is_one_step_and_the_old_car_still_gets_out.py"
 G29 = "tests/test_g29_one_qr_can_be_cancelled_and_nothing_else_moves.py"
+G30 = "tests/test_g30_an_unread_car_with_a_bound_qr_needs_a_picture_match.py"
 MIGRATION = "migrations/0001_garages_passes_registrations_and_rls.sql"
 MIGRATION_0002 = "migrations/0002_garage_changes_are_recorded.sql"
 MIGRATION_0003 = "migrations/0003_enrolments_holder_links_and_where_a_garage_enrols.sql"
@@ -1625,13 +1626,15 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
         G20, "store/enrolments.py",
         source(
             "    answer = answer_in_transaction(",
-            "        cursor, tenant_uuid, garage_external_id, answer_for, lane, direction, at,",
+            "        cursor, tenant_uuid, garage_external_id, vehicle_identity, lane, direction, "
+            "at,",
             "    )",
             "    return Redemption(",
         ),
         source(
             "    answer = answer_in_transaction(",
-            "        cursor, tenant_uuid, garage_external_id, answer_for, lane, direction, at,",
+            "        cursor, tenant_uuid, garage_external_id, vehicle_identity, lane, direction, "
+            "at,",
             "    )",
             '    answer = Answer(**{**answer.__dict__, "detail": "PLANTED: opened by the '
             'enrolment"})',
@@ -2402,18 +2405,12 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
     ),
     "G19/wrong-car-reads-already-used": (
         G19, "store/enrolments.py",
-        '                REFUSAL_CREDENTIAL_WRONG_CAR, "vehicle_identity",\n',
-        '                REFUSAL_CREDENTIAL_ALREADY_USED, "vehicle_identity",  # PLANTED\n',
+        '                REFUSAL_CREDENTIAL_WRONG_CAR, "vehicle_identity",\n'
+        '                f"{ENROLMENT} {enrolment.id!r} is bound to another car since "\n',
+        '                REFUSAL_CREDENTIAL_ALREADY_USED, "vehicle_identity",  # PLANTED\n'
+        '                f"{ENROLMENT} {enrolment.id!r} is bound to another car since "\n',
         "a bound QR on a different car is refused 'already used' instead of 'wrong car' "
         "(the brief's check 2)",
-    ),
-    "G19/unread-identity-refused": (
-        G19, "store/enrolments.py",
-        "    if not (isinstance(vehicle_identity, str) and not vehicle_identity.strip()):\n",
-        "    if True:  # PLANTED: a lane that read no identity is refused; the QR vouches for "
-        "nothing\n",
-        "a bound QR shown where the lane read no identity is refused blank: the QR is not the "
-        "car's backup",
     ),
     "G28/old-qr-still-enters": (
         G28, "store/enrolments.py",
@@ -2451,6 +2448,29 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
         "the pass\n",
         "cancelling one QR revokes its pass: the pass's other QRs and its cars stop working "
         "(the brief's check 4)",
+    ),
+    "G30/unread-recognised": (
+        G30, "store/enrolments.py",
+        "    return unread  # an unread identity: a picture match decides, never this module\n",
+        "    return False  # PLANTED: an unread identity is recognised blind\n",
+        "a bound QR shown with no identity read is recognised and opens the barrier with no "
+        "picture match (the fix brief's check 1)",
+    ),
+    "G30/no-recorded-as-recognised": (
+        G30, "store/enrolments.py",
+        "        if not matched or (read is not None and read != code.bound_identity):\n",
+        "        if read is not None and read != code.bound_identity:  # PLANTED: a 'no' "
+        "match is a recognised use\n",
+        "a picture match that said no is recorded as a recognised use and the car is let in "
+        "(the fix brief's check 2)",
+    ),
+    "G30/answer-not-kept": (
+        G30, "store/enrolments.py",
+        '            "UPDATE enrolments SET matches = matches || %s::jsonb "\n',
+        '            "UPDATE enrolments SET matches = matches || (%s::jsonb - 0) "  # PLANTED: the '
+        'answer is dropped, the statement and its placeholders unchanged\n',
+        "the lane's match answer is not kept on the QR's record, so a car that keeps needing "
+        "a match is invisible",
     ),
     "G27/register-renders-the-digest": (
         G27, "store/records.py",

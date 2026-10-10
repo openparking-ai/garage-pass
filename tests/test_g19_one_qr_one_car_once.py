@@ -228,8 +228,7 @@ def test_a_bound_qr_keeps_working_for_its_own_car_in_and_out_and_writes_nothing(
     then, by the same car, out and in again -- at BOTH ends, past the QR's own
     three days (a bound QR answers for the pass's dates, not its issue
     window) -- each one RECOGNISED and covered, and nothing written after the
-    bind. A lane that measured no identity at all is answered for the bound car:
-    the QR is the car's backup."""
+    bind. (A lane that measured no identity at all is G30's: a picture match.)"""
     pass_ = seeded(app, tenant_id, garage)
     token = issue(app, tenant_id, garage, pass_)["token"]
     end = Direction(where_enrolment_happens(garage))
@@ -245,12 +244,6 @@ def test_a_bound_qr_keeps_working_for_its_own_car_in_and_out_and_writes_nothing(
         assert again.registration is None and again.pass_state_change is None
         assert again.answer.outcome is Outcome.COVERED, again.answer
         assert again.answer.vehicle_identity == "CAR-1" and again.answer.direction is direction
-    for unread in ("", "   "):
-        backup = redeem(app, tenant_id, garage, token, unread, direction=Direction.ENTRY,
-                        at=at(date(2026, 6, 12), 8))
-        assert backup.recognised and backup.refusal is None, backup.refusal
-        assert backup.answer.outcome is Outcome.COVERED
-        assert backup.answer.vehicle_identity == "CAR-1", "answered for the car the QR is bound to"
     assert _written(app, tenant_id) == after_the_bind, "a recognised QR wrote something"
 
 
