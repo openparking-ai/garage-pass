@@ -111,7 +111,7 @@ def test_a_mismatch_between_the_description_and_the_identity_is_not_a_refusal(ap
     pass_ = seeded(app, tenant_id, GARAGES[0])
     token = issue(app, tenant_id, GARAGES[0], pass_, vehicle_description="silver Toyota")["token"]
     out = redeem(app, tenant_id, GARAGES[0], token, "BLACK-VAN-7")
-    assert out.redeemed and out.registration["vehicle_identity"] == "BLACK-VAN-7"
+    assert out.redeemed and out.registration["vehicle_identity"] == "BLACKVAN7"
     assert out.answer.vehicle_identity == "BLACK-VAN-7"
     read = credential(app, tenant_id, "qr-1")
     assert read.vehicle_description == "silver Toyota"

@@ -133,7 +133,7 @@ def test_a_yes_is_a_recognised_use_a_no_is_wrong_car_and_every_answer_is_kept(
         (True, "CAR-9", by, "entry", f.REFUSAL_CREDENTIAL_WRONG_CAR),
     ]
     assert all(m["at"] == LATER.isoformat() and m["lane"] == "L1" for m in kept)
-    assert [r[1] for r in registrations(app, tenant_id)] == ["CAR-1"], "no car was added"
+    assert [r[1] for r in registrations(app, tenant_id)] == ["CAR1"], "no car was added"
 
 
 @pytest.mark.guarantee("G30")

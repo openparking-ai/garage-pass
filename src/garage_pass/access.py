@@ -117,6 +117,7 @@ from datetime import UTC, date, datetime
 from enum import Enum
 from zoneinfo import ZoneInfo
 
+from garage_pass.enrolment import plate_key
 from garage_pass.findings import (
     BLANK_IDENTITY,
     BLANK_LANE,
@@ -390,8 +391,8 @@ def access(
     # bears on no answer and is not consulted, like any other such registration.
     dangling: list[Registration] = []
     for registration in registrations:
-        if registration.vehicle_identity.strip() != identity:
-            continue
+        if plate_key(registration.vehicle_identity) != plate_key(identity):
+            continue  # compared in the one normal form, never as raw text
         if registration.pass_id in duplicated:
             here.append(registration)
             continue
@@ -829,6 +830,6 @@ def _open_visit(
     candidates = [
         v for v in visits
         if v.pass_id == pass_.id and v.garage_id == garage.id
-        and v.vehicle_identity.strip() == identity and v.is_open
+        and plate_key(v.vehicle_identity) == plate_key(identity) and v.is_open
     ]
     return max(candidates, key=lambda v: v.entered_at) if candidates else None

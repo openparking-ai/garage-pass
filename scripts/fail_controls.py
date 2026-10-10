@@ -111,6 +111,7 @@ G28 = "tests/test_g28_replace_car_is_one_step_and_the_old_car_still_gets_out.py"
 G29 = "tests/test_g29_one_qr_can_be_cancelled_and_nothing_else_moves.py"
 G30 = "tests/test_g30_an_unread_car_with_a_bound_qr_needs_a_picture_match.py"
 G31 = "tests/test_g31_a_qr_is_made_for_a_plate_and_bound_to_it_from_issue.py"
+G32 = "tests/test_g32_a_stay_ends_at_checkout.py"
 MIGRATION = "migrations/0001_garages_passes_registrations_and_rls.sql"
 MIGRATION_0002 = "migrations/0002_garage_changes_are_recorded.sql"
 MIGRATION_0003 = "migrations/0003_enrolments_holder_links_and_where_a_garage_enrols.sql"
@@ -345,7 +346,7 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
         G9, "access.py",
         source(
             "        if v.pass_id == pass_.id and v.garage_id == garage.id",
-            "        and v.vehicle_identity.strip() == identity and v.is_open",
+            "        and plate_key(v.vehicle_identity) == plate_key(identity) and v.is_open",
         ),
         source(
             "        if v.pass_id == pass_.id and v.garage_id == garage.id",
@@ -357,11 +358,12 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
         G9, "access.py",
         source(
             "        if v.pass_id == pass_.id and v.garage_id == garage.id",
-            "        and v.vehicle_identity.strip() == identity and v.is_open",
+            "        and plate_key(v.vehicle_identity) == plate_key(identity) and v.is_open",
         ),
         source(
             "        if v.pass_id == pass_.id",
-            "        and v.vehicle_identity.strip() == identity and v.is_open  # PLANTED: anywhere",
+            "        and plate_key(v.vehicle_identity) == plate_key(identity) and v.is_open"
+            "  # PLANTED: anywhere",
         ),
         "the stay's entry is chosen from every garage of the pass again: an exit at B is measured "
         "from an entry recorded at A and answered OVER_MAX_STAY quoting A's instant",
@@ -880,9 +882,9 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
     # ---- the merge gate's five findings ------------------------------------
     "G1/holder-skip": (
         G1, "store/records.py",
-        "        for _rid, other, label, state, other_valid_to, other_from, other_end in "
+        "        for rid, other, label, state, other_valid_to, other_from, other_end, why in "
         "holders:\n",
-        "        for _rid, other, label, state, other_valid_to, other_from, other_end in "
+        "        for rid, other, label, state, other_valid_to, other_from, other_end, why in "
         "holders:\n"
         "            if state == State.REVOKED.value:\n"
         "                continue  # PLANTED: holders on revoked passes are skipped\n",
@@ -2578,11 +2580,68 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
     ),
     "G31/ascii-space-only": (
         G31, "enrolment.py",
-        "        ch for ch in text.upper() if not ch.isspace() and ch not in _PLATE_SEPARATORS\n",
-        "        ch for ch in text.upper() if ch not in \" -.\"  # PLANTED: ASCII space only\n",
+        '    return "".join(ch for ch in text.upper() if not _not_part_of_a_plate(ch))\n',
+        '    return "".join(ch for ch in text.upper() if ch not in " -.")  # PLANTED: ASCII\n',
         "the one normal form takes out the ASCII space only: a non-breaking or zero-width "
         "space keeps a plate from matching, or reaches the plate CHECK (the gate fixes' "
         "check 4)",
+    ),
+    # --- the stay-ends brief, Amendment 1: one normal form everywhere, every dash
+    "G31/raw-plate-read": (
+        G31, "access.py",
+        "        if plate_key(registration.vehicle_identity) != plate_key(identity):\n",
+        "        if registration.vehicle_identity.strip() != identity:  # PLANTED: raw\n",
+        "a plate read with no QR is compared with the registration as raw text: 'xyz 789' "
+        "is not XYZ789 (the amendment's item 6)",
+    ),
+    "G31/hyphen-only": (
+        G31, "enrolment.py",
+        '    return ch.isspace() or ch in _PLATE_SEPARATORS or unicodedata.category(ch) == "Pd"\n',
+        '    return ch.isspace() or ch in _PLATE_SEPARATORS or ch == "-"  # PLANTED\n',
+        "the normal form takes out the ASCII hyphen only: an en dash, em dash or minus keeps "
+        "a plate from matching (the amendment's item 7)",
+    ),
+    # --- a stay ends at checkout (G32)
+    "G32/next-stay-refused": (
+        G32, "store/records.py",
+        "                turnover.append(rid)  # the earlier stay's last day: ended below\n"
+        "                continue\n",
+        "                pass  # PLANTED: the next stay is refused as another pass\n",
+        "the car's next stay, starting on the earlier stay's last day, is refused as another "
+        "pass (check 1)",
+    ),
+    "G32/next-stay-before-checkout-allowed": (
+        G32, "store/records.py",
+        "                    and last <= effective_day:\n",
+        "                    and last <= effective_day + timedelta(days=1):  # PLANTED\n",
+        "the next stay is let in a day before the earlier stay's last day (check 2)",
+    ),
+    "G32/old-qr-enters-on-checkout-day": (
+        G32, "store/enrolments.py",
+        "    if stay == STAY_LAST_DAY and direction is Direction.ENTRY:\n",
+        "    if False:  # PLANTED: the stay's QR still enters on the day it ended\n",
+        "the earlier stay's QR enters on the day its stay ended (check 1)",
+    ),
+    "G32/old-qr-after-the-stay": (
+        G32, "store/enrolments.py",
+        "    if stay == STAY_ENDED:\n",
+        "    if False:  # PLANTED: a QR whose stay ended still answers\n",
+        "the earlier stay's QR still answers after its stay ended -- for the car's next stay "
+        "(checks 1 and 4)",
+    ),
+    "G32/end-stay-writes-nothing": (
+        G32, "store/records.py",
+        '        "ended_reason = %s WHERE tenant_id = %s AND id = ANY(%s)",\n',
+        '        "ended_reason = %s WHERE tenant_id = %s AND id = ANY(%s) AND false",  '
+        "# PLANTED\n",
+        "end-stay ends nothing, so the next stay from the checkout day is refused (check 3)",
+    ),
+    "G32/old-stay-answers-on-its-pass": (
+        G32, "store/enrolments.py",
+        "    return STAY_ENDED, (rows[-1] if rows else None)\n",
+        "    return STAY_LAST_DAY, (rows[-1] if rows else None)  # PLANTED\n",
+        "after its stay ended, the earlier QR is still answered on its own pass, as if every "
+        "later day were its last (check 4)",
     ),
 }
 

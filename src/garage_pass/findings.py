@@ -152,6 +152,7 @@ REFUSAL_LANES_GARAGE_REPEATED = "REFUSAL_LANES_GARAGE_REPEATED"
 # --- a code keeps working for its own car (R1 registry): bound, exit only, one cancel ---
 REFUSAL_CREDENTIAL_WRONG_CAR = "REFUSAL_CREDENTIAL_WRONG_CAR"
 REFUSAL_CREDENTIAL_EXIT_ONLY = "REFUSAL_CREDENTIAL_EXIT_ONLY"
+REFUSAL_CREDENTIAL_STAY_ENDED = "REFUSAL_CREDENTIAL_STAY_ENDED"
 REFUSAL_CREDENTIAL_ALREADY_REPLACED = "REFUSAL_CREDENTIAL_ALREADY_REPLACED"
 REFUSAL_CREDENTIAL_NOT_BOUND = "REFUSAL_CREDENTIAL_NOT_BOUND"
 REFUSAL_PLATE_NOT_STATED = "REFUSAL_PLATE_NOT_STATED"
@@ -398,9 +399,17 @@ REFUSALS: dict[str, str] = {
         "movement itself still gets its access answer, and an exit is never refused."
     ),
     REFUSAL_CREDENTIAL_EXIT_ONLY: (
-        "This QR's car was replaced on its pass, so the QR no longer opens an entry. It "
-        "still answers at an exit, so a car left inside can leave. The detail names the "
-        "QR and when it was replaced. Nothing is written."
+        "This QR's car was replaced on its pass -- or the stay it was made for ended "
+        "today (the guest checked out, or the car's next stay began) -- so the QR no "
+        "longer opens an entry. It still answers at an exit, so a car left inside can "
+        "leave. The detail names the QR and when, and why, that happened. Nothing is "
+        "written."
+    ),
+    REFUSAL_CREDENTIAL_STAY_ENDED: (
+        "The stay this QR was made for has ended: its last day passed, the guest checked "
+        "out, or the car's next stay began. After that day the QR opens nothing, at an "
+        "entry or an exit, and it never answers for the car's next stay. The detail names "
+        "the day the stay ended and why. Nothing is written; a new stay gets its own QR."
     ),
     REFUSAL_PLATE_NOT_STATED: (
         "A QR is made for one car, and that car's licence plate is required to make it. "

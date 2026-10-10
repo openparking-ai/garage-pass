@@ -110,7 +110,7 @@ returned, and rendering a bitmap is the client's job.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any
 from uuid import UUID
 from zoneinfo import ZoneInfo
@@ -139,6 +139,7 @@ from garage_pass.findings import (
     REFUSAL_CREDENTIAL_EXPIRED,
     REFUSAL_CREDENTIAL_NOT_BOUND,
     REFUSAL_CREDENTIAL_NOT_STARTED,
+    REFUSAL_CREDENTIAL_STAY_ENDED,
     REFUSAL_CREDENTIAL_UNKNOWN,
     REFUSAL_CREDENTIAL_WRONG_CAR,
     REFUSAL_DIRECTION_OUTSIDE_THE_PASS_TERMS,
@@ -155,11 +156,13 @@ from garage_pass.garage import require_text
 from garage_pass.localday import day_of, local, require_aware, zone
 from garage_pass.passes import EXPIRED, Pass, State
 from garage_pass.states import effective_state
-from garage_pass.store.access import answer_in_transaction
+from garage_pass.store.access import answer_in_transaction, answer_on_the_stays_last_day
 from garage_pass.store.records import (
+    ENDED_AFTER_LAST_DAY,
     REGISTRABLE_STATES,
     as_uuid,
     change_state,
+    ends_a_stay_that_day,
     load_garage,
     load_pass,
     load_readable_garage,
@@ -359,6 +362,80 @@ def require_plate(plate: object) -> tuple[str, str]:
     return typed, plate_key(typed)
 
 
+def _stay_end(
+    cursor: Any, tenant_uuid: UUID, garage_external_id: str, pass_external_id: str,
+    starts_on: date, days_valid: object,
+) -> date:
+    """The day a QR's registration ends: the day after the QR's LAST DAY (the
+    stay's checkout day) -- never open -- and never past the pass's own
+    valid_to, which bounds every registration on the pass."""
+    end = last_day(starts_on, require_days_valid(days_valid)) + timedelta(days=1)
+    garage_uuid, _garage = load_readable_garage(cursor, tenant_uuid, garage_external_id)
+    _u, pass_ = load_pass(cursor, tenant_uuid, garage_uuid, pass_external_id)
+    valid_to = pass_.terms.valid_to if pass_.terms is not None else None
+    if valid_to is not None and end > valid_to + timedelta(days=1):
+        end = valid_to + timedelta(days=1)
+    return end
+
+
+#: What a bound QR's own stay is on a day: in force; ended TODAY by a checkout
+#: or by the car's next stay (exit only, today); not begun; or over.
+STAY_LIVE, STAY_LAST_DAY, STAY_NOT_STARTED, STAY_ENDED = (
+    "live", "last_day", "not_started", "ended")
+
+
+def _stay_of(
+    cursor: Any, tenant_uuid: UUID, garage_uuid: UUID, pass_uuid: UUID, code: Credential,
+    today: date,
+) -> tuple[str, tuple | None]:
+    """A BOUND QR IS JUDGED BY ITS OWN STAY, never by the car's next one: the
+    registrations of the QR's car ON THE QR'S PASS at this garage, read on
+    ``today``. Nothing carries over -- a plate the next stay holds is that
+    stay's, and this QR does not answer for it."""
+    cursor.execute(
+        "SELECT effective_day, end_day, ended_reason FROM vehicle_registrations "
+        "WHERE tenant_id = %s AND garage_id = %s AND pass_id = %s AND vehicle_identity = %s "
+        "ORDER BY effective_day",
+        (tenant_uuid, garage_uuid, pass_uuid, plate_key(code.bound)),
+    )
+    rows = cursor.fetchall()
+    for row in rows:
+        effective, end, _why = row
+        if effective <= today and (end is None or today < end):
+            return STAY_LIVE, row
+    for row in rows:
+        if row[1] == today and ends_a_stay_that_day(row[2]):
+            return STAY_LAST_DAY, row
+    if rows and all(row[0] > today for row in rows):
+        return STAY_NOT_STARTED, rows[0]
+    return STAY_ENDED, (rows[-1] if rows else None)
+
+
+def _refuse_outside_the_stay(
+    stay: str, row: tuple | None, code: Credential, direction: Direction,
+) -> None:
+    """The refusals a QR's own stay gives, in order: not begun; over; and on
+    the day it ended early, an entry (the exit still answers)."""
+    if stay == STAY_NOT_STARTED:
+        raise Refused(
+            REFUSAL_CREDENTIAL_NOT_STARTED, ENROLMENT,
+            f"{ENROLMENT} {code.id!r}'s stay on pass {code.pass_id!r} begins on {row[0]}.",
+        )
+    if stay == STAY_ENDED:
+        when = (f"ended on {row[1]} ({row[2]})" if row is not None and row[1] is not None
+                else "is not in force")
+        raise Refused(
+            REFUSAL_CREDENTIAL_STAY_ENDED, ENROLMENT,
+            f"{ENROLMENT} {code.id!r}'s stay on pass {code.pass_id!r} {when}.",
+        )
+    if stay == STAY_LAST_DAY and direction is Direction.ENTRY:
+        raise Refused(
+            REFUSAL_CREDENTIAL_EXIT_ONLY, "direction",
+            f"{ENROLMENT} {code.id!r}'s stay on pass {code.pass_id!r} ended today, {row[1]} "
+            f"({row[2]}); it answers at an exit only, today.",
+        )
+
+
 def _held_by_this_pass(
     cursor: Any, tenant_uuid: UUID, pass_external_id: str, key: str, starts_on: date,
 ) -> bool:
@@ -401,8 +478,10 @@ def issue_enrolment(
     state is not touched: its move to active is still the lane's, at the QR's
     first use, which binds nothing new.
     ``days_valid`` is STATED -- ``None`` is refused by name, never defaulted --
-    and bounds only a QR stored without a plate; this one answers for its car
-    for as long as the pass covers it."""
+    and it is THE STAY: the plate's registration runs from ``starts_on`` to
+    the QR's last day, the checkout day, and ends there (``_stay_end``) --
+    never open. The car's next stay, on another pass, may start on that day
+    (``register_vehicle``'s turnover)."""
     plate_pair = require_plate(plate)
     tenant_uuid = as_uuid(tenant_id)
 
@@ -414,7 +493,9 @@ def issue_enrolment(
         typed, key = plate_pair
         if not _held_by_this_pass(cursor, tenant_uuid, pass_external_id, key, starts_on):
             register_vehicle(cursor, tenant_uuid, garage_external_id, pass_external_id, key,
-                             starts_on)
+                             starts_on, _stay_end(cursor, tenant_uuid, garage_external_id,
+                                                  pass_external_id, starts_on, days_valid),
+                             ENDED_AFTER_LAST_DAY)
         return {**issued, "plate": typed, "plate_key": key}
 
     return _under_savepoint(cursor, write, "issue")
@@ -724,6 +805,12 @@ def redeem_enrolment(
             # (wrong car, recognised, or a picture match required), never bound
             # a second time
             match_required = _present_bound(enrolment, vehicle_identity, direction, tz)
+            # ITS OWN STAY, never the car's next one: not begun, over, or -- on
+            # the day it ended early -- an entry, refused by name before any
+            # match or recognition (nothing carries over)
+            stay, stay_row = _stay_of(cursor, tenant_uuid, garage_uuid, pass_uuid, enrolment,
+                                      today)
+            _refuse_outside_the_stay(stay, stay_row, enrolment, direction)
             cursor.execute(f"RELEASE SAVEPOINT {SAVEPOINT}")
             if match_required:
                 # NOTHING OPENS ON THIS QR: the answer is for the identity the
@@ -753,8 +840,14 @@ def redeem_enrolment(
                     cursor, tenant_uuid, garage_external_id, enrolment.pass_id, State.ACTIVE,
                     by=enrolment.id, at=at, reason=f"first use at lane {lane!r}",
                 ), "first_use")
-            answer = answer_in_transaction(
-                cursor, tenant_uuid, garage_external_id, enrolment.bound, lane, direction, at,
+            answer = (
+                answer_on_the_stays_last_day(
+                    cursor, tenant_uuid, garage_external_id, plate_key(enrolment.bound),
+                    pass_uuid, enrolment.pass_id, stay_row[0], today, lane, direction, at,
+                ) if stay == STAY_LAST_DAY else answer_in_transaction(
+                    cursor, tenant_uuid, garage_external_id, enrolment.bound, lane, direction,
+                    at,
+                )
             )
             return Redemption(
                 enrolment=enrolment_id, redeemed=False, refusal=None, registration=None,
@@ -1106,8 +1199,8 @@ def confirm_match(
                                               and not identity_read.strip())
             else require_text(identity_read, "vehicle_identity"))
 
-    def write() -> tuple[Credential, Refused | None, dict | None]:
-        uuid, _pass_uuid, code = _locked_code(
+    def write() -> tuple[Credential, Refused | None, dict | None, tuple | None]:
+        uuid, pass_uuid, code = _locked_code(
             cursor, tenant_uuid, garage_external_id, enrolment_external_id,
         )
         tz = zone(load_readable_garage(cursor, tenant_uuid, garage_external_id)[1].timezone)
@@ -1135,6 +1228,19 @@ def confirm_match(
                 f"{ENROLMENT} {code.id!r}'s car was replaced on pass {code.pass_id!r} at "
                 f"{local(code.exit_only_at, tz).isoformat()}; it answers at an exit only.",
             )
+        last_day_of_stay = None
+        if refusal is None:
+            # a match decides WHICH CAR, never WHICH STAY: the QR's own stay
+            # still bounds it, and nothing carries over to the car's next one
+            garage_uuid_, _g = load_readable_garage(cursor, tenant_uuid, garage_external_id)
+            stay, stay_row = _stay_of(cursor, tenant_uuid, garage_uuid_, pass_uuid, code,
+                                      day_of(at, tz))
+            try:
+                _refuse_outside_the_stay(stay, stay_row, code, direction)
+            except Refused as outside:
+                refusal = outside
+            if refusal is None and stay == STAY_LAST_DAY:
+                last_day_of_stay = (pass_uuid, stay_row[0], day_of(at, tz))
         record = {
             "at": at.isoformat(), "matched": matched, "identity_read": read,
             "decided_by": decided_by, "lane": lane_name, "direction": direction.value,
@@ -1158,13 +1264,20 @@ def confirm_match(
                     by=code.id, at=at, reason=f"first use at lane {lane_name!r}, by a picture "
                     f"match ({decided_by})",
                 )
-        return code, refusal, change
+        return code, refusal, change, last_day_of_stay
 
-    code, refusal, change = _under_savepoint(cursor, write, "match")
-    answer = answer_in_transaction(
-        cursor, tenant_uuid, garage_external_id,
-        code.bound if refusal is None else (read or ""), lane_name, direction, at,
-    )
+    code, refusal, change, last_day_of_stay = _under_savepoint(cursor, write, "match")
+    if last_day_of_stay is not None:
+        pass_uuid, effective, today = last_day_of_stay
+        answer = answer_on_the_stays_last_day(
+            cursor, tenant_uuid, garage_external_id, plate_key(code.bound), pass_uuid,
+            code.pass_id, effective, today, lane_name, direction, at,
+        )
+    else:
+        answer = answer_in_transaction(
+            cursor, tenant_uuid, garage_external_id,
+            code.bound if refusal is None else (read or ""), lane_name, direction, at,
+        )
     return Redemption(
         enrolment=code.id, redeemed=False, refusal=refusal, registration=None,
         pass_state_change=change, answer=answer, recognised=refusal is None,

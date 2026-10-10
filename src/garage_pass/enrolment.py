@@ -52,6 +52,7 @@ from __future__ import annotations
 
 import hashlib
 import secrets
+import unicodedata
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from enum import Enum
@@ -116,23 +117,29 @@ def digest(token: str) -> str:
 
 
 #: What is not part of a plate when two plates are compared, wherever it is:
-#: the dash and the dot, and -- besides every character ``str.isspace()`` calls
-#: a space (the ASCII ones, non-breaking, thin, ideographic and the rest) --
-#: the invisible ones a pasted plate carries: zero-width space, zero-width
-#: non-joiner and joiner, and the byte-order mark. "abc-123", "ABC 123",
-#: "ABC.123" and "ABC\u00a0123" are one plate.
-_PLATE_SEPARATORS = frozenset("-.\u200b\u200c\u200d\ufeff")
+#: the dot; EVERY DASH -- every character Unicode files as dash punctuation
+#: (category Pd: the hyphen-minus, en dash, em dash and the rest) and the minus
+#: sign; besides every character ``str.isspace()`` calls a space (the ASCII
+#: ones, non-breaking, thin, ideographic and the rest), the invisible ones a
+#: pasted plate carries: zero-width space, zero-width non-joiner and joiner, and
+#: the byte-order mark. "abc-123", "ABC 123", "ABC.123", "ABC\u00a0123" and
+#: "ABC\u2013123" are one plate.
+_PLATE_SEPARATORS = frozenset(".\u2212\u200b\u200c\u200d\ufeff")
+
+
+def _not_part_of_a_plate(ch: str) -> bool:
+    return ch.isspace() or ch in _PLATE_SEPARATORS or unicodedata.category(ch) == "Pd"
 
 
 def plate_key(text: str) -> str:
-    """THE ONE NORMAL FORM a plate is compared in -- on the stored side and on
-    the read side alike: capitals, with no space (any Unicode space), no
-    invisible character, no dash and no dot anywhere. The plate as typed is
-    kept beside it for display; this is what is matched. Blank once normalised
-    is the empty string, which the callers name -- never a database error."""
-    return "".join(
-        ch for ch in text.upper() if not ch.isspace() and ch not in _PLATE_SEPARATORS
-    )
+    """THE ONE NORMAL FORM a plate is compared in -- EVERY comparison of a
+    plate in this module: what the desk types, what a lane reads, what a
+    registration holds and what a visit records. Capitals, with no space (any
+    Unicode space), no invisible character, no dash of any kind and no dot
+    anywhere. The plate as typed is kept beside it for display; this is what is
+    matched. Blank once normalised is the empty string, which the callers name
+    -- never a database error."""
+    return "".join(ch for ch in text.upper() if not _not_part_of_a_plate(ch))
 
 
 def register_hash(token_sha256: str) -> str:

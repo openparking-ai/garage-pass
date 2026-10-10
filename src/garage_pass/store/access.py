@@ -17,11 +17,12 @@ rows it wrote and not from a second implementation of the question.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from garage_pass.access import Answer, access
 from garage_pass.garage import Garage
+from garage_pass.passes import Registration
 from garage_pass.store.postgres import tenant
 from garage_pass.store.records import (
     as_uuid,
@@ -47,6 +48,34 @@ def answer_in_transaction(
     registrations = (
         registrations_of(cursor, tenant_uuid, garage_uuid, identity) if identity else []
     )
+    return _answer(cursor, tenant_uuid, garage_external_id, garage_uuid, garage, identity,
+                   registrations, lane, direction, at)
+
+
+def answer_on_the_stays_last_day(
+    cursor: Any, tenant_id: Any, garage_external_id: str, vehicle_identity: str,
+    pass_uuid: Any, pass_external_id: str, effective_day: date, today: date,
+    lane: str, direction: Direction, at: datetime,
+) -> Answer:
+    """The access answer for a stay's QR on the day the stay ENDED early (the
+    guest checked out, or the car's next stay began): the engine answers on
+    THAT stay's pass alone, as if its registration ran to the end of today --
+    so the guest still in the car is let out on their own pass, and the next
+    stay's pass is never consulted. Exit only: the caller refuses an entry on
+    that day before it asks."""
+    tenant_uuid = as_uuid(tenant_id)
+    garage_uuid, garage = load_garage(cursor, tenant_uuid, garage_external_id)
+    stay = Registration(pass_id=pass_external_id, vehicle_identity=vehicle_identity,
+                        effective_day=effective_day, end_day=today + timedelta(days=1))
+    return _answer(cursor, tenant_uuid, garage_external_id, garage_uuid, garage,
+                   vehicle_identity, [(as_uuid(pass_uuid), stay)], lane, direction, at)
+
+
+def _answer(
+    cursor: Any, tenant_uuid: Any, garage_external_id: str, garage_uuid: Any, garage: Garage,
+    identity: str, registrations: list, lane: str, direction: Direction, at: datetime,
+) -> Answer:
+    """Load what the engine needs for these registrations, and ask it."""
     passes = {}
     visits = []
     # the garages of every selected pass, each loaded ONCE by its external id

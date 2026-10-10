@@ -438,7 +438,7 @@ def test_one_open_visit_per_vehicle_per_pass_by_refusal_and_by_index(app, tenant
         with tenant(app, tenant_id) as cursor:
             cursor.execute(
                 "INSERT INTO visits (tenant_id, garage_id, pass_id, vehicle_identity, entry_lane, "
-                "entered_at) VALUES (%s, %s, %s, 'CAR-1', 'L1', now())",
+                "entered_at) VALUES (%s, %s, %s, 'CAR1', 'L1', now())",
                 (tenant_id, garage_uuid, pass_uuid),
             )
     app.rollback()

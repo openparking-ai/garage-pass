@@ -53,7 +53,12 @@ from datetime import date, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
-from garage_pass.enrolment import CANCELLED_BY_REVOCATION, CredentialState, register_hash
+from garage_pass.enrolment import (
+    CANCELLED_BY_REVOCATION,
+    CredentialState,
+    plate_key,
+    register_hash,
+)
 from garage_pass.enrolment import last_day as credential_last_day
 from garage_pass.findings import (
     REFUSAL_CONSTRAINT,
@@ -100,6 +105,40 @@ ONE_OPEN_VISIT = "visits_one_open_per_vehicle_per_garage"
 ENDED_BY_REVOCATION = "pass revoked"
 ENDED_BY_EXPIRY = "pass valid_to passed"
 ENDED_BY_OWNER = "ended"
+#: A registration a QR made for a plate wrote: it ends after the QR's last day,
+#: the stay's checkout day, and is never left open.
+ENDED_AFTER_LAST_DAY = "the stay's last day"
+#: The car's next stay, on another pass, began on the earlier stay's last day:
+#: the earlier registration ends that day (checkout-day turnover).
+ENDED_BY_NEXT_STAY = "the car's next stay began"
+#: The stay was ended early (end-stay); the stated reason follows it.
+ENDED_BY_CHECKOUT = "checked out"
+
+
+def ends_a_stay_that_day(ended_reason: str | None) -> bool:
+    """Whether a registration ended on its end day by the stay ending THAT day
+    -- the guest checked out, or the car's next stay began -- so the stay's QR
+    still lets the car out on that day and on no day after. A registration that
+    ran to its last day, or that the owner ended, has no such day."""
+    return ended_reason is not None and (
+        ended_reason == ENDED_BY_NEXT_STAY or ended_reason.startswith(ENDED_BY_CHECKOUT)
+    )
+
+
+def vehicle_key(value: object, field: str = "vehicle_identity") -> str:
+    """A vehicle identity as this module stores and compares it: non-blank
+    text with no control character (``require_text``), in the ONE NORMAL FORM
+    (``plate_key``) -- so "abc-123" registered on one pass and "ABC 123" on
+    another are one car, and the one-car-one-pass constraint sees them as one.
+    Blank once spaces, dashes and dots are taken out is refused by name."""
+    text = require_text(value, field)
+    key = plate_key(text)
+    if not key:
+        raise Refused(
+            REFUSAL_FIELD_BLANK, field,
+            f"{field} {text!r} is blank once spaces, dashes and dots are taken out.",
+        )
+    return key
 
 #: The typed states a vehicle may be registered onto. Enrolment (the next
 #: round) registers onto the first two; ``suspended`` and ``revoked`` are not
@@ -653,10 +692,11 @@ def _holders(
     end: date | None,
 ) -> list[tuple]:
     """Every registration of ``identity`` at the garage overlapping the range,
-    with its pass's external id, label, state and valid_to."""
+    with its pass's external id, label, state and valid_to, and why it ended."""
     cursor.execute(
         """
-        SELECT r.id, p.external_id, p.label, p.state, p.valid_to, r.effective_day, r.end_day
+        SELECT r.id, p.external_id, p.label, p.state, p.valid_to, r.effective_day, r.end_day,
+               r.ended_reason
         FROM vehicle_registrations r
         JOIN passes p ON p.tenant_id = r.tenant_id AND p.id = r.pass_id
         WHERE r.tenant_id = %s AND r.garage_id = %s AND r.vehicle_identity = %s
@@ -684,15 +724,23 @@ def garages_of(cursor: Any, tenant_uuid: UUID, pass_uuid: UUID) -> list[tuple[st
 def register_vehicle(
     cursor: Any, tenant_id: Any, garage_external_id: str, pass_external_id: str,
     vehicle_identity: str, effective_day: date, end_day: date | None = None,
+    ended_reason: str = ENDED_BY_OWNER,
 ) -> dict:
     """Bind a vehicle identity to a pass from ``effective_day`` AT EVERY GARAGE
     THE PASS NAMES -- one row per garage, in this one transaction, all or
     none -- refusing by name if another pass holds the identity at any one of
     those garages on any of those days, naming that garage. ``effective_day``
     is the caller's: a redemption passes the local day of the garage the car
-    is standing at, and that one day is the registration's day everywhere."""
+    is standing at, and that one day is the registration's day everywhere.
+
+    CHECKOUT-DAY TURNOVER: a registration on another pass whose LAST DAY (the
+    day before its end day, or its pass's valid_to) is this registration's
+    first day -- the same rental car with the next guest -- does not refuse
+    it: the earlier registration ends that day, by name (``ENDED_BY_NEXT_STAY``),
+    and this one starts. Before that last day it still refuses by name,
+    naming the earlier pass and its last day."""
     tenant_uuid = as_uuid(tenant_id)
-    identity = require_text(vehicle_identity, "vehicle_identity")
+    identity = vehicle_key(vehicle_identity)
     garage_uuid, _garage = load_readable_garage(cursor, tenant_uuid, garage_external_id)
     pass_uuid, pass_ = load_pass(cursor, tenant_uuid, garage_uuid, pass_external_id)
     garages = garages_of(cursor, tenant_uuid, pass_uuid)
@@ -748,26 +796,48 @@ def register_vehicle(
         (garage_ext, _holders(cursor, tenant_uuid, uuid, identity, effective_day, end_day))
         for garage_ext, uuid in garages
     ]
+    turnover: list = []
     for garage_ext, holders in holders_by_garage:
-        for _rid, other, label, state, other_valid_to, other_from, other_end in holders:
+        for rid, other, label, state, other_valid_to, other_from, other_end, why in holders:
             if other_valid_to is not None and other_valid_to < effective_day and other_end is None:
                 continue  # expired before this registration starts: released below
+            last = (other_end - timedelta(days=1) if other_end is not None else other_valid_to)
+            # A STAY's last day only: a QR's registration running to its last
+            # day, or one open to its pass's valid_to. A registration the owner
+            # ended, or a revocation ended, frees the car FROM its end day.
+            a_stays_last_day = why == ENDED_AFTER_LAST_DAY or (
+                other_end is None and other_valid_to is not None)
+            if other != pass_external_id and a_stays_last_day and other_from <= effective_day \
+                    and last <= effective_day:
+                turnover.append(rid)  # the earlier stay's last day: ended below
+                continue
             ends = (
                 f"ends on {other_end}" if other_end is not None
                 else f"runs to the pass's valid_to {other_valid_to}, so ends on "
                      f"{other_valid_to + timedelta(days=1)}" if other_valid_to is not None
                 else "has no end day"
             )
+            last_day = f"; its last day is {last}" if last is not None else ""
             raise Refused(
                 REFUSAL_VEHICLE_ON_ANOTHER_PASS,
                 "vehicle_identity",
                 f"at garage {garage_ext!r}: {identity!r} is registered to pass {other!r} "
-                f"({label}, {state}) from {other_from}, and that registration {ends}.",
+                f"({label}, {state}) from {other_from}, and that registration {ends}"
+                f"{last_day}.",
             )
+    # The checkout-day turnover: the earlier stay's registration ends on the day
+    # this one starts, at every garage, by name -- before this row is written,
+    # so the EXCLUDE never meets the two.
+    for rid in turnover:
+        cursor.execute(
+            "UPDATE vehicle_registrations SET end_day = GREATEST(%s, effective_day), "
+            "ended_reason = %s WHERE tenant_id = %s AND id = %s",
+            (effective_day, ENDED_BY_NEXT_STAY, tenant_uuid, rid),
+        )
 
     # 2. Release what expiry has already freed, at every garage.
     for _garage_ext, holders in holders_by_garage:
-        for rid, _other, _label, _state, other_valid_to, _from, other_end in holders:
+        for rid, _other, _label, _state, other_valid_to, _from, other_end, _why in holders:
             if other_end is None and other_valid_to is not None and other_valid_to < effective_day:
                 cursor.execute(
                     "UPDATE vehicle_registrations SET end_day = GREATEST(%s, effective_day), "
@@ -787,7 +857,7 @@ def register_vehicle(
                 "vehicle_identity, effective_day, end_day, ended_reason) "
                 "VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id",
                 (tenant_uuid, uuid, pass_uuid, identity, effective_day, end_day,
-                 ENDED_BY_OWNER if end_day is not None else None),
+                 ended_reason if end_day is not None else None),
             )
         except psycopg.errors.ExclusionViolation as violation:
             raise Refused(
@@ -837,11 +907,12 @@ def end_registration(
     everywhere the pass answers. The registration is the latest one of this
     identity on this pass (one effective day, one row per garage)."""
     tenant_uuid = as_uuid(tenant_id)
-    identity = require_text(vehicle_identity, "vehicle_identity")
+    identity = vehicle_key(vehicle_identity)
     garage_uuid, _garage = load_readable_garage(cursor, tenant_uuid, garage_external_id)
     pass_uuid, _pass = load_pass(cursor, tenant_uuid, garage_uuid, pass_external_id)
     cursor.execute(
-        "SELECT r.id, r.effective_day, r.end_day, g.external_id FROM vehicle_registrations r "
+        "SELECT r.id, r.effective_day, r.end_day, g.external_id, r.ended_reason "
+        "FROM vehicle_registrations r "
         "JOIN garages g ON g.tenant_id = r.tenant_id AND g.id = r.garage_id "
         "WHERE r.tenant_id = %s AND r.pass_id = %s AND r.vehicle_identity = %s "
         "ORDER BY r.effective_day DESC, g.external_id",
@@ -853,9 +924,12 @@ def end_registration(
             REFUSAL_REGISTRATION_NOT_FOUND, "vehicle_identity",
             f"{identity!r} on pass {pass_external_id!r}.",
         )
-    _rid, effective, current_end, _garage_ext = rows[0]
+    _rid, effective, current_end, _garage_ext, why = rows[0]
     latest = [row for row in rows if row[1] == effective]
-    if current_end is not None:
+    # a QR's registration runs to the stay's last day by plan: ending it
+    # EARLIER is still the owner's to do; ending it later is not
+    planned = why == ENDED_AFTER_LAST_DAY and current_end is not None and end_day < current_end
+    if current_end is not None and not planned:
         raise Refused(
             REFUSAL_REGISTRATION_ALREADY_ENDED, "end_day",
             f"{identity!r} on pass {pass_external_id!r} already ends on {current_end}.",
@@ -867,44 +941,108 @@ def end_registration(
         )
     cursor.execute(
         "UPDATE vehicle_registrations SET end_day = %s, ended_reason = %s "
-        "WHERE tenant_id = %s AND id = ANY(%s) AND end_day IS NULL",
-        (end_day, ENDED_BY_OWNER, tenant_uuid, [rid for rid, *_rest in latest]),
+        "WHERE tenant_id = %s AND id = ANY(%s) AND end_day IS NOT DISTINCT FROM %s",
+        (end_day, ENDED_BY_OWNER, tenant_uuid, [rid for rid, *_rest in latest], current_end),
     )
     return {"pass": pass_external_id, "vehicle_identity": identity, "end_day": end_day,
-            "garages": [garage_ext for *_rest, garage_ext in latest]}
+            "garages": [row[3] for row in latest]}
+
+
+def end_stay(
+    cursor: Any, tenant_id: Any, garage_external_id: str, pass_external_id: str,
+    day: date, *, by: str, reason: str,
+) -> dict:
+    """A STAY ENDS EARLY: the guest checked out before the date. Every
+    registration of the pass still in force on ``day`` or later -- every car,
+    at every garage the pass names -- ends on ``day``, recorded as a checkout
+    with who ended it and why (``ENDED_BY_CHECKOUT``). From that day the cars
+    are free for their next stay; the stay's QRs let a car out on that day and
+    open nothing after (``redeem_enrolment``). The pass's state is not touched
+    -- revoked means something else in this module -- and nothing already
+    ended moves. A pass with nothing in force on or after ``day`` is refused by
+    name and nothing is written."""
+    tenant_uuid = as_uuid(tenant_id)
+    if not isinstance(day, date) or isinstance(day, datetime):
+        raise Refused(REFUSAL_FIELD_BLANK, "day", f"day must be a date, not {day!r}.")
+    by = require_text(by, "by")
+    reason = require_text(reason, "reason")
+    garage_uuid, _garage = load_readable_garage(cursor, tenant_uuid, garage_external_id)
+    pass_uuid, _pass = load_pass(cursor, tenant_uuid, garage_uuid, pass_external_id)
+    lock_pass_row(cursor, tenant_uuid, pass_uuid)
+    cursor.execute(
+        "SELECT r.id, r.vehicle_identity, g.external_id, r.effective_day, r.end_day "
+        "FROM vehicle_registrations r JOIN garages g ON g.tenant_id = r.tenant_id "
+        "AND g.id = r.garage_id WHERE r.tenant_id = %s AND r.pass_id = %s "
+        "AND (r.end_day IS NULL OR r.end_day > %s) AND (r.end_day IS NULL OR "
+        "r.end_day > r.effective_day)",
+        (tenant_uuid, pass_uuid, day),
+    )
+    rows = cursor.fetchall()
+    if not rows:
+        raise Refused(
+            REFUSAL_REGISTRATION_NOT_FOUND, "pass",
+            f"pass {pass_external_id!r} holds no registration in force on {day} or later.",
+        )
+    why = f"{ENDED_BY_CHECKOUT} ({by}): {reason}"
+    cursor.execute(
+        "UPDATE vehicle_registrations SET end_day = GREATEST(%s, effective_day), "
+        "ended_reason = %s WHERE tenant_id = %s AND id = ANY(%s)",
+        (day, why, tenant_uuid, [rid for rid, *_rest in rows]),
+    )
+    ended = sorted({(identity, garage_ext) for _rid, identity, garage_ext, *_r in rows})
+    return {"pass": pass_external_id, "day": day, "by": by, "reason": reason,
+            "ended": [{"vehicle_identity": i, "garage": g} for i, g in ended]}
 
 
 def registrations_of(
     cursor: Any, tenant_id: Any, garage_uuid: UUID, identity: str
 ) -> list[tuple[UUID, Registration]]:
-    """Every registration of the identity at the garage, as (pass uuid, value).
+    """Every registration of the identity at the garage, as (pass uuid, value),
+    the identity looked up in the ONE NORMAL FORM (``plate_key``) -- the form
+    every registration is written in -- so "xyz 789" read finds "XYZ789".
 
     ``exit_only`` is DERIVED here from the car's QRs on that pass, never stored
     on the registration (migration 0005): the car was replaced -- a QR bound to
     it carries ``exit_only_at`` -- and no QR bound to it on the pass is still
-    live. One fact, one place."""
+    live. One fact, one place. The QR's car is compared in the normal form too."""
+    key = plate_key(identity) if isinstance(identity, str) else ""
+    if not key:
+        return []
     cursor.execute(
         """
-        SELECT r.pass_id, p.external_id, r.effective_day, r.end_day,
-               EXISTS (SELECT 1 FROM enrolments e
-                       WHERE e.tenant_id = r.tenant_id AND e.pass_id = r.pass_id
-                         AND COALESCE(e.plate, e.redeemed_vehicle_identity) = r.vehicle_identity
-                         AND e.exit_only_at IS NOT NULL)
-               AND NOT EXISTS (SELECT 1 FROM enrolments e
-                       WHERE e.tenant_id = r.tenant_id AND e.pass_id = r.pass_id
-                         AND COALESCE(e.plate, e.redeemed_vehicle_identity) = r.vehicle_identity
-                         AND e.state <> 'cancelled' AND e.exit_only_at IS NULL)
+        SELECT r.pass_id, p.external_id, r.effective_day, r.end_day
         FROM vehicle_registrations r
         JOIN passes p ON p.tenant_id = r.tenant_id AND p.id = r.pass_id
         WHERE r.tenant_id = %s AND r.garage_id = %s AND r.vehicle_identity = %s
         ORDER BY r.effective_day
         """,
-        (as_uuid(tenant_id), garage_uuid, identity),
+        (as_uuid(tenant_id), garage_uuid, key),
     )
+    rows = cursor.fetchall()
+    pass_uuids = sorted({as_uuid(pid) for pid, *_rest in rows}, key=str)
+    replaced: dict[UUID, tuple[bool, bool]] = {}
+    if pass_uuids:
+        cursor.execute(
+            "SELECT e.pass_id, COALESCE(e.plate, e.redeemed_vehicle_identity), e.state, "
+            "e.exit_only_at IS NOT NULL FROM enrolments e "
+            "WHERE e.tenant_id = %s AND e.pass_id = ANY(%s) "
+            "AND COALESCE(e.plate, e.redeemed_vehicle_identity) IS NOT NULL",
+            (as_uuid(tenant_id), pass_uuids),
+        )
+        for pid, bound, state, exit_only in cursor.fetchall():
+            if plate_key(bound) != key:
+                continue
+            was_replaced, still_live = replaced.get(as_uuid(pid), (False, False))
+            replaced[as_uuid(pid)] = (
+                was_replaced or exit_only,
+                still_live or (state != CredentialState.CANCELLED.value and not exit_only),
+            )
     return [
-        (as_uuid(pid), Registration(pass_id=ext, vehicle_identity=identity,
-                                    effective_day=eff, end_day=end, exit_only=exit_only))
-        for pid, ext, eff, end, exit_only in cursor.fetchall()
+        (as_uuid(pid), Registration(
+            pass_id=ext, vehicle_identity=key, effective_day=eff, end_day=end,
+            exit_only=(replaced.get(as_uuid(pid), (False, False)) == (True, False)),
+        ))
+        for pid, ext, eff, end in rows
     ]
 
 
@@ -1154,7 +1292,7 @@ def record_entry(
     vehicle_identity: str, lane: str, at: datetime,
 ) -> dict:
     tenant_uuid = as_uuid(tenant_id)
-    identity = require_text(vehicle_identity, "vehicle_identity")
+    identity = vehicle_key(vehicle_identity)
     require_aware(at, "at")
     garage_uuid, _garage = load_readable_garage(cursor, tenant_uuid, garage_external_id)
     pass_uuid, _pass = load_pass(cursor, tenant_uuid, garage_uuid, pass_external_id)
@@ -1187,7 +1325,7 @@ def record_exit(
     vehicle_identity: str, lane: str, at: datetime,
 ) -> dict:
     tenant_uuid = as_uuid(tenant_id)
-    identity = require_text(vehicle_identity, "vehicle_identity")
+    identity = vehicle_key(vehicle_identity)
     require_aware(at, "at")
     garage_uuid, _garage = load_readable_garage(cursor, tenant_uuid, garage_external_id)
     pass_uuid, _pass = load_pass(cursor, tenant_uuid, garage_uuid, pass_external_id)

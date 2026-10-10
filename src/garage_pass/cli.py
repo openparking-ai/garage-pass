@@ -29,7 +29,9 @@ records who, when and why like a state change does), ``set-garage-enrols-at``
 ``create-pass`` (the document's ``garage_ids`` names one or more garages, and
 ``--garage`` is one of them; the pass answers at every garage it names and at
 no other), ``register-vehicle`` (one row per garage the pass names, together or
-not at all), ``end-registration``, ``set-state``,
+not at all), ``end-registration``, ``end-stay`` (a stay ends early -- the
+guest checked out -- every car of the pass ends on that day, at every garage,
+recorded as a checkout with who and why), ``set-state``,
 ``record-entry``, ``record-exit``, ``access-in-store``, ``show-pass`` (the one
 read of a pass: its state, its two valid days, its garages and every
 registration it holds, history included, sorted in Python by code point; it
@@ -201,6 +203,12 @@ def _parser() -> argparse.ArgumentParser:
     s.add_argument("--pass-id", required=True)
     s.add_argument("--vehicle", required=True)
     s.add_argument("--end-day", required=True)
+    s = store("end-stay", "a stay ends early (the guest checked out): every car of the pass "
+              "ends on that day, at every garage; its QRs let the car out that day only")
+    s.add_argument("--pass-id", required=True)
+    s.add_argument("--day", required=True, help="the checkout day, YYYY-MM-DD")
+    s.add_argument("--by", required=True, help="who ended the stay")
+    s.add_argument("--reason", required=True, help="why, kept with the registrations")
     s = store("set-state", "move a pass to a typed state, recording who and why")
     s.add_argument("--pass-id", required=True)
     s.add_argument("--state", required=True)
@@ -765,6 +773,11 @@ def _run(args: argparse.Namespace) -> int:
                 out = records.end_registration(
                     cursor, args.tenant, args.garage, args.pass_id, args.vehicle,
                     _day(args.end_day, "--end-day"),
+                )
+            elif args.command == "end-stay":
+                out = records.end_stay(
+                    cursor, args.tenant, args.garage, args.pass_id, _day(args.day, "--day"),
+                    by=args.by, reason=args.reason,
                 )
             elif args.command == "set-state":
                 out = records.change_state(

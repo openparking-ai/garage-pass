@@ -171,8 +171,8 @@ def test_a_new_qr_is_bound_from_issue_and_its_first_use_binds_nothing_new(app, t
     issued = issue_plate(app, tenant_id, TRANSIENT_ENTRY, pass_, "kay 77",
                          starts_on=date(2026, 6, 1))
     assert issued["plate"] == "kay 77" and issued["plate_key"] == "KAY77"
-    assert [r[:4] for r in registrations(app, tenant_id)] == [
-        (pass_.id, "KAY77", date(2026, 6, 1), None)]
+    assert [r[:5] for r in registrations(app, tenant_id)] == [
+        (pass_.id, "KAY77", date(2026, 6, 1), date(2026, 6, 4), "the stay's last day")]
     with tenant(app, tenant_id) as cursor:
         register = show_garage_register(cursor, tenant_id, TRANSIENT_ENTRY.id)
     app.rollback()
@@ -217,7 +217,7 @@ def test_a_qr_stored_without_a_plate_keeps_its_first_use_binding(app, tenant_id)
     assert query(app, tenant_id, "SELECT plate, plate_typed FROM enrolments") == [(None, None)]
     assert registrations(app, tenant_id) == []
     first = redeem(app, tenant_id, TRANSIENT_ENTRY, token, "any-car 9", at=LATER)
-    assert first.redeemed and first.registration["vehicle_identity"] == "any-car 9"
+    assert first.redeemed and first.registration["vehicle_identity"] == "ANYCAR9"
     other = redeem(app, tenant_id, TRANSIENT_ENTRY, token, "ANY-CAR-9", at=LATER)
     assert other.refusal.code == f.REFUSAL_CREDENTIAL_WRONG_CAR, "exact text, as it always was"
 
@@ -386,3 +386,36 @@ def test_another_plate_read_is_answered_on_its_own_pass_never_on_the_qr(app, ten
     unread = redeem(app, tenant_id, TRANSIENT_ENTRY, token, "", direction=Direction.ENTRY,
                     at=LATER)
     assert unread.match_required and unread.answer.outcome is not Outcome.COVERED
+
+
+@pytest.mark.guarantee("G31")
+@pytest.mark.parametrize("read", ["XYZ 789", "xyz 789", "x-y.z–7​89", "XYZ789"],
+                         ids=ascii)
+def test_a_plate_read_with_no_qr_meets_the_registration_in_the_one_normal_form(
+    app, tenant_id, read
+):
+    """STAY-ENDS AMENDMENT, ITEM 6. A plate read checked with no QR -- the
+    lane asking about a car by its plate alone -- finds the registration in
+    the one normal form: "XYZ 789" and "xyz 789" are XYZ789."""
+    pass_ = seeded(app, tenant_id, TRANSIENT_ENTRY)
+    token = issue_plate(app, tenant_id, TRANSIENT_ENTRY, pass_, "XYZ789")["token"]
+    assert redeem(app, tenant_id, TRANSIENT_ENTRY, token, "XYZ789", at=LATER).recognised
+    for direction in (Direction.ENTRY, Direction.EXIT):
+        answer = access_from_store(app, tenant_id, TRANSIENT_ENTRY.id, read, "L1", direction,
+                                   LATER)
+        assert answer.outcome is Outcome.COVERED and answer.pass_id == pass_.id, (
+            ascii(read), answer.detail)
+
+
+@pytest.mark.guarantee("G31")
+@pytest.mark.parametrize("typed", ["ABC–123", "ABC—123", "ABC−123",
+                                   "ABC‐123", "ABC‑123"], ids=ascii)
+def test_every_dash_is_out_of_the_one_normal_form(app, tenant_id, typed):
+    """STAY-ENDS AMENDMENT, ITEM 7. En dash, em dash, minus sign, hyphen and
+    non-breaking hyphen: each typed at issue and read at the lane is ABC123."""
+    assert plate_key(typed) == "ABC123"
+    pass_ = seeded(app, tenant_id, TRANSIENT_ENTRY)
+    issued = issue_plate(app, tenant_id, TRANSIENT_ENTRY, pass_, typed)
+    assert issued["plate_key"] == "ABC123"
+    out = redeem(app, tenant_id, TRANSIENT_ENTRY, issued["token"], typed, at=LATER)
+    assert out.recognised and not out.match_required, ascii(typed)

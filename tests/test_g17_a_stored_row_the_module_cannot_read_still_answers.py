@@ -222,7 +222,7 @@ def _raw_pass(owner, app, tenant_id, **columns):
         )
         cursor.execute(
             "INSERT INTO vehicle_registrations (tenant_id, garage_id, pass_id, vehicle_identity, "
-            "effective_day) VALUES (%s, %s, %s, 'CAR-1', '2026-01-01')",
+            "effective_day) VALUES (%s, %s, %s, 'CAR1', '2026-01-01')",
             (tenant_id, garage_uuid, pass_uuid),
         )
     return pass_uuid
@@ -469,6 +469,10 @@ def test_every_write_against_an_unreadable_garage_is_refused_by_name_and_the_rep
         "confirm_match": lambda c: enrolments.confirm_match(
             c, tenant_id, "g-badtz", "e-1", matched=True, identity_read=None,
             decided_by="fingerprint", lane="L1", direction=Direction.ENTRY, at=NOON_MONDAY),
+        # the stay ends early (a checkout)
+        "end_stay": lambda c: records.end_stay(
+            c, tenant_id, "g-badtz", pass_.id, date(2026, 6, 1), by="desk",
+            reason="checked out early"),
     }
     # the redemption is the one write that CARRIES its refusal instead of raising
     # it, because the lane must still be answered: exercised below on its own

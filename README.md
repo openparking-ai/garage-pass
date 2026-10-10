@@ -127,8 +127,13 @@ without it — or blank once spaces, invisible characters, dashes and dots are
 taken out — nothing is made. The plate is kept as typed for display, and
 compared in one normal form: capitals, with no space of any kind (a
 non-breaking or other Unicode space included), no invisible character
-(zero-width space, joiner and non-joiner, byte-order mark), no dash and no dot,
-so `abc-123` typed and `ABC 123` read are the same car. The QR is **bound to
+(zero-width space, joiner and non-joiner, byte-order mark), no dash of any kind
+(hyphen, en dash, em dash, minus sign and the rest) and no dot, so `abc-123`
+typed and `ABC 123` read are the same car. **Every** plate comparison uses it:
+what the desk types, what a lane reads with or without a QR, what a
+registration holds and what a visit records — a car asked about by its plate
+alone, read as `xyz 789`, is the `XYZ789` registered. Registrations and visits
+are stored in that form (migration 0006 makes the database refuse any other). The QR is **bound to
 that plate from the moment it is made**: the plate is registered on the pass in
 the same transaction (a plate another pass holds is refused there, at the desk;
 a plate THIS pass already holds — a QR reissued for the same car, a replaced
@@ -149,9 +154,8 @@ as before.
 
 **One QR per car, and it keeps working for that car.** Once bound, the QR is
 the car's: shown again by that car it is *recognised* — answered for that car,
-at either end, in and out as often as needed, for as long as the pass covers it
-(past the QR's own `--days-valid`, which only bounds the first use) — and
-nothing is written. **A car whose identity the lane did not read is never let in
+at either end, in and out as often as needed, for its stay — and nothing is
+written. **A car whose identity the lane did not read is never let in
 blind**: the bound QR answers `match_required`, with the QR's id and the car it
 is bound to, and nothing opens on that QR; the lane matches the car's picture against that
 car's earlier ones (its fingerprint, or an outside picture check when that is
@@ -163,6 +167,25 @@ car, the QR is refused
 the driver is sent to whoever issued it; the refusal names the QR and when it
 was bound, never the other car. A car whose identity the lane cannot read at
 the QR's first use is not bound (`vehicle_identity` is refused blank).
+
+**A stay ends at checkout; the same car with its next guest is a new stay.** A
+QR made for a plate registers that plate from `--starts-on` to the QR's last day
+(`--starts-on` plus `--days-valid` less one — the checkout day), never open and
+never past the pass's `valid_to`. Rental cars come back with a new guest: the
+car's next stay, on another pass, may start on that last day — the earlier
+registration ends that day, by name (`the car's next stay began`), and the next
+one starts. Before that day the plate on another pass is still refused by name,
+naming the earlier pass and its last day. A registration the owner ended, or a
+revocation ended, is not a stay's last day: the car is free from its end day,
+as before. **A stay ended early** (`end-stay`: the guest checked out — the day,
+who and why) ends every car of the pass on that day, at every garage. On the
+day a stay ended early or turned over, its QR is refused
+`REFUSAL_CREDENTIAL_EXIT_ONLY` at an entry and lets the car out at an exit, on
+its own pass; after that day it is refused `REFUSAL_CREDENTIAL_STAY_ENDED` at
+either end, and before its stay begins `REFUSAL_CREDENTIAL_NOT_STARTED`.
+**Nothing carries over**: a plate read, a QR and a picture match for the next
+stay answer on the next stay's pass, never the earlier one. A shorter stay is
+`end-registration` (to an earlier day) or `end-stay`.
 
 **Replacing a car is one step** (`replace-car`, from the QR of the car being
 replaced): that QR becomes **exit only** — refused `REFUSAL_CREDENTIAL_EXIT_ONLY`
