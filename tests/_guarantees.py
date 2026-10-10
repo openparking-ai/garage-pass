@@ -261,7 +261,8 @@ GUARANTEES: dict[str, str] = {
         "in a written-down allowance that CI leaves empty."
     ),
     "G19": (
-        "ONE QR, ONE CAR -- AND IT KEEPS WORKING FOR THAT CAR. An enrolment BINDS on first "
+        "ONE QR, ONE CAR -- AND IT KEEPS WORKING FOR THAT CAR. A QR made now is bound to its "
+        "plate from issue (G31); a QR stored before plates were required BINDS on first "
         "use exactly one vehicle identity -- the one the lane measured and handed in -- and "
         "is never bound again: shown again by that car it is RECOGNISED and answered for "
         "that car, at either end, in and out as often as needed, past its own issue window "
@@ -547,6 +548,26 @@ GUARANTEES: dict[str, str] = {
         "who decided and the outcome, so a car that keeps needing a match is visible. A QR "
         "that does not exist, is bound to no car or is cancelled, and a decider the module "
         "does not record, are refused by name and keep nothing."
+    ),
+    "G31": (
+        "A QR IS MADE FOR A PLATE, AND BOUND TO IT FROM ISSUE. The plate is required to make a "
+        "QR -- issue-enrolment, replace-car (the new car's) and the holder's own link alike -- "
+        "and without it, or blank once spaces, dashes and dots are taken out, the call is "
+        "refused by name and nothing is minted. Plates are compared in ONE normal form, by "
+        "one function, on the stored side and the read side alike: capitals, with no space, "
+        "dash or dot -- 'abc-123' typed and 'ABC 123' read are one car; the plate as typed is "
+        "kept beside it for display. The QR is BOUND from issue: in the same transaction the "
+        "normal-form plate is registered on the pass from starts_on at every garage it "
+        "names -- a plate another pass holds is refused by name at the desk, and nothing is "
+        "minted -- and the register shows the plate as the QR's bound identity before any "
+        "use. At the lane, against that plate: the same plate is RECOGNISED, at either end, "
+        "for as long as the pass covers it; its first use writes no registration and moves "
+        "a pass still waiting for its first car to active (recorded, the QR as the actor); "
+        "nothing read, a read that differs only by look-alike characters (O/0, I/1, B/8, S/5, "
+        "Z/2) and at most one other character, is a PICTURE MATCH (G30) and never wrong car -- a "
+        "camera misread must not send a driver to the desk; a read two or more characters "
+        "away that are not look-alikes is WRONG CAR. A QR stored before plates were required "
+        "carries no plate and keeps its first-use binding, exact text, unchanged."
     ),
 }
 

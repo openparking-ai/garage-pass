@@ -1902,9 +1902,9 @@ def test_the_product_walk_over_a_three_garage_pass_through_the_command_line(
     assert status == 0 and out["stored"] == "pass-span", out
     status, out = _run(main, capsys, ["issue-enrolment", *T, "--garage", B.id, "--pass-id",
                                       "pass-span", "--enrolment-id", "qr-1", "--starts-on",
-                                      "2026-06-01", "--days-valid", "3", "--by", "owner",
-                                      "--at", AT])
-    assert status == 0 and out["pass"] == "pass-span", out
+                                      "2026-06-01", "--days-valid", "3", "--plate", "car-1",
+                                      "--by", "owner", "--at", AT])
+    assert status == 0 and out["pass"] == "pass-span" and out["plate_key"] == "CAR1", out
     token = out["token"]
     status, out = _run(main, capsys, ["redeem-enrolment", *T, "--garage", ELSEWHERE.id, "--token",
                                       token, "--vehicle", "CAR-1", "--lane", "L1", "--direction",
@@ -1914,18 +1914,20 @@ def test_the_product_walk_over_a_three_garage_pass_through_the_command_line(
     status, out = _run(main, capsys, ["redeem-enrolment", *T, "--garage", A.id, "--token", token,
                                       "--vehicle", "CAR-1", "--lane", "L1", "--direction", "entry",
                                       "--at", AT])
-    assert status == 0 and out["enrolment"]["redeemed"] is True, out
-    assert out["enrolment"]["registration"]["garages"] == [A.id, B.id, C.id]
+    # bound to its plate from issue -- registered at every garage of the pass when
+    # it was made -- so its first use is RECOGNISED and binds nothing
+    assert status == 0 and out["enrolment"]["recognised"] is True, out
+    assert out["enrolment"]["registration"] is None
     for garage in THREE:
         for direction, lane, want in (("entry", "L1", 0), ("exit", "L2", 0), ("entry", "L9", 1)):
             status, out = _run(main, capsys, ["access-in-store", *T, "--garage", garage.id,
-                                              "--vehicle", "CAR-1", "--lane", lane,
+                                              "--vehicle", "CAR1", "--lane", lane,
                                               "--direction", direction, "--at", AT])
             assert status == want, (garage.id, direction, lane, out)
             if want:
                 assert out["reason"] == f.WRONG_LANE and f"'{garage.id}'" in out["detail"]
     status, out = _run(main, capsys, ["access-in-store", *T, "--garage", ELSEWHERE.id,
-                                      "--vehicle", "CAR-1", "--lane", "L1", "--direction", "entry",
+                                      "--vehicle", "CAR1", "--lane", "L1", "--direction", "entry",
                                       "--at", AT])
     assert status == 1 and out["reason"] == f.NO_PASS, out
     # a second car, registered by the owner at C: held at every garage, and a
@@ -1941,20 +1943,20 @@ def test_the_product_walk_over_a_three_garage_pass_through_the_command_line(
     assert "garage-elsewhere" in out["detail"] and "garage-a" in out["detail"]
     # the swap: end CAR-1 everywhere, a new QR, the new car
     status, out = _run(main, capsys, ["end-registration", *T, "--garage", B.id, "--pass-id",
-                                      "pass-span", "--vehicle", "CAR-1", "--end-day",
+                                      "pass-span", "--vehicle", "CAR1", "--end-day",
                                       "2026-06-02"])
     assert status == 0 and out["garages"] == [A.id, B.id, C.id], out
     status, out = _run(main, capsys, ["issue-enrolment", *T, "--garage", C.id, "--pass-id",
                                       "pass-span", "--enrolment-id", "qr-2", "--starts-on",
-                                      "2026-06-02", "--days-valid", "3", "--by", "owner",
-                                      "--at", AT])
+                                      "2026-06-02", "--days-valid", "3", "--plate",
+                                      "CAR-1-NEW", "--by", "owner", "--at", AT])
     assert status == 0
     status, out = _run(main, capsys, ["redeem-enrolment", *T, "--garage", C.id, "--token",
                                       out["token"], "--vehicle", "CAR-1-NEW", "--lane", "L2",
                                       "--direction", "entry", "--at", "2026-06-02T09:00:00-06:00"])
-    assert status == 0 and out["enrolment"]["redeemed"] is True, out
+    assert status == 0 and out["enrolment"]["recognised"] is True, out
     status, out = _run(main, capsys, ["access-in-store", *T, "--garage", A.id, "--vehicle",
-                                      "CAR-1", "--lane", "L1", "--direction", "entry", "--at",
+                                      "CAR1", "--lane", "L1", "--direction", "entry", "--at",
                                       "2026-06-02T09:00:00-06:00"])
     assert status == 1 and out["reason"] == f.NO_PASS and "ended on 2026-06-02" in out["detail"]
     # revoke: every registration at every garage ends, every credential dies

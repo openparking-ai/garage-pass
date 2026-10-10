@@ -238,7 +238,7 @@ def test_the_holder_the_terms_the_label_the_credentials_and_the_other_garages_do
     with tenant(app, tenant_id) as cursor:
         token = issue_enrolment(cursor, tenant_id, DENVER.id, two_zone.id, "qr-1",
                                 date(2026, 6, 1), 3, by="owner", at=CREATED_AT,
-                                vehicle_description="silver")
+                                vehicle_description="silver", plate="PLATE-Q1")
         link = issue_holder_link(cursor, tenant_id, DENVER.id, two_zone.id, "link-1",
                                  date(2026, 6, 1), 3, by="owner", at=CREATED_AT)
     app.commit()
@@ -595,7 +595,12 @@ def test_the_register_carries_every_qr_by_its_register_hash_bound_car_and_exit_o
     from datetime import UTC, datetime
 
     from garage_pass.enrolment import digest, register_hash_of
-    from garage_pass.store.enrolments import cancel_code, redeem_enrolment, replace_car
+    from garage_pass.store.enrolments import (
+        _mint_enrolment,
+        cancel_code,
+        redeem_enrolment,
+        replace_car,
+    )
     from garage_pass.terms import Direction
 
     garage = Garage(id="garage-denver", timezone="America/Denver", transient_available=True,
@@ -608,16 +613,21 @@ def test_the_register_carries_every_qr_by_its_register_hash_bound_car_and_exit_o
         store_garage(cursor, tenant_id, garage)
         for pass_ in (with_car, no_car):
             create_pass(cursor, tenant_id, garage.id, pass_, by="seed", at=CREATED_AT)
-        for pass_, ext in ((with_car, "qr-a"), (with_car, "qr-c"), (no_car, "qr-d")):
+        # qr-a: a QR stored before plates were required (the module's own mint,
+        # no plate), bound at its first use; qr-c and qr-d: made by plate
+        tokens["qr-a"] = _mint_enrolment(cursor, tenant_id, garage.id, with_car.id, "qr-a",
+                                         date(2026, 6, 1), 3, by="owner",
+                                         at=CREATED_AT)["token"]
+        for pass_, ext, plate in ((with_car, "qr-c", "cee 3"), (no_car, "qr-d", "dee-4")):
             tokens[ext] = issue_enrolment(cursor, tenant_id, garage.id, pass_.id, ext,
-                                          date(2026, 6, 1), 3, by="owner",
-                                          at=CREATED_AT)["token"]
+                                          date(2026, 6, 1), 3, by="owner", at=CREATED_AT,
+                                          plate=plate)["token"]
         bound = redeem_enrolment(cursor, tenant_id, garage.id, tokens["qr-a"], "CAR-1", "L1",
                                  Direction.ENTRY, ON_THE_FIRST)
         assert bound.redeemed, bound.refusal
         tokens["qr-b"] = replace_car(cursor, tenant_id, garage.id, "qr-a", "qr-b",
                                      date(2026, 6, 2), 3, by="desk", at=CREATED_AT,
-                                     reason="rental swapped")["new"]["token"]
+                                     reason="rental swapped", plate="bee.2")["new"]["token"]
         cancel_code(cursor, tenant_id, garage.id, "qr-c", by="desk", at=CREATED_AT,
                     reason="never received")
     app.commit()
@@ -630,11 +640,13 @@ def test_the_register_carries_every_qr_by_its_register_hash_bound_car_and_exit_o
         return {"register_hash": register_hash_of(tokens[ext]), "enrolment": ext,
                 "pass": pass_id, "state": state, "bound_identity": bound,
                 "exit_only": exit_only, "starts_on": starts_on, "last_day": last_day}
+    # a QR made by plate shows its plate, in the one normal form, BEFORE any use
+    # (qr-d, qr-b); the one stored without a plate shows the car of its first use
     assert printed["codes"] == [
-        code("qr-d", "pass-no-car", "issued", None, False, "2026-06-01", "2026-06-03"),
+        code("qr-d", "pass-no-car", "issued", "DEE4", False, "2026-06-01", "2026-06-03"),
         code("qr-a", "pass-with-car", "redeemed", "CAR-1", True, "2026-06-01", "2026-06-03"),
-        code("qr-b", "pass-with-car", "issued", None, False, "2026-06-02", "2026-06-04"),
-        code("qr-c", "pass-with-car", "cancelled", None, False, "2026-06-01", "2026-06-03"),
+        code("qr-b", "pass-with-car", "issued", "BEE2", False, "2026-06-02", "2026-06-04"),
+        code("qr-c", "pass-with-car", "cancelled", "CEE3", False, "2026-06-01", "2026-06-03"),
     ]
     # a pass a QR names is in the pass list, though no car is registered on it
     assert [p["pass"] for p in printed["passes"]] == ["pass-no-car", "pass-with-car"]

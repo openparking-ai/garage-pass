@@ -110,6 +110,7 @@ G27 = "tests/test_g27_a_garages_register_is_read_whole_and_the_read_writes_nothi
 G28 = "tests/test_g28_replace_car_is_one_step_and_the_old_car_still_gets_out.py"
 G29 = "tests/test_g29_one_qr_can_be_cancelled_and_nothing_else_moves.py"
 G30 = "tests/test_g30_an_unread_car_with_a_bound_qr_needs_a_picture_match.py"
+G31 = "tests/test_g31_a_qr_is_made_for_a_plate_and_bound_to_it_from_issue.py"
 MIGRATION = "migrations/0001_garages_passes_registrations_and_rls.sql"
 MIGRATION_0002 = "migrations/0002_garage_changes_are_recorded.sql"
 MIGRATION_0003 = "migrations/0003_enrolments_holder_links_and_where_a_garage_enrols.sql"
@@ -1770,8 +1771,9 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
     ),
     "G23/stored-plaintext": (
         G23, "store/enrolments.py",
-        "        values.append(vehicle_description)",
-        "        values.append(minted.token)  # PLANTED: the plaintext stored beside the digest",
+        "        values += [vehicle_description, *(plate or (None, None))]",
+        "        values += [minted.token, *(plate or (None, None))]  # PLANTED: the plaintext "
+        "stored beside the digest",
         "the token is stored in a column of the row: a database read yields a working QR",
     ),
     "G23/rendered-plaintext": (
@@ -1790,9 +1792,10 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
     ),
     "G24/issuer": (
         G24, "store/enrolments.py",
-        "        days_valid, by=link.id, at=at, vehicle_description=vehicle_description,",
-        '        days_valid, by="owner", at=at, vehicle_description=vehicle_description,'
-        "  # PLANTED",
+        "        days_valid, by=link.id, at=at, plate=plate, "
+        "vehicle_description=vehicle_description,",
+        '        days_valid, by="owner", at=at, plate=plate, '
+        "vehicle_description=vehicle_description,  # PLANTED",
         "the enrolment a link issues records the owner as its issuer, not the link: the row "
         "that issued it no longer records the human",
     ),
@@ -2398,7 +2401,7 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
     # --- a code keeps working for its own car (registry R1, migration 0005) ---
     "G19/bound-qr-spent": (
         G19, "store/enrolments.py",
-        "        if enrolment.bound_identity is not None:\n",
+        "        if enrolment.bound is not None:\n",
         "        if False:  # PLANTED: a bound QR is spent on first use, as before\n",
         "spend-on-first-use put back: the same car showing its own QR again is refused "
         "already-used, so the QR is no backup after the first entry (the brief's check 1)",
@@ -2434,10 +2437,18 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
     ),
     "G28/write-not-taken-back": (
         G28, "store/enrolments.py",
-        '        cursor.execute(f"ROLLBACK TO SAVEPOINT {WRITE_SAVEPOINT}")\n',
+        '        cursor.execute(f"ROLLBACK TO SAVEPOINT {name}")\n',
         "        pass  # PLANTED: a refused replacement leaves its first write standing\n",
         "the new QR's issue refuses after the old QR was marked exit only, and a caller that "
         "commits keeps half a replacement",
+    ),
+    "G28/one-savepoint-name": (
+        G28, "store/enrolments.py",
+        'SAVEPOINTS = {"issue": "garage_pass_issue", "replace": "garage_pass_replace",\n',
+        'SAVEPOINTS = {"issue": "garage_pass_replace", "replace": "garage_pass_replace",  '
+        '# PLANTED: the issue shares the replacement\'s savepoint name\n',
+        "the new QR's issue sits under the replacement's own savepoint name, so its refusal "
+        "rolls back only to the inner savepoint and the old QR stays marked exit only",
     ),
     "G29/cancel-revokes-the-pass": (
         G29, "store/enrolments.py",
@@ -2451,15 +2462,16 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
     ),
     "G30/unread-recognised": (
         G30, "store/enrolments.py",
-        "    return unread  # an unread identity: a picture match decides, never this module\n",
+        "    return unread  # an unread or a close read: a picture match decides, never this "
+        "module\n",
         "    return False  # PLANTED: an unread identity is recognised blind\n",
         "a bound QR shown with no identity read is recognised and opens the barrier with no "
         "picture match (the fix brief's check 1)",
     ),
     "G30/no-recorded-as-recognised": (
         G30, "store/enrolments.py",
-        "        if not matched or (read is not None and read != code.bound_identity):\n",
-        "        if read is not None and read != code.bound_identity:  # PLANTED: a 'no' "
+        "        if not matched or (read is not None and not _same_car(read, code)):\n",
+        "        if read is not None and not _same_car(read, code):  # PLANTED: a 'no' "
         "match is a recognised use\n",
         "a picture match that said no is recorded as a recognised use and the car is let in "
         "(the fix brief's check 2)",
@@ -2471,6 +2483,42 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
         'answer is dropped, the statement and its placeholders unchanged\n',
         "the lane's match answer is not kept on the QR's record, so a car that keeps needing "
         "a match is invisible",
+    ),
+    "G31/mint-without-a-plate": (
+        G31, "store/enrolments.py",
+        "    if not isinstance(plate, str) or not plate_key(plate):\n",
+        "    if False:  # PLANTED: a QR is minted without a plate\n",
+        "a QR is made with no plate, or a blank one: the brief's check 1",
+    ),
+    "G31/raw-text-compare": (
+        G31, "store/enrolments.py",
+        "            seen = compare_plates(plate_key(identity), enrolment.plate)\n",
+        "            seen = compare_plates(identity, enrolment.plate)  # PLANTED: raw text\n",
+        "the lane's read is compared as typed, not in the one normal form: 'ABC 123' is not "
+        "'abc-123' (the brief's check 2)",
+    ),
+    "G31/close-read-is-wrong-car": (
+        G31, "enrolment.py",
+        "    return PLATE_CLOSE if _edits_at_most_one(fold(read), fold(plate)) else "
+        "PLATE_DIFFERENT\n",
+        "    return PLATE_DIFFERENT  # PLANTED: a misread is another car\n",
+        "a look-alike or one-character misread is refused wrong car and the driver sent to "
+        "the desk (the brief's check 3)",
+    ),
+    "G31/far-read-asks-a-match": (
+        G31, "enrolment.py",
+        "    return PLATE_CLOSE if _edits_at_most_one(fold(read), fold(plate)) else "
+        "PLATE_DIFFERENT\n",
+        "    return PLATE_CLOSE  # PLANTED: every other plate asks for a picture match\n",
+        "a clearly different plate asks for a picture match instead of being refused wrong "
+        "car (the brief's check 4)",
+    ),
+    "G31/register-hides-the-plate": (
+        G31, "store/records.py",
+        '        "COALESCE(e.plate, e.redeemed_vehicle_identity), e.exit_only_at IS NOT NULL, "\n',
+        '        "e.redeemed_vehicle_identity, e.exit_only_at IS NOT NULL, "  # PLANTED\n',
+        "the register shows no identity for a QR until its first use, so a lane cannot "
+        "decide on it offline (the brief's check 5)",
     ),
     "G27/register-renders-the-digest": (
         G27, "store/records.py",

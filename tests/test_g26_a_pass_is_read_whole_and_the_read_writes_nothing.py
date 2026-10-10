@@ -248,7 +248,8 @@ def test_the_holder_the_terms_the_label_and_the_credentials_do_not_travel(
     pass_ = seed_two_zone_pass(app, tenant_id, terms=every)
     with tenant(app, tenant_id) as cursor:
         token = issue_enrolment(cursor, tenant_id, DENVER.id, pass_.id, "qr-1", date(2026, 6, 1),
-                                3, by="owner", at=CREATED_AT, vehicle_description="silver")
+                                3, by="owner", at=CREATED_AT, vehicle_description="silver",
+                                plate="PLATE-Q1")
         link = issue_holder_link(cursor, tenant_id, DENVER.id, pass_.id, "link-1",
                                  date(2026, 6, 1), 3, by="owner", at=CREATED_AT)
     app.commit()

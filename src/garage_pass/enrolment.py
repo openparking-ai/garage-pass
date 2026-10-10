@@ -115,6 +115,57 @@ def digest(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
+#: What is not part of a plate when two plates are compared: spaces, dashes and
+#: dots, wherever they are. "abc-123", "ABC 123" and "ABC.123" are one plate.
+_PLATE_SEPARATORS = frozenset(" \t-.")
+
+#: The pairs a camera confuses. Read only by ``compare_plates``: a read that
+#: differs from the plate only by these is a picture match, never a refusal.
+LOOKALIKES = {"O": "0", "I": "1", "B": "8", "S": "5", "Z": "2"}
+
+#: The three answers ``compare_plates`` gives.
+PLATE_SAME = "same"
+PLATE_CLOSE = "close"
+PLATE_DIFFERENT = "different"
+
+
+def plate_key(text: str) -> str:
+    """THE ONE NORMAL FORM a plate is compared in -- on the stored side and on
+    the read side alike: capitals, with no space, dash or dot anywhere. The
+    plate as typed is kept beside it for display; this is what is matched.
+    Blank once normalised is the empty string, which the callers name."""
+    return "".join(ch for ch in text.upper() if ch not in _PLATE_SEPARATORS)
+
+
+def _edits_at_most_one(a: str, b: str) -> bool:
+    """Whether ``a`` becomes ``b`` by changing, adding or removing ONE character."""
+    if a == b:
+        return True
+    if abs(len(a) - len(b)) > 1:
+        return False
+    if len(a) == len(b):
+        return sum(x != y for x, y in zip(a, b, strict=True)) == 1
+    short, long_ = (a, b) if len(a) < len(b) else (b, a)
+    return any(long_[:i] + long_[i + 1:] == short for i in range(len(long_)))
+
+
+def compare_plates(read: str, plate: str) -> str:
+    """A plate the lane READ against the plate a QR was issued for, both in
+    ``plate_key`` form, answered ``same``, ``close`` or ``different``. Same is
+    the same plate. Close is a read that differs only by look-alike characters
+    (O/0, I/1, B/8, S/5, Z/2) and at most ONE other character -- a camera
+    misread a driver must not be sent to a desk for, so a picture match
+    decides. Different is two or more characters apart that are not
+    look-alikes -- another car."""
+    if read == plate:
+        return PLATE_SAME
+
+    def fold(text: str) -> str:
+        return "".join(LOOKALIKES.get(ch, ch) for ch in text)
+
+    return PLATE_CLOSE if _edits_at_most_one(fold(read), fold(plate)) else PLATE_DIFFERENT
+
+
 def register_hash(token_sha256: str) -> str:
     """What a garage's register publishes for a QR: the SHA-256 of its stored
     digest (the hex text), so a lane that caches the register can decide on a
@@ -243,6 +294,16 @@ class Credential:
     #: When the bound car was replaced on the pass: from then the QR opens no
     #: entry and still answers at an exit. Enrolments only.
     exit_only_at: datetime | None = None
+    #: The plate the QR was ISSUED for, in ``plate_key`` form: the QR is bound
+    #: to it from issue (migration 0005). None on a QR stored before plates were
+    #: required, which binds on first use as it always did.
+    plate: str | None = None
+
+    @property
+    def bound(self) -> str | None:
+        """The car this QR answers for: its plate from issue, or -- on a QR
+        stored without one -- the identity it bound at first use."""
+        return self.plate if self.plate is not None else self.bound_identity
 
     def __post_init__(self) -> None:
         require_typed(self)

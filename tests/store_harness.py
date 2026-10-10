@@ -173,7 +173,7 @@ def seed_full_graph(app: Any, tenant_id: UUID) -> None:
                             at=CREATED_AT, reason="seeded")
         # the two one-time credentials (0003)
         issue_enrolment(cursor, tenant_id, garage.id, pass_.id, "enrol-1", date(2026, 6, 1), 3,
-                        by="seed", at=CREATED_AT)
+                        by="seed", at=CREATED_AT, plate="SEED-2")
         issue_holder_link(cursor, tenant_id, garage.id, pass_.id, "link-1", date(2026, 6, 1), 3,
                           by="seed", at=CREATED_AT)
     app.commit()

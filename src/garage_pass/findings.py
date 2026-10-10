@@ -154,6 +154,7 @@ REFUSAL_CREDENTIAL_WRONG_CAR = "REFUSAL_CREDENTIAL_WRONG_CAR"
 REFUSAL_CREDENTIAL_EXIT_ONLY = "REFUSAL_CREDENTIAL_EXIT_ONLY"
 REFUSAL_CREDENTIAL_ALREADY_REPLACED = "REFUSAL_CREDENTIAL_ALREADY_REPLACED"
 REFUSAL_CREDENTIAL_NOT_BOUND = "REFUSAL_CREDENTIAL_NOT_BOUND"
+REFUSAL_PLATE_NOT_STATED = "REFUSAL_PLATE_NOT_STATED"
 REFUSAL_MATCH_DECIDED_BY_UNKNOWN = "REFUSAL_MATCH_DECIDED_BY_UNKNOWN"
 
 REFUSALS: dict[str, str] = {
@@ -388,9 +389,13 @@ REFUSALS: dict[str, str] = {
         "the pass left as it was. The detail names when and why. Nothing is written."
     ),
     REFUSAL_CREDENTIAL_WRONG_CAR: (
-        "This QR is bound to another car. A QR binds the car that first uses it and then "
-        "answers for that car only; shown by a different car it is refused, with no "
-        "exception, and the driver is sent to the person who issued it. The detail names "
+        "This QR is bound to another car: the plate it was made for (or, on a QR stored "
+        "before plates were required, the car that first used it), and it answers for that "
+        "car only. Shown by a car whose plate is clearly different -- two or more characters "
+        "that are not look-alikes -- it is refused, with no exception, and the driver is "
+        "sent to the person who issued it; a read that differs only by look-alike "
+        "characters and at most one other character is a picture match instead. The detail "
+        "names "
         "the QR and when it was bound, never the other car. Nothing is written. The "
         "movement itself still gets its access answer, and an exit is never refused."
     ),
@@ -398,6 +403,13 @@ REFUSALS: dict[str, str] = {
         "This QR's car was replaced on its pass, so the QR no longer opens an entry. It "
         "still answers at an exit, so a car left inside can leave. The detail names the "
         "QR and when it was replaced. Nothing is written."
+    ),
+    REFUSAL_PLATE_NOT_STATED: (
+        "A QR is made for one car, and that car's licence plate is required to make it. "
+        "None was given, or it was blank once spaces, dashes and dots were taken out, so "
+        "nothing was made. The QR is bound to the plate from the moment it is made; the "
+        "plate is compared in capitals with no spaces, dashes or dots, so 'abc-123' and "
+        "'ABC 123' are the same plate."
     ),
     REFUSAL_CREDENTIAL_NOT_BOUND: (
         "A picture match was answered for a QR that is bound to no car, so there is no "

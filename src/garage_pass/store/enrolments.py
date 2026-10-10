@@ -118,12 +118,16 @@ from zoneinfo import ZoneInfo
 from garage_pass.access import Answer
 from garage_pass.enrolment import (
     EXPIRED_CREDENTIAL,
+    PLATE_CLOSE,
+    PLATE_DIFFERENT,
     Credential,
     CredentialState,
     MintedToken,
+    compare_plates,
     digest,
     last_day,
     mint,
+    plate_key,
     require_days_valid,
     token_of,
     where_enrolment_happens,
@@ -147,6 +151,7 @@ from garage_pass.findings import (
     REFUSAL_LANE_OUTSIDE_THE_PASS_TERMS,
     REFUSAL_MATCH_DECIDED_BY_UNKNOWN,
     REFUSAL_PASS_NOT_REGISTRABLE,
+    REFUSAL_PLATE_NOT_STATED,
     Refused,
 )
 from garage_pass.garage import require_text
@@ -261,7 +266,7 @@ def _refuse_unless_registrable(pass_: Pass, pass_external_id: str, on: date, wha
 def _insert(
     cursor: Any, kind: str, tenant_uuid: UUID, pass_uuid: UUID, external_id: str,
     minted: MintedToken, starts_on: date, days_valid: int, by: str, at: datetime,
-    vehicle_description: str | None,
+    vehicle_description: str | None, plate: tuple[str, str] | None = None,
 ) -> None:
     table = _TABLE[kind]
     cursor.execute(
@@ -277,8 +282,8 @@ def _insert(
     values = [tenant_uuid, pass_uuid, external_id, minted.sha256, starts_on, days_valid, by, at,
               CredentialState.ISSUED.value]
     if kind == ENROLMENT:
-        columns += ", vehicle_description"
-        values.append(vehicle_description)
+        columns += ", vehicle_description, plate_typed, plate"
+        values += [vehicle_description, *(plate or (None, None))]
     try:
         cursor.execute(
             f"INSERT INTO {table} ({columns}) VALUES ({', '.join('%s' for _ in values)})",
@@ -309,13 +314,16 @@ def _issued(
     return out
 
 
-def issue_enrolment(
+def _mint_enrolment(
     cursor: Any, tenant_id: Any, garage_external_id: str, pass_external_id: str,
     external_id: str, starts_on: date, days_valid: object, *, by: str, at: datetime,
-    vehicle_description: str | None = None,
+    vehicle_description: str | None = None, plate: tuple[str, str] | None = None,
 ) -> dict:
-    """Mint the QR for a pass: a token returned once, its digest stored.
-    ``days_valid`` is STATED -- ``None`` is refused by name, never defaulted."""
+    """The mint itself: a token returned once, its digest stored, on a pass
+    that takes a registration. ``plate`` is (as typed, ``plate_key`` form);
+    None writes the row a QR had before plates were required -- reached by no
+    public door now (``issue_enrolment`` requires the plate), kept because such
+    rows exist and are read exactly as they always were."""
     tenant_uuid = as_uuid(tenant_id)
     external_id = require_text(external_id, "enrolment.id")
     days = require_days_valid(days_valid)
@@ -331,9 +339,53 @@ def issue_enrolment(
                                       starts_on, "an enrolment")
     minted = mint()
     _insert(cursor, ENROLMENT, tenant_uuid, pass_uuid, external_id, minted, starts_on, days, by,
-            at, description)
+            at, description, plate)
     return _issued(ENROLMENT, external_id, pass_external_id, minted, starts_on, days, by, at,
                    description)
+
+
+def require_plate(plate: object) -> tuple[str, str]:
+    """The plate a QR is made for: (as typed, ``plate_key`` form), or a refusal
+    by name -- absent, not text, or blank once normalised. Nothing is minted."""
+    if not isinstance(plate, str) or not plate_key(plate):
+        raise Refused(
+            REFUSAL_PLATE_NOT_STATED, "plate",
+            f"plate is {plate!r}; a QR is made for one car's plate.",
+        )
+    typed = require_text(plate, "plate")
+    return typed, plate_key(typed)
+
+
+def issue_enrolment(
+    cursor: Any, tenant_id: Any, garage_external_id: str, pass_external_id: str,
+    external_id: str, starts_on: date, days_valid: object, *, by: str, at: datetime,
+    plate: object = None, vehicle_description: str | None = None,
+) -> dict:
+    """Mint the QR for ONE CAR, BY ITS PLATE: a token returned once, its digest
+    stored. ``plate`` is REQUIRED -- absent or blank is refused by name and
+    nothing is minted -- and the QR is BOUND to it from issue: in the same
+    transaction, under a savepoint, the plate (in ``plate_key`` form) is
+    registered on the pass from ``starts_on`` -- one car, one pass: a plate
+    held by another pass is refused by name here, at the desk, not at the
+    lane. The pass's state is not touched: its move to active is still the
+    lane's, at the QR's first use, which binds nothing new.
+    ``days_valid`` is STATED -- ``None`` is refused by name, never defaulted --
+    and bounds only a QR stored without a plate; this one answers for its car
+    for as long as the pass covers it."""
+    plate_pair = require_plate(plate)
+    tenant_uuid = as_uuid(tenant_id)
+
+    def write() -> dict:
+        issued = _mint_enrolment(
+            cursor, tenant_uuid, garage_external_id, pass_external_id, external_id, starts_on,
+            days_valid, by=by, at=at, vehicle_description=vehicle_description, plate=plate_pair,
+        )
+        typed, key = plate_pair
+        register_vehicle(cursor, tenant_uuid, garage_external_id, pass_external_id, key,
+                         starts_on)
+        return {**issued, "plate": typed, "plate_key": key}
+
+    return _under_savepoint(cursor, write, "issue")
 
 
 def issue_holder_link(
@@ -384,13 +436,13 @@ class PassGarages:
 def _credential_from_row(kind: str, row: tuple) -> tuple[UUID, UUID, PassGarages, Credential]:
     (uuid, pass_uuid, garage_uuids, garage_exts, pass_ext, ext, starts_on, days_valid, state,
      issued_by, issued_at, redeemed_at, cancelled_at, cancelled_reason, *rest) = row
-    description, bound, exit_only_at = rest if rest else (None, None, None)
+    description, bound, exit_only_at, plate = rest if rest else (None, None, None, None)
     credential = Credential(
         kind=kind, id=ext, pass_id=pass_ext, starts_on=starts_on, days_valid=days_valid,
         state=CredentialState(state), issued_by=issued_by, issued_at=issued_at,
         vehicle_description=description, redeemed_at=redeemed_at,
         cancelled_at=cancelled_at, cancelled_reason=cancelled_reason,
-        bound_identity=bound, exit_only_at=exit_only_at,
+        bound_identity=bound, exit_only_at=exit_only_at, plate=plate,
     )
     garages = PassGarages(
         uuids=frozenset(as_uuid(u) for u in (garage_uuids or ())),
@@ -400,7 +452,7 @@ def _credential_from_row(kind: str, row: tuple) -> tuple[UUID, UUID, PassGarages
 
 
 def _select(kind: str, where: str) -> str:
-    extra = (", c.vehicle_description, c.redeemed_vehicle_identity, c.exit_only_at"
+    extra = (", c.vehicle_description, c.redeemed_vehicle_identity, c.exit_only_at, c.plate"
              if kind == ENROLMENT else "")
     return (
         f"SELECT {_COLUMNS}{extra} FROM {_TABLE[kind]} c "
@@ -521,7 +573,7 @@ def _is_bound(cursor: Any, tenant_uuid: UUID, presented: str) -> bool:
         _uuid, _pass_uuid, _garages, glimpse = _by_token(cursor, ENROLMENT, tenant_uuid, presented)
     except Refused:
         return False
-    return glimpse.bound_identity is not None
+    return glimpse.bound is not None
 
 
 def _present_bound(
@@ -535,7 +587,7 @@ def _present_bound(
     with ``confirm_match``; where it measured one, the identity must be the
     one the QR is bound to, exact text, or it is refused WRONG CAR, and then
     an entry on a replaced car is refused EXIT ONLY. It writes nothing."""
-    assert enrolment.bound_identity is not None
+    assert enrolment.bound is not None
     if enrolment.state is CredentialState.CANCELLED:
         raise Refused(
             REFUSAL_CREDENTIAL_CANCELLED, ENROLMENT,
@@ -545,7 +597,19 @@ def _present_bound(
     unread = isinstance(vehicle_identity, str) and not vehicle_identity.strip()
     if not unread:
         identity = require_text(vehicle_identity, "vehicle_identity")
-        if identity != enrolment.bound_identity:
+        if enrolment.plate is not None:
+            # A QR MADE FOR A PLATE: compared in the one normal form; a read
+            # that is only a look-alike or one character off is a picture
+            # match, never a refusal -- a camera misread is not another car
+            seen = compare_plates(plate_key(identity), enrolment.plate)
+            if seen == PLATE_DIFFERENT:
+                raise Refused(
+                    REFUSAL_CREDENTIAL_WRONG_CAR, "vehicle_identity",
+                    f"{ENROLMENT} {enrolment.id!r} was made for another plate on "
+                    f"{local(enrolment.issued_at, tz).isoformat()}.",
+                )
+            unread = seen == PLATE_CLOSE
+        elif identity != enrolment.bound_identity:
             raise Refused(
                 REFUSAL_CREDENTIAL_WRONG_CAR, "vehicle_identity",
                 f"{ENROLMENT} {enrolment.id!r} is bound to another car since "
@@ -557,7 +621,7 @@ def _present_bound(
             f"{ENROLMENT} {enrolment.id!r}'s car was replaced on pass {enrolment.pass_id!r} "
             f"at {local(enrolment.exit_only_at, tz).isoformat()}; it answers at an exit only.",
         )
-    return unread  # an unread identity: a picture match decides, never this module
+    return unread  # an unread or a close read: a picture match decides, never this module
 
 
 def redeem_enrolment(
@@ -623,9 +687,10 @@ def redeem_enrolment(
         )
         tz = zone(garage.timezone)
         today = day_of(at, tz)
-        if enrolment.bound_identity is not None:
-            # ALREADY BOUND: judged on the row re-read under the locks -- a QR
-            # that another lane bound an instant ago is answered here, by name
+        if enrolment.bound is not None:
+            # ALREADY BOUND -- by its plate from issue, or by its first use:
+            # judged on the row re-read under the locks -- a QR that another
+            # lane bound an instant ago is answered here, by name
             # (wrong car, recognised, or a picture match required), never bound
             # a second time
             match_required = _present_bound(enrolment, vehicle_identity, direction, tz)
@@ -640,15 +705,25 @@ def redeem_enrolment(
                         cursor, tenant_uuid, garage_external_id, vehicle_identity, lane,
                         direction, at,
                     ),
-                    match_required=True, match_for=enrolment.bound_identity,
+                    match_required=True, match_for=enrolment.bound,
                 )
+            # RECOGNISED. A QR bound from issue (its plate) on a pass still
+            # waiting for its first car moves the pass to active here, at its
+            # first use -- recorded, the QR as the actor -- and binds nothing:
+            # the plate was registered when the QR was made
+            change = None
+            _u, pass_now = load_pass(cursor, tenant_uuid, garage_uuid, enrolment.pass_id)
+            if pass_now.state in (State.DRAFT, State.AWAITING_ENROLMENT):
+                change = _under_savepoint(cursor, lambda: change_state(
+                    cursor, tenant_uuid, garage_external_id, enrolment.pass_id, State.ACTIVE,
+                    by=enrolment.id, at=at, reason=f"first use at lane {lane!r}",
+                ), "first_use")
             answer = answer_in_transaction(
-                cursor, tenant_uuid, garage_external_id, enrolment.bound_identity, lane,
-                direction, at,
+                cursor, tenant_uuid, garage_external_id, enrolment.bound, lane, direction, at,
             )
             return Redemption(
                 enrolment=enrolment_id, redeemed=False, refusal=None, registration=None,
-                pass_state_change=None, answer=answer, recognised=True,
+                pass_state_change=change, answer=answer, recognised=True,
             )
         _refuse_unless_redeemable(ENROLMENT, enrolment, today, tz)
         _pass_uuid, pass_ = load_pass(cursor, tenant_uuid, garage_uuid, enrolment.pass_id)
@@ -728,7 +803,7 @@ HOLDER_WRITES = ("holder_name", "holder_phone")
 def redeem_holder_link(
     cursor: Any, tenant_id: Any, garage_external_id: str, presented: str, *,
     name: str, phone: str, enrolment_external_id: str, starts_on: date, days_valid: object,
-    at: datetime, vehicle_description: str | None = None,
+    at: datetime, plate: object = None, vehicle_description: str | None = None,
 ) -> dict:
     """THE HOLDER'S OWN DETAILS, then their QR -- one transaction. The link
     is checked (unknown, used, cancelled, not started, expired -- in the
@@ -768,7 +843,7 @@ def redeem_holder_link(
     )
     issued = issue_enrolment(
         cursor, tenant_uuid, garage_external_id, link.pass_id, enrolment_external_id, starts_on,
-        days_valid, by=link.id, at=at, vehicle_description=vehicle_description,
+        days_valid, by=link.id, at=at, plate=plate, vehicle_description=vehicle_description,
     )
     _spend(cursor, HOLDER_LINK, tenant_uuid, uuid, "redeemed_at = %s", (at,))
     return {
@@ -785,8 +860,14 @@ def redeem_holder_link(
 # rule (X2) applied here.
 # ---------------------------------------------------------------------------
 
-#: The savepoint a replacement or a cancellation sits under.
-WRITE_SAVEPOINT = "garage_pass_code_write"
+#: The savepoint each write on one QR sits under -- ONE NAME PER WRITE, never
+#: one shared name: ``replace_car`` calls ``issue_enrolment``, and a ROLLBACK TO
+#: a name returns to the MOST RECENT savepoint of that name, so a shared name
+#: would take back only the inner write and leave the outer one standing
+#: (measured: a refused new QR left the old QR marked exit only).
+SAVEPOINTS = {"issue": "garage_pass_issue", "replace": "garage_pass_replace",
+              "cancel": "garage_pass_cancel", "match": "garage_pass_match",
+              "first_use": "garage_pass_first_use"}
 
 
 def _locked_code(
@@ -825,21 +906,22 @@ def _one_row(cursor: Any, what: str, code: Credential) -> None:
         )
 
 
-def _under_savepoint(cursor: Any, write: Any) -> Any:
-    cursor.execute(f"SAVEPOINT {WRITE_SAVEPOINT}")
+def _under_savepoint(cursor: Any, write: Any, which: str) -> Any:
+    name = SAVEPOINTS[which]
+    cursor.execute(f"SAVEPOINT {name}")
     try:
         result = write()
     except BaseException:
-        cursor.execute(f"ROLLBACK TO SAVEPOINT {WRITE_SAVEPOINT}")
+        cursor.execute(f"ROLLBACK TO SAVEPOINT {name}")
         raise
-    cursor.execute(f"RELEASE SAVEPOINT {WRITE_SAVEPOINT}")
+    cursor.execute(f"RELEASE SAVEPOINT {name}")
     return result
 
 
 def replace_car(
     cursor: Any, tenant_id: Any, garage_external_id: str, enrolment_external_id: str,
     new_enrolment_external_id: str, starts_on: date, days_valid: object, *, by: str,
-    at: datetime, reason: str, vehicle_description: str | None = None,
+    at: datetime, reason: str, plate: object = None, vehicle_description: str | None = None,
 ) -> dict:
     """REPLACE THE CAR ON A PASS, ONE STEP. The named QR's car stops entering
     and keeps leaving: a BOUND QR is marked exit only (who, when, why), so the
@@ -852,6 +934,7 @@ def replace_car(
     by = require_text(by, "by")
     reason = require_text(reason, "reason")
     new_id = require_text(new_enrolment_external_id, "new_enrolment.id")
+    require_plate(plate)  # the replacement car's plate: refused before anything is written
 
     def write() -> dict:
         _uuid, _pass_uuid, code = _locked_code(
@@ -871,15 +954,15 @@ def replace_car(
                 f"{local(code.exit_only_at, tz).isoformat()}.",
             )
         why = f"car replaced, new QR {new_id!r}: {reason}"
-        if code.bound_identity is not None:
+        if code.bound is not None:
             cursor.execute(
                 "UPDATE enrolments SET exit_only_at = %s, exit_only_by = %s, "
                 "exit_only_reason = %s WHERE tenant_id = %s AND id = %s "
                 "AND state = %s AND exit_only_at IS NULL",
-                (at, by, why, tenant_uuid, _uuid, CredentialState.REDEEMED.value),
+                (at, by, why, tenant_uuid, _uuid, code.state.value),
             )
             _one_row(cursor, "a replacement", code)
-            old = {"enrolment": code.id, "vehicle_identity": code.bound_identity,
+            old = {"enrolment": code.id, "vehicle_identity": code.bound,
                    "now": "exit_only", "at": at}
         else:
             cursor.execute(
@@ -893,11 +976,11 @@ def replace_car(
                    "at": at}
         issued = issue_enrolment(
             cursor, tenant_uuid, garage_external_id, code.pass_id, new_id, starts_on,
-            days_valid, by=by, at=at, vehicle_description=vehicle_description,
+            days_valid, by=by, at=at, plate=plate, vehicle_description=vehicle_description,
         )
         return {"pass": code.pass_id, "replaced": old, "reason": reason, "new": issued}
 
-    return _under_savepoint(cursor, write)
+    return _under_savepoint(cursor, write, "replace")
 
 
 def cancel_code(
@@ -932,10 +1015,20 @@ def cancel_code(
         )
         _one_row(cursor, "a cancellation", code)
         return {"enrolment": code.id, "pass": code.pass_id, "was": code.state.value,
-                "vehicle_identity": code.bound_identity, "state": "cancelled",
+                "vehicle_identity": code.bound, "state": "cancelled",
                 "cancelled_by": by, "cancelled_at": at, "reason": reason}
 
-    return _under_savepoint(cursor, write)
+    return _under_savepoint(cursor, write, "cancel")
+
+
+def _same_car(read: str, code: Credential) -> bool:
+    """Whether an identity the lane read can be the QR's car once a picture
+    matched it: a plate QR takes a look-alike or one-character read (the
+    picture decided); a QR stored without a plate takes its bound identity
+    exactly."""
+    if code.plate is not None:
+        return compare_plates(plate_key(read), code.plate) != PLATE_DIFFERENT
+    return read == code.bound_identity
 
 
 #: Who may decide a picture match: the car's own fingerprint against its earlier
@@ -982,7 +1075,7 @@ def confirm_match(
             cursor, tenant_uuid, garage_external_id, enrolment_external_id,
         )
         tz = zone(load_readable_garage(cursor, tenant_uuid, garage_external_id)[1].timezone)
-        if code.bound_identity is None:
+        if code.bound is None:
             raise Refused(
                 REFUSAL_CREDENTIAL_NOT_BOUND, ENROLMENT,
                 f"enrolment {code.id!r} is bound to no car.",
@@ -994,12 +1087,11 @@ def confirm_match(
                 f"{local(code.cancelled_at, tz).isoformat()}: {code.cancelled_reason}.",
             )
         refusal: Refused | None = None
-        if not matched or (read is not None and read != code.bound_identity):
+        if not matched or (read is not None and not _same_car(read, code)):
             refusal = Refused(
                 REFUSAL_CREDENTIAL_WRONG_CAR, "vehicle_identity",
-                f"{ENROLMENT} {code.id!r} is bound to another car since "
-                f"{local(code.redeemed_at, tz).isoformat()}; the picture match ({decided_by}) "
-                f"did not find it.",
+                f"{ENROLMENT} {code.id!r} is bound to another car; the picture match "
+                f"({decided_by}) did not find it.",
             )
         elif direction is Direction.ENTRY and code.exit_only_at is not None:
             refusal = Refused(
@@ -1020,10 +1112,10 @@ def confirm_match(
         _one_row(cursor, "a picture match", code)
         return code, refusal
 
-    code, refusal = _under_savepoint(cursor, write)
+    code, refusal = _under_savepoint(cursor, write, "match")
     answer = answer_in_transaction(
         cursor, tenant_uuid, garage_external_id,
-        code.bound_identity if refusal is None else (read or ""), lane_name, direction, at,
+        code.bound if refusal is None else (read or ""), lane_name, direction, at,
     )
     return Redemption(
         enrolment=code.id, redeemed=False, refusal=refusal, registration=None,

@@ -15,6 +15,13 @@
 --     inside can go. All three or none, and only on a code that was bound: an
 --     unbound code that is replaced is cancelled instead, there being no car to
 --     let out.
+--   * THE PLATE, FROM ISSUE -- `plate_typed` (as the desk typed it, for display)
+--     and `plate` (the one normal form a plate is compared in: capitals, no
+--     space, dash or dot). A code is made for a car's plate and is BOUND to it
+--     from issue: the issue registers the plate on the pass in the same
+--     transaction, and first use binds nothing new. Both or neither: a code
+--     stored before plates were required has neither, and binds on first use
+--     exactly as it always did.
 --   * PICTURE MATCHES -- `matches`: a bound code shown where the lane read no
 --     identity opens nothing on its own; the lane matches the car's picture to
 --     the bound car's earlier ones and answers (`confirm-match`). EACH answer
@@ -42,7 +49,11 @@ ALTER TABLE enrolments
   ADD COLUMN exit_only_reason text CHECK (exit_only_reason IS NULL
                                           OR length(btrim(exit_only_reason)) > 0),
   ADD COLUMN matches          jsonb NOT NULL DEFAULT '[]'::jsonb
-                              CHECK (jsonb_typeof(matches) = 'array');
+                              CHECK (jsonb_typeof(matches) = 'array'),
+  ADD COLUMN plate_typed      text CHECK (plate_typed IS NULL OR length(btrim(plate_typed)) > 0),
+  ADD COLUMN plate            text CHECK (plate IS NULL OR (length(plate) > 0
+                                          AND plate = upper(plate)
+                                          AND plate !~ '[[:space:].-]'));
 
 ALTER TABLE enrolments
   ADD CONSTRAINT enrolments_exit_only_is_all_or_nothing CHECK (
@@ -50,7 +61,10 @@ ALTER TABLE enrolments
     AND (exit_only_reason IS NULL) = (exit_only_at IS NULL)
   ),
   ADD CONSTRAINT enrolments_exit_only_needs_a_bind CHECK (
-    exit_only_at IS NULL OR redeemed_at IS NOT NULL
+    exit_only_at IS NULL OR redeemed_at IS NOT NULL OR plate IS NOT NULL
+  ),
+  ADD CONSTRAINT enrolments_plate_is_both_or_neither CHECK (
+    (plate IS NULL) = (plate_typed IS NULL)
   );
 
 -- one-way now: redeemed has its bind, issued has none, cancelled keeps either
@@ -61,9 +75,12 @@ ALTER TABLE enrolments
     AND (state <> 'issued' OR redeemed_at IS NULL)
   );
 
--- the lane's lookup of the codes bound to a car on a pass
+-- the lookup of the codes bound to a car on a pass: by first use, or by plate
 CREATE INDEX enrolments_bound_identity_idx
   ON enrolments (tenant_id, pass_id, redeemed_vehicle_identity)
   WHERE redeemed_vehicle_identity IS NOT NULL;
+CREATE INDEX enrolments_plate_idx
+  ON enrolments (tenant_id, pass_id, plate)
+  WHERE plate IS NOT NULL;
 
 COMMIT;

@@ -237,8 +237,9 @@ def _parser() -> argparse.ArgumentParser:
         s.add_argument("--at", required=True, help="when, as an ISO instant with an offset")
         return s
 
-    s = credential("issue-enrolment", "mint the QR for a pass; the token is printed once, here",
-                   "--enrolment-id")
+    s = credential("issue-enrolment", "mint the QR for one car on a pass, by its plate; the token "
+                   "is printed once, here", "--enrolment-id")
+    _plate(s, "the car's licence plate; required -- the QR is bound to it from issue")
     s.add_argument("--vehicle-description", help="the holder's own words for the car; decides "
                    "nothing")
     s = store("redeem-enrolment", "the lane presents the QR with the identity it measured: "
@@ -251,6 +252,7 @@ def _parser() -> argparse.ArgumentParser:
               "the replacement car is issued on the same pass; its token is printed once, here")
     s.add_argument("--enrolment-id", required=True, help="the QR of the car being replaced")
     s.add_argument("--new-enrolment-id", required=True, help="the id of the new QR")
+    _plate(s, "the replacement car's licence plate; required")
     s.add_argument("--starts-on", required=True, help="the new QR's first local day, YYYY-MM-DD")
     _days_valid(s)
     s.add_argument("--vehicle-description", help="the holder's own words for the new car; "
@@ -282,6 +284,7 @@ def _parser() -> argparse.ArgumentParser:
     s.add_argument("--name", required=True, help="the holder's name")
     s.add_argument("--phone", required=True, help="the holder's phone")
     s.add_argument("--enrolment-id", required=True, help="the id of the QR to issue")
+    _plate(s, "the holder's car's licence plate; required")
     s.add_argument("--starts-on", required=True, help="the QR's first local day, YYYY-MM-DD")
     _days_valid(s)
     s.add_argument("--vehicle-description", help="the holder's own words for the car; decides "
@@ -297,6 +300,12 @@ def _days_valid(s: argparse.ArgumentParser) -> None:
     documented here and stated by whoever runs this."""
     s.add_argument("--days-valid", help="how many local days from --starts-on the credential may "
                    "be used; stated, never defaulted (the monthly-parker product uses 3)")
+
+
+def _plate(s: argparse.ArgumentParser, help_: str) -> None:
+    """NOT ``required``: an absent plate reaches the module, which refuses it BY
+    NAME (REFUSAL_PLATE_NOT_STATED) rather than argparse's usage error."""
+    s.add_argument("--plate", help=help_)
 
 
 def _movement(s: argparse.ArgumentParser) -> None:
@@ -686,7 +695,8 @@ def _run(args: argparse.Namespace) -> int:
                     cursor, args.tenant, args.garage, args.pass_id, args.enrolment_id,
                     _day(args.starts_on, "--starts-on"),
                     _whole_number(args.days_valid, "--days-valid"),
-                    by=args.by, at=_at(args.at), vehicle_description=args.vehicle_description,
+                    by=args.by, at=_at(args.at), plate=args.plate,
+                    vehicle_description=args.vehicle_description,
                 )
             elif args.command == "redeem-enrolment":
                 redemption = enrolments.redeem_enrolment(
@@ -701,7 +711,7 @@ def _run(args: argparse.Namespace) -> int:
                     cursor, args.tenant, args.garage, args.enrolment_id, args.new_enrolment_id,
                     _day(args.starts_on, "--starts-on"),
                     _whole_number(args.days_valid, "--days-valid"),
-                    by=args.by, at=_at(args.at), reason=args.reason,
+                    by=args.by, at=_at(args.at), reason=args.reason, plate=args.plate,
                     vehicle_description=args.vehicle_description,
                 )
             elif args.command == "confirm-match":
@@ -732,7 +742,8 @@ def _run(args: argparse.Namespace) -> int:
                     phone=args.phone, enrolment_external_id=args.enrolment_id,
                     starts_on=_day(args.starts_on, "--starts-on"),
                     days_valid=_whole_number(args.days_valid, "--days-valid"),
-                    at=_at(args.at), vehicle_description=args.vehicle_description,
+                    at=_at(args.at), plate=args.plate,
+                    vehicle_description=args.vehicle_description,
                 )
             elif args.command == "create-pass":
                 pass_ = load_pass(_document(args.pass_, "--pass"))

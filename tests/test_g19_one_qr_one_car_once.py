@@ -771,7 +771,7 @@ def test_two_holders_one_link_exactly_one_enrolment_is_issued(app, owner, tenant
             return redeem_holder_link(
                 cursor, tenant_id, TRANSIENT_ENTRY.id, link, name=name, phone="+1 555 0100",
                 enrolment_external_id=enrolment_id, starts_on=STARTS_ON, days_valid=DAYS,
-                at=NOON_MONDAY,
+                at=NOON_MONDAY, plate=f"PLATE-{enrolment_id}",
             )
         return run
 
@@ -821,8 +821,9 @@ def test_an_issue_racing_a_revocation_leaves_no_issued_credential_on_the_revoked
     table = "enrolments" if kind == ENROLMENT else "holder_links"
 
     def issue_(cursor):
+        plate = {"plate": "CAR-1"} if kind == ENROLMENT else {}
         return issue_call(cursor, tenant_id, TRANSIENT_ENTRY.id, pass_.id, "cred-1", STARTS_ON,
-                          DAYS, by="owner", at=NOON_MONDAY)
+                          DAYS, by="owner", at=NOON_MONDAY, **plate)
 
     def revoke(cursor):
         return change_state(cursor, tenant_id, TRANSIENT_ENTRY.id, pass_.id, State.REVOKED,

@@ -527,6 +527,12 @@ def test_the_enrolment_commands_render_every_refusal_and_the_redemption_exits_by
     who = ["--by", "owner", "--at", "2026-06-01T12:00:00-06:00"]
     issue = ["issue-enrolment", *T, "--pass-id", "pass-1", "--enrolment-id", "qr-1",
              "--starts-on", "2026-06-01", *who]
+    status, printed = run([*issue, "--days-valid", "3"], capsys)  # --plate absent
+    assert status == EXIT_REFUSED_REQUEST and printed["refused"] == f.REFUSAL_PLATE_NOT_STATED
+    assert printed["field"] == "plate"
+    status, printed = run([*issue, "--days-valid", "3", "--plate", " - . "], capsys)
+    assert status == EXIT_REFUSED_REQUEST and printed["refused"] == f.REFUSAL_PLATE_NOT_STATED
+    issue = [*issue, "--plate", "CAR-1"]
     status, printed = run(issue, capsys)  # --days-valid absent
     assert status == EXIT_REFUSED_REQUEST
     assert printed["refused"] == f.REFUSAL_DAYS_VALID_NOT_STATED
@@ -565,24 +571,25 @@ def test_the_enrolment_commands_render_every_refusal_and_the_redemption_exits_by
     status, printed = run([*issue, "--days-valid", "3"], capsys)
     assert status == 0 and printed["enrolment"] == "qr-1"
     token = printed["token"]
+    # bound to its plate from issue: its first use is recognised and writes nothing
     status, printed = run(["redeem-enrolment", *T, "--token", token, *MOVE], capsys)
-    assert status == 0 and printed["enrolment"]["redeemed"] is True
+    assert status == 0 and printed["enrolment"]["recognised"] is True
     assert printed["enrolment"]["pass_state_change"] is None, "the document's pass is active"
-    assert printed["enrolment"]["registration"]["vehicle_identity"] == "CAR-1"
+    assert printed["enrolment"]["registration"] is None
     assert printed["answer"]["outcome"] == "covered"
     assert "token" not in json.dumps(printed["enrolment"]) or token not in json.dumps(printed)
     status, printed = run(["redeem-enrolment", *T, "--token", token, *MOVE], capsys)
     assert status == 0 and printed["enrolment"]["recognised"] is True
     assert "refused" not in printed["enrolment"] and printed["enrolment"]["redeemed"] is False
     assert printed["answer"]["outcome"] == "covered"
-    other_car = [a if a != "CAR-1" else "CAR-2" for a in MOVE]
+    other_car = [a if a != "CAR-1" else "VAN-99" for a in MOVE]
     status, printed = run(["redeem-enrolment", *T, "--token", token, *other_car], capsys)
     assert status == 1 and printed["enrolment"]["refused"] == f.REFUSAL_CREDENTIAL_WRONG_CAR
     assert printed["answer"]["outcome"] == "not_covered"
     # the two writes on one QR, each refusal rendered through the one seam, exit 3
     replace = ["replace-car", *T, "--enrolment-id", "qr-1", "--new-enrolment-id", "qr-new",
-               "--starts-on", "2026-06-01", "--days-valid", "3", "--by", "desk", "--reason",
-               "rental swapped", "--at", "2026-06-01T13:00:00-06:00"]
+               "--starts-on", "2026-06-01", "--days-valid", "3", "--plate", "NEW-2", "--by",
+               "desk", "--reason", "rental swapped", "--at", "2026-06-01T13:00:00-06:00"]
     status, printed = run(replace, capsys)
     assert status == 0 and printed["replaced"]["now"] == "exit_only", printed
     status, printed = run([*replace[:7], "--new-enrolment-id", "qr-newer", *replace[9:]],
@@ -605,7 +612,8 @@ def test_the_enrolment_commands_render_every_refusal_and_the_redemption_exits_by
     status, printed = run(link, capsys)
     assert status == 0 and printed["holder_link"] == "link-1"
     redeem_link = ["redeem-holder-link", *T, "--token", printed["token"], "--name", "Her",
-                   "--phone", "1", "--enrolment-id", "qr-2", "--starts-on", "2026-06-01",
+                   "--phone", "1", "--enrolment-id", "qr-2", "--plate", "HER-3",
+                   "--starts-on", "2026-06-01",
                    "--days-valid", "3", "--at", "2026-06-01T12:00:00-06:00"]
     status, printed = run(redeem_link, capsys)
     assert status == 0 and printed["enrolment"]["enrolment"] == "qr-2"

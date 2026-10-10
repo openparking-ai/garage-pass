@@ -93,7 +93,7 @@ def test_cancelled_and_exit_only_are_refused_before_a_match_is_asked(app, tenant
     token = bound(app, tenant_id)
     with tenant(app, tenant_id) as cursor:
         replace_car(cursor, tenant_id, TRANSIENT_ENTRY.id, "qr-1", "qr-2", date(2026, 6, 2), 3,
-                    by="desk", at=LATER, reason="rental swapped")
+                    by="desk", at=LATER, reason="rental swapped", plate="CAR-NEW")
     app.commit()
     entering = redeem(app, tenant_id, TRANSIENT_ENTRY, token, "", direction=Direction.ENTRY,
                       at=LATER)
@@ -141,7 +141,7 @@ def test_a_yes_on_a_replaced_car_at_an_entry_is_still_exit_only(app, tenant_id):
     bound(app, tenant_id)
     with tenant(app, tenant_id) as cursor:
         replace_car(cursor, tenant_id, TRANSIENT_ENTRY.id, "qr-1", "qr-2", date(2026, 6, 2), 3,
-                    by="desk", at=LATER, reason="rental swapped")
+                    by="desk", at=LATER, reason="rental swapped", plate="CAR-NEW")
     app.commit()
     entering = confirm(app, tenant_id, True)
     assert entering.refusal.code == f.REFUSAL_CREDENTIAL_EXIT_ONLY and not entering.recognised

@@ -888,12 +888,12 @@ def registrations_of(
         SELECT r.pass_id, p.external_id, r.effective_day, r.end_day,
                EXISTS (SELECT 1 FROM enrolments e
                        WHERE e.tenant_id = r.tenant_id AND e.pass_id = r.pass_id
-                         AND e.redeemed_vehicle_identity = r.vehicle_identity
+                         AND COALESCE(e.plate, e.redeemed_vehicle_identity) = r.vehicle_identity
                          AND e.exit_only_at IS NOT NULL)
                AND NOT EXISTS (SELECT 1 FROM enrolments e
                        WHERE e.tenant_id = r.tenant_id AND e.pass_id = r.pass_id
-                         AND e.redeemed_vehicle_identity = r.vehicle_identity
-                         AND e.state = 'redeemed' AND e.exit_only_at IS NULL)
+                         AND COALESCE(e.plate, e.redeemed_vehicle_identity) = r.vehicle_identity
+                         AND e.state <> 'cancelled' AND e.exit_only_at IS NULL)
         FROM vehicle_registrations r
         JOIN passes p ON p.tenant_id = r.tenant_id AND p.id = r.pass_id
         WHERE r.tenant_id = %s AND r.garage_id = %s AND r.vehicle_identity = %s
@@ -1097,14 +1097,17 @@ def _codes_at(
     be shown -- so a lane that caches the register decides on a QR with no
     database: its ``register_hash`` (the SHA-256 of the stored digest; never
     the token, never the digest), its id and pass, its state as stored, the
-    car it is bound to (or None), whether that car was replaced (exit only),
+    car it is bound to -- the plate it was made for, in ``plate_key`` form,
+    from issue; or, on a QR stored without a plate, the identity of its first
+    use, None before it -- whether that car was replaced (exit only),
     and the local days an unbound QR may first be used on. Selected by
     membership, because a QR redeems at any garage its pass names. No clock:
     nothing is derived, the reader compares the days with its own. Sorted in
     Python by code point (pass, then QR id), never by ORDER BY."""
     cursor.execute(
         "SELECT e.token_sha256, e.external_id, p.external_id, e.state, "
-        "e.redeemed_vehicle_identity, e.exit_only_at IS NOT NULL, e.starts_on, e.days_valid, "
+        "COALESCE(e.plate, e.redeemed_vehicle_identity), e.exit_only_at IS NOT NULL, "
+        "e.starts_on, e.days_valid, "
         "e.pass_id "
         "FROM enrolments e "
         "JOIN passes p ON p.tenant_id = e.tenant_id AND p.id = e.pass_id "

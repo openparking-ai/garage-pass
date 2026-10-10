@@ -47,10 +47,11 @@ pytestmark = needs_postgres
 SWAPPED = at(date(2026, 6, 2), 9)
 
 
-def replaced(app, tenant_id, garage, old="qr-1", new="qr-2", *, at_=SWAPPED) -> dict:
+def replaced(app, tenant_id, garage, old="qr-1", new="qr-2", *, at_=SWAPPED,
+             plate="car-new") -> dict:
     with tenant(app, tenant_id) as cursor:
         out = replace_car(cursor, tenant_id, garage.id, old, new, date(2026, 6, 2), 3,
-                          by="desk", at=at_, reason="rental swapped")
+                          by="desk", at=at_, reason="rental swapped", plate=plate)
     app.commit()
     return out
 
@@ -94,11 +95,13 @@ def test_the_old_qr_stops_entering_keeps_leaving_covered_and_the_new_qr_binds_th
     by_plate_out = access_from_store(app, tenant_id, garage.id, "CAR-OLD", "L1", Direction.EXIT,
                                      later)
     assert by_plate_out.outcome is Outcome.COVERED, by_plate_out
-    # the new QR binds the new car, on the same pass, and answers for it
+    # the new QR is bound to the new car's plate from issue, on the same pass:
+    # registered already, and recognised at its first use
+    assert out["new"]["plate"] == "car-new" and out["new"]["plate_key"] == "CARNEW"
     new_token = out["new"]["token"]
     bound = redeem(app, tenant_id, garage, new_token, "CAR-NEW", direction=end, at=later)
-    assert bound.redeemed and bound.answer.outcome is Outcome.COVERED
-    assert ("CAR-NEW" in [r[1] for r in registrations(app, tenant_id) if r[0] == pass_.id])
+    assert bound.recognised and bound.answer.outcome is Outcome.COVERED
+    assert ("CARNEW" in [r[1] for r in registrations(app, tenant_id) if r[0] == pass_.id])
     again = redeem(app, tenant_id, garage, new_token, "CAR-NEW", direction=other_end(end),
                    at=later)
     assert again.recognised and again.answer.outcome is Outcome.COVERED
@@ -154,7 +157,8 @@ def test_a_refusal_from_the_new_qr_takes_the_exit_only_mark_back_even_if_the_cal
     with tenant(app, tenant_id) as cursor:
         with pytest.raises(f.Refused) as refused:
             replace_car(cursor, tenant_id, TRANSIENT_ENTRY.id, "qr-1", "qr-taken",
-                        date(2026, 6, 2), 3, by="desk", at=SWAPPED, reason="rental swapped")
+                        date(2026, 6, 2), 3, by="desk", at=SWAPPED, reason="rental swapped",
+                        plate="CAR-NEW")
     app.commit()  # the caller commits anyway
     assert refused.value.code == f.REFUSAL_CREDENTIAL_ALREADY_EXISTS
     assert exit_only_columns(app, tenant_id)[1:] == (None, None, None), "half a replacement"
@@ -217,7 +221,8 @@ def test_every_refusal_of_the_two_writes_is_rendered_through_the_command_line(
           "--direction", "entry", "--at", "2026-06-03T09:00:00-06:00"],
          f.REFUSAL_CREDENTIAL_EXIT_ONLY),
         (["replace-car", *T, "--enrolment-id", "qr-1", "--new-enrolment-id", "qr-3",
-          "--starts-on", "2026-06-03", "--days-valid", "3", "--by", "desk", "--reason", "again",
+          "--starts-on", "2026-06-03", "--days-valid", "3", "--plate", "CAR-3", "--by", "desk",
+          "--reason", "again",
           "--at", "2026-06-03T09:00:00-06:00"], f.REFUSAL_CREDENTIAL_ALREADY_REPLACED),
     ):
         main(argv)

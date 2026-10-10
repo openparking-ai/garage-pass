@@ -121,6 +121,23 @@ timezone repair), and unstated refuses to answer naming the field. A pass may
 carry several outstanding QRs — several cars — and each binds one car.
 Revoking the pass cancels every QR on it, bound or not.
 
+**A QR is made for one car, by its licence plate.** `issue-enrolment`,
+`replace-car` (the new car's) and the holder's own link all require `--plate`;
+without it — or blank once spaces, dashes and dots are taken out — nothing is
+made. The plate is kept as typed for display, and compared in one normal form:
+capitals, with no space, dash or dot, so `abc-123` typed and `ABC 123` read are
+the same car. The QR is **bound to that plate from the moment it is made**: the
+plate is registered on the pass in the same transaction (a plate another pass
+holds is refused there, at the desk), the garage's register shows it before
+any use, and the QR's first use binds nothing new — it is recognised, and moves
+a pass still waiting for its first car to active. A car whose plate is asked
+about without a QR is asked about in that normal form. At the lane, a read that
+differs from the plate only by look-alike characters (O/0, I/1, B/8, S/5, Z/2)
+and at most one other character is a picture match, not wrong car: a camera misread must
+not send a driver to the desk. Two or more characters apart is wrong car. A QR
+stored before plates were required has no plate and binds whatever car first
+uses it, exactly as before.
+
 **One QR per car, and it keeps working for that car.** Once bound, the QR is
 the car's: shown again by that car it is *recognised* — answered for that car,
 at either end, in and out as often as needed, for as long as the pass covers it
@@ -164,11 +181,12 @@ database driver.
 $ garage-pass set-garage-enrols-at --tenant T --garage garage-downtown --enrols-at entry \
       --by owner --at 2026-06-01T09:00:00-06:00 --reason "readers are at the entry lanes"
 $ garage-pass issue-enrolment --tenant T --garage garage-downtown --pass-id pass-1 \
-      --enrolment-id qr-1 --starts-on 2026-06-01 --days-valid 3 --by owner --at ...
+      --enrolment-id qr-1 --plate "ABC-123" --starts-on 2026-06-01 --days-valid 3 \
+      --by owner --at ...
 $ garage-pass redeem-enrolment --tenant T --garage garage-downtown --token <what the QR carried> \
       --vehicle CAR-1 --lane L1 --direction entry --at 2026-06-01T09:00:00-06:00
 $ garage-pass replace-car --tenant T --garage garage-downtown --enrolment-id qr-1 \
-      --new-enrolment-id qr-2 --starts-on 2026-06-02 --days-valid 3 --by desk \
+      --new-enrolment-id qr-2 --plate "XYZ 789" --starts-on 2026-06-02 --days-valid 3 --by desk \
       --reason "rental car swapped" --at ...
 $ garage-pass confirm-match --tenant T --garage garage-downtown --enrolment-id qr-1 \
       --matched yes --decided-by fingerprint --lane L1 --direction entry --at ...

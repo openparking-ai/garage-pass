@@ -126,8 +126,8 @@ def test_the_plaintext_is_rendered_by_the_issue_calls_and_by_nothing_else(
         return {"status": status, "printed": out.out}
 
     issued = run(["issue-enrolment", *T, "--pass-id", pass_.id, "--enrolment-id", "qr-cli",
-                  "--starts-on", "2026-06-01", "--days-valid", "3", "--by", "owner",
-                  "--at", "2026-06-01T12:00:00-06:00"])
+                  "--starts-on", "2026-06-01", "--days-valid", "3", "--plate", "CAR-1",
+                  "--by", "owner", "--at", "2026-06-01T12:00:00-06:00"])
     assert issued["status"] == 0
     token = json.loads(issued["printed"])["token"]
     link = run(["issue-holder-link", *T, "--pass-id", pass_.id, "--link-id", "link-cli",
@@ -146,29 +146,34 @@ def test_the_plaintext_is_rendered_by_the_issue_calls_and_by_nothing_else(
                        "--token", token, "--vehicle", "CAR-1", "--lane", "L1", "--direction",
                        "entry", "--at", "2026-06-01T12:00:00-06:00"])
     assert '"REFUSAL_CREDENTIAL_UNKNOWN"' in unknown_cli["printed"]
-    wrong_end = run(["redeem-enrolment", *T, "--token", token, "--vehicle", "CAR-1", "--lane",
-                     "L1", "--direction", "exit", "--at", "2026-06-01T12:00:00-06:00"])
-    assert '"REFUSAL_ENROLMENT_AT_WRONG_END"' in wrong_end["printed"]
+    # bound to its plate from issue: recognised at either end (its first use moves
+    # the draft pass to active), and a far-off plate is wrong car
     redeemed = run(["redeem-enrolment", *T, "--token", token, "--vehicle", "CAR-1", "--lane",
                     "L1", "--direction", "entry", "--at", "2026-06-01T12:00:00-06:00"])
-    assert redeemed["status"] == 0 and '"redeemed": true' in redeemed["printed"]
-    used = run(["redeem-enrolment", *T, "--token", token, "--vehicle", "CAR-2", "--lane", "L1",
+    assert redeemed["status"] == 0 and '"recognised": true' in redeemed["printed"]
+    other_end = run(["redeem-enrolment", *T, "--token", token, "--vehicle", "CAR-1", "--lane",
+                     "L1", "--direction", "exit", "--at", "2026-06-01T12:00:00-06:00"])
+    assert '"recognised": true' in other_end["printed"]
+    used = run(["redeem-enrolment", *T, "--token", token, "--vehicle", "VAN-99", "--lane", "L1",
                 "--direction", "entry", "--at", "2026-06-02T12:00:00-06:00"])
     assert '"REFUSAL_CREDENTIAL_WRONG_CAR"' in used["printed"]
     from_link = run(["redeem-holder-link", *T, "--token", link_token, "--name", "A Holder",
-                     "--phone", "+1 555 0100", "--enrolment-id", "qr-from-link", "--starts-on",
+                     "--phone", "+1 555 0100", "--enrolment-id", "qr-from-link", "--plate",
+                     "HOLDER-1", "--starts-on",
                      "2026-06-01", "--days-valid", "3", "--at", "2026-06-01T12:00:00-06:00"])
     assert from_link["status"] == 0
     second_token = json.loads(from_link["printed"])["enrolment"]["token"]
     used_link = run(["redeem-holder-link", *T, "--token", link_token, "--name", "A", "--phone",
-                     "1", "--enrolment-id", "qr-2", "--starts-on", "2026-06-01", "--days-valid",
+                     "1", "--enrolment-id", "qr-2", "--plate", "HOLDER-2", "--starts-on",
+                     "2026-06-01", "--days-valid",
                      "3", "--at", "2026-06-01T12:00:00-06:00"])
     assert '"REFUSAL_CREDENTIAL_ALREADY_USED"' in used_link["printed"]
     # the two writes on one QR (0005): replace-car ISSUES and returns the new QR's
     # token -- the one return -- and renders neither the old one's nor its digest;
     # cancel-code renders no token at all
     replaced = run(["replace-car", *T, "--enrolment-id", "qr-cli", "--new-enrolment-id",
-                    "qr-replacement", "--starts-on", "2026-06-02", "--days-valid", "3", "--by",
+                    "qr-replacement", "--starts-on", "2026-06-02", "--days-valid", "3",
+                    "--plate", "NEW-9", "--by",
                     "desk", "--reason", "rental swapped", "--at", "2026-06-02T08:00:00-06:00"])
     assert replaced["status"] == 0, replaced["printed"]
     replacement_token = json.loads(replaced["printed"])["new"]["token"]
