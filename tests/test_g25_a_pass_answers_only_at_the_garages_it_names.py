@@ -78,6 +78,7 @@ from fixtures import (
 )
 from garage_pass import findings as f
 from garage_pass.access import Outcome, access
+from garage_pass.enrolment import plate_key
 from garage_pass.garage import Garage
 from garage_pass.passes import Pass, State
 from garage_pass.terms import Direction, GarageLanes, Terms
@@ -768,9 +769,9 @@ def test_one_redemption_on_a_three_garage_pass_writes_exactly_three_rows_and_cov
     assert out.registration["garages"] == ["garage-a", "garage-b", "garage-c"]
     day = date(2026, 6, 1)
     assert registration_rows(app, tenant_id) == [
-        ("pass-span", "garage-a", "CAR-1", day, None),
-        ("pass-span", "garage-b", "CAR-1", day, None),
-        ("pass-span", "garage-c", "CAR-1", day, None),
+        ("pass-span", "garage-a", "CAR1", day, None),
+        ("pass-span", "garage-b", "CAR1", day, None),
+        ("pass-span", "garage-c", "CAR1", day, None),
     ]
     for garage in THREE:
         for direction in Direction:
@@ -815,7 +816,7 @@ def test_a_collision_at_the_second_garage_refuses_the_whole_redemption_and_write
     assert not out.redeemed and out.refusal.code == f.REFUSAL_VEHICLE_ON_ANOTHER_PASS, out.refusal
     assert "'garage-b'" in out.refusal.detail and "'pass-holder'" in out.refusal.detail
     assert registration_rows(app, tenant_id) == before == [
-        ("pass-holder", "garage-b", "CAR-1", date(2026, 1, 1), None)
+        ("pass-holder", "garage-b", "CAR1", date(2026, 1, 1), None)
     ], "zero rows written anywhere: partial enrolment is not an outcome"
     assert query(app, tenant_id, "SELECT state FROM enrolments") == [("issued",)]
     assert query(app, tenant_id, "SELECT state FROM passes WHERE external_id = 'pass-span'") == [
@@ -917,9 +918,10 @@ def test_two_lanes_one_token_on_a_three_garage_pass_exactly_one_redeems_three_ro
     app, owner, tenant_id
 ):
     """H5 control (c): the G2 race, unchanged, on a three-garage pass. The
-    winner writes three rows; the loser is refused ALREADY_USED by name and
-    writes none -- never a partial fan-out. Deterministic interleaving: B
-    blocks on A's lock, observed, never assumed."""
+    winner writes three rows; the loser -- another car with the QR the winner
+    has just bound -- is refused WRONG CAR by name and writes none -- never a
+    partial fan-out. Deterministic interleaving: B blocks on A's lock,
+    observed, never assumed."""
     from enrolment_harness import enrolment_row, race
     from garage_pass.store.enrolments import redeem_enrolment
 
@@ -937,10 +939,10 @@ def test_two_lanes_one_token_on_a_three_garage_pass_exactly_one_redeems_three_ro
     a, b = race(owner, tenant_id, lane("CAR-A", "L1"), lane("CAR-B", "L2"))
     assert not isinstance(a, BaseException) and not isinstance(b, BaseException), (a, b)
     assert a.redeemed and not b.redeemed
-    assert b.refusal.code == f.REFUSAL_CREDENTIAL_ALREADY_USED, b.refusal
+    assert b.refusal.code == f.REFUSAL_CREDENTIAL_WRONG_CAR, b.refusal
     rows = registration_rows(app, tenant_id)
-    assert [(r[1], r[2]) for r in rows] == [("garage-a", "CAR-A"), ("garage-b", "CAR-A"),
-                                            ("garage-c", "CAR-A")]
+    assert [(r[1], r[2]) for r in rows] == [("garage-a", "CARA"), ("garage-b", "CARA"),
+                                            ("garage-c", "CARA")]
     assert enrolment_row(app, tenant_id)[1] == "CAR-A"
 
 
@@ -1010,7 +1012,7 @@ def test_a_raw_registration_at_a_garage_the_pass_does_not_name_is_refused_by_the
     (pass_uuid,) = query(app, tenant_id, "SELECT id FROM passes")[0]
     for statement in (
         "INSERT INTO vehicle_registrations (tenant_id, garage_id, pass_id, vehicle_identity, "
-        "effective_day) VALUES (%s, %s, %s, 'CAR-1', '2026-01-01')",
+        "effective_day) VALUES (%s, %s, %s, 'CAR1', '2026-01-01')",
         "INSERT INTO pass_lanes (tenant_id, pass_id, garage_id, lane) VALUES (%s, %s, %s, 'L1')",
     ):
         with pytest.raises(psycopg.errors.ForeignKeyViolation) as violation:
@@ -1117,7 +1119,7 @@ def test_an_open_visit_at_one_garage_neither_refuses_an_entry_nor_closes_an_exit
         with tenant(app, tenant_id) as cursor:
             cursor.execute(
                 "INSERT INTO visits (tenant_id, garage_id, pass_id, vehicle_identity, entry_lane, "
-                "entered_at) VALUES (%s, %s, %s, 'CAR-1', 'L1', now())",
+                "entered_at) VALUES (%s, %s, %s, 'CAR1', 'L1', now())",
                 (tenant_id, uuids[A.id], pass_uuid),
             )
     app.rollback()
@@ -1128,7 +1130,7 @@ def test_an_open_visit_at_one_garage_neither_refuses_an_entry_nor_closes_an_exit
     app.rollback()
     assert refused.value.code == f.REFUSAL_NO_OPEN_VISIT
     assert "'garage-b'" in refused.value.detail
-    assert ledger(app, tenant_id) == [("garage-a", "CAR-1", at(date(2026, 6, 1), 8), False)]
+    assert ledger(app, tenant_id) == [("garage-a", "CAR1", at(date(2026, 6, 1), 8), False)]
     # an entry at B while A's visit is still open: RECORDED, the ledger holds both.
     # Spelled as an assertion, so a refusal here -- the module's, or the database
     # index's if it were keyed per pass again -- is read as a red about the subject
@@ -1139,14 +1141,14 @@ def test_an_open_visit_at_one_garage_neither_refuses_an_entry_nor_closes_an_exit
         pytest.fail(f"an entry at B was refused for a visit open at A: {refused.code}: "
                     f"{refused.detail}")
     assert ledger(app, tenant_id) == [
-        ("garage-a", "CAR-1", at(date(2026, 6, 1), 8), False),
-        ("garage-b", "CAR-1", at(date(2026, 6, 1), 10), False),
+        ("garage-a", "CAR1", at(date(2026, 6, 1), 8), False),
+        ("garage-b", "CAR1", at(date(2026, 6, 1), 10), False),
     ]
     # each exit closes ITS garage's visit and no other
     _exit(app, tenant_id, B, pass_, "CAR-1", 11)
     assert ledger(app, tenant_id) == [
-        ("garage-a", "CAR-1", at(date(2026, 6, 1), 8), False),
-        ("garage-b", "CAR-1", at(date(2026, 6, 1), 10), True),
+        ("garage-a", "CAR1", at(date(2026, 6, 1), 8), False),
+        ("garage-b", "CAR1", at(date(2026, 6, 1), 10), True),
     ]
     _exit(app, tenant_id, A, pass_, "CAR-1", 12)
     assert all(exited for _g, _i, _e, exited in ledger(app, tenant_id))
@@ -1471,8 +1473,8 @@ def test_a_revocation_ends_each_garages_registrations_on_that_garages_day(app, t
         app.commit()
         assert out["registrations_ended"] == 2, out
         assert ended_days(pass_id) == [
-            (A.id, f"CAR-{pass_id}", date(2026, 6, 1), ENDED_BY_REVOCATION),
-            (FAR.id, f"CAR-{pass_id}", date(2026, 6, 2), ENDED_BY_REVOCATION),
+            (A.id, plate_key(f"CAR-{pass_id}"), date(2026, 6, 1), ENDED_BY_REVOCATION),
+            (FAR.id, plate_key(f"CAR-{pass_id}"), date(2026, 6, 2), ENDED_BY_REVOCATION),
         ], (asked_from.id, ended_days(pass_id))
     # the same-zone control: unchanged, June 1 at both
     same = spanning(A, B, id="same-zone", state=State.ACTIVE)
@@ -1901,9 +1903,9 @@ def test_the_product_walk_over_a_three_garage_pass_through_the_command_line(
     assert status == 0 and out["stored"] == "pass-span", out
     status, out = _run(main, capsys, ["issue-enrolment", *T, "--garage", B.id, "--pass-id",
                                       "pass-span", "--enrolment-id", "qr-1", "--starts-on",
-                                      "2026-06-01", "--days-valid", "3", "--by", "owner",
-                                      "--at", AT])
-    assert status == 0 and out["pass"] == "pass-span", out
+                                      "2026-06-01", "--days-valid", "3", "--plate", "car-1",
+                                      "--by", "owner", "--at", AT])
+    assert status == 0 and out["pass"] == "pass-span" and out["plate_key"] == "CAR1", out
     token = out["token"]
     status, out = _run(main, capsys, ["redeem-enrolment", *T, "--garage", ELSEWHERE.id, "--token",
                                       token, "--vehicle", "CAR-1", "--lane", "L1", "--direction",
@@ -1913,18 +1915,20 @@ def test_the_product_walk_over_a_three_garage_pass_through_the_command_line(
     status, out = _run(main, capsys, ["redeem-enrolment", *T, "--garage", A.id, "--token", token,
                                       "--vehicle", "CAR-1", "--lane", "L1", "--direction", "entry",
                                       "--at", AT])
-    assert status == 0 and out["enrolment"]["redeemed"] is True, out
-    assert out["enrolment"]["registration"]["garages"] == [A.id, B.id, C.id]
+    # bound to its plate from issue -- registered at every garage of the pass when
+    # it was made -- so its first use is RECOGNISED and binds nothing
+    assert status == 0 and out["enrolment"]["recognised"] is True, out
+    assert out["enrolment"]["registration"] is None
     for garage in THREE:
         for direction, lane, want in (("entry", "L1", 0), ("exit", "L2", 0), ("entry", "L9", 1)):
             status, out = _run(main, capsys, ["access-in-store", *T, "--garage", garage.id,
-                                              "--vehicle", "CAR-1", "--lane", lane,
+                                              "--vehicle", "CAR1", "--lane", lane,
                                               "--direction", direction, "--at", AT])
             assert status == want, (garage.id, direction, lane, out)
             if want:
                 assert out["reason"] == f.WRONG_LANE and f"'{garage.id}'" in out["detail"]
     status, out = _run(main, capsys, ["access-in-store", *T, "--garage", ELSEWHERE.id,
-                                      "--vehicle", "CAR-1", "--lane", "L1", "--direction", "entry",
+                                      "--vehicle", "CAR1", "--lane", "L1", "--direction", "entry",
                                       "--at", AT])
     assert status == 1 and out["reason"] == f.NO_PASS, out
     # a second car, registered by the owner at C: held at every garage, and a
@@ -1940,20 +1944,20 @@ def test_the_product_walk_over_a_three_garage_pass_through_the_command_line(
     assert "garage-elsewhere" in out["detail"] and "garage-a" in out["detail"]
     # the swap: end CAR-1 everywhere, a new QR, the new car
     status, out = _run(main, capsys, ["end-registration", *T, "--garage", B.id, "--pass-id",
-                                      "pass-span", "--vehicle", "CAR-1", "--end-day",
+                                      "pass-span", "--vehicle", "CAR1", "--end-day",
                                       "2026-06-02"])
     assert status == 0 and out["garages"] == [A.id, B.id, C.id], out
     status, out = _run(main, capsys, ["issue-enrolment", *T, "--garage", C.id, "--pass-id",
                                       "pass-span", "--enrolment-id", "qr-2", "--starts-on",
-                                      "2026-06-02", "--days-valid", "3", "--by", "owner",
-                                      "--at", AT])
+                                      "2026-06-02", "--days-valid", "3", "--plate",
+                                      "CAR-1-NEW", "--by", "owner", "--at", AT])
     assert status == 0
     status, out = _run(main, capsys, ["redeem-enrolment", *T, "--garage", C.id, "--token",
                                       out["token"], "--vehicle", "CAR-1-NEW", "--lane", "L2",
                                       "--direction", "entry", "--at", "2026-06-02T09:00:00-06:00"])
-    assert status == 0 and out["enrolment"]["redeemed"] is True, out
+    assert status == 0 and out["enrolment"]["recognised"] is True, out
     status, out = _run(main, capsys, ["access-in-store", *T, "--garage", A.id, "--vehicle",
-                                      "CAR-1", "--lane", "L1", "--direction", "entry", "--at",
+                                      "CAR1", "--lane", "L1", "--direction", "entry", "--at",
                                       "2026-06-02T09:00:00-06:00"])
     assert status == 1 and out["reason"] == f.NO_PASS and "ended on 2026-06-02" in out["detail"]
     # revoke: every registration at every garage ends, every credential dies

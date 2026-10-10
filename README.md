@@ -96,31 +96,109 @@ monthly-parker product uses three days from the starting day, and that is its
 number, not this module's. The lane presents the QR with the vehicle identity it
 measured (`redeem-enrolment`), and in one transaction the car is registered
 effective that local day, the pass moves to active if it was not already
-(recorded, with the enrolment as the actor), the QR is spent — one QR, one
-car, once — and the lane gets **the access answer for that same movement, from
-the module's own access path**. **One credential, one spend, under
+(recorded, with the enrolment as the actor), the QR is bound to that car, and
+the lane gets **the access answer for that same movement, from the module's own
+access path**. **One credential, one spend, under
 concurrency**: two lanes presenting the same QR at the same instant get exactly
 one bind — the pass row is locked first, then the credential row, everything is
 re-checked under those locks, and the spend itself carries `state = 'issued'`
 and asserts one row, so the loser is refused by name and never told yes. The
 module is written for READ COMMITTED, the store's default; a caller driving it
 at a stricter level meets the database's serialization failure as the same
-named refusal a deadlock gets. A refused redemption — a used, cancelled,
-expired or not-yet-started QR, the wrong end, a pass that is not registrable, a
+named refusal a deadlock gets. A refused redemption — a QR bound to another
+car, a cancelled, expired or not-yet-started QR, the wrong end, a pass that is not registrable, a
 lane the pass's terms do not name, **a direction the pass's terms do not
 allow** (only a structural exclusion refuses the bind; a weekday pass presented
 on a Sunday, a `valid_from` still ahead or a movement outside the hours still
 binds — enrolling at the weekend is the ordinary case), an identity already on
 another pass — writes nothing and **still answers the movement**; at an exit
 lane the answer is never a refusal. A revocation racing a redemption, in either
-order, leaves no live registration and no issued QR on the revoked pass.
+order, leaves no live registration and no live QR on the revoked pass.
 **Where a garage enrols follows from whether it sells transient
 parking**: a garage with no transient enrols at entry, derived; a transient
 garage states `entry` or `exit` (`set-garage-enrols-at`, recorded like the
 timezone repair), and unstated refuses to answer naming the field. A pass may
-carry several outstanding QRs — several cars — and each redeems to one car and
-dies; swapping a car is `end-registration` then a new QR. Revoking the pass
-cancels every outstanding QR on it.
+carry several outstanding QRs — several cars — and each binds one car.
+Revoking the pass cancels every QR on it, bound or not.
+
+**A QR is made for one car, by its licence plate.** `issue-enrolment`,
+`replace-car` (the new car's) and the holder's own link all require `--plate`;
+without it — or blank once spaces, invisible characters, dashes and dots are
+taken out — nothing is made. The plate is kept as typed for display, and
+compared in one normal form: capitals, with no space of any kind (a
+non-breaking or other Unicode space included), no invisible character
+(zero-width space, joiner and non-joiner, byte-order mark), no dash of any kind
+(hyphen, en dash, em dash, minus sign and the rest) and no dot, so `abc-123`
+typed and `ABC 123` read are the same car. **Every** plate comparison uses it:
+what the desk types, what a lane reads with or without a QR, what a
+registration holds and what a visit records — a car asked about by its plate
+alone, read as `xyz 789`, is the `XYZ789` registered. Registrations and visits
+are stored in that form (migration 0006 makes the database refuse any other). The QR is **bound to
+that plate from the moment it is made**: the plate is registered on the pass in
+the same transaction (a plate another pass holds is refused there, at the desk;
+a plate THIS pass already holds — a QR reissued for the same car, a replaced
+car coming back — keeps the registration it has, never registered twice and
+never refused as another pass), the garage's register shows it before
+any use, and the QR's first use binds nothing new — it is recognised, and moves
+a pass still waiting for its first car to active. A car whose plate is asked
+about without a QR is asked about in that normal form. At the lane **the plate
+supports the picture match and never refuses on its own**: the exact plate is
+recognised; anything else — nothing read, part of it, a misread, another plate —
+is a picture match against the registered plate, carrying what was read, and
+only the match's own "no" (`confirm-match`) is wrong car. Nothing opens on the
+QR while a match is pending; the answer beside it is the answer for what was
+read, so another plate with its own valid pass is let through on that pass,
+never on this QR. A QR stored before
+plates were required has no plate and binds whatever car first uses it, exactly
+as before.
+
+**One QR per car, and it keeps working for that car.** Once bound, the QR is
+the car's: shown again by that car it is *recognised* — answered for that car,
+at either end, in and out as often as needed, for its stay — and nothing is
+written. **A car whose identity the lane did not read is never let in
+blind**: the bound QR answers `match_required`, with the QR's id and the car it
+is bound to, and nothing opens on that QR; the lane matches the car's picture against that
+car's earlier ones (its fingerprint, or an outside picture check when that is
+unclear) and answers with `confirm-match` — matched is a recognised use, not
+matched is wrong car — and every answer is kept on the QR's record with its
+time, so a car that keeps needing a match is visible. Shown by a **different**
+car, the QR is refused
+`REFUSAL_CREDENTIAL_WRONG_CAR` — never "already used", with no exception — and
+the driver is sent to whoever issued it; the refusal names the QR and when it
+was bound, never the other car. A car whose identity the lane cannot read at
+the QR's first use is not bound (`vehicle_identity` is refused blank).
+
+**A stay ends at checkout; the same car with its next guest is a new stay.** A
+QR made for a plate registers that plate from `--starts-on` to the QR's last day
+(`--starts-on` plus `--days-valid` less one — the checkout day), never open and
+never past the pass's `valid_to`. Rental cars come back with a new guest: the
+car's next stay, on another pass, may start on that last day — the earlier
+registration ends that day, by name (`the car's next stay began`), and the next
+one starts. Before that day the plate on another pass is still refused by name,
+naming the earlier pass and its last day. A registration the owner ended, or a
+revocation ended, is not a stay's last day: the car is free from its end day,
+as before. **A stay ended early** (`end-stay`: the guest checked out — the day,
+who and why) ends every car of the pass on that day, at every garage. On the
+day a stay ended early or turned over, its QR is refused
+`REFUSAL_CREDENTIAL_EXIT_ONLY` at an entry and lets the car out at an exit, on
+its own pass; after that day it is refused `REFUSAL_CREDENTIAL_STAY_ENDED` at
+either end, and before its stay begins `REFUSAL_CREDENTIAL_NOT_STARTED`.
+**Nothing carries over**: a plate read, a QR and a picture match for the next
+stay answer on the next stay's pass, never the earlier one. A shorter stay is
+`end-registration` (to an earlier day) or `end-stay`.
+
+**Replacing a car is one step** (`replace-car`, from the QR of the car being
+replaced): that QR becomes **exit only** — refused `REFUSAL_CREDENTIAL_EXIT_ONLY`
+at an entry, recognised and covered at an exit, so a car that broke down inside
+can leave without paying — and a new QR is issued on the same pass for the
+replacement car, its token returned once by that call. The old car read by its
+identity alone is answered the same way (not covered for an entry, reason
+`EXIT_ONLY`; covered at the exit). A QR that never bound has no car inside and
+is cancelled instead. All of it or none of it. **Cancelling one QR**
+(`cancel-code`) cancels that QR alone, bound or not — the pass, its other QRs
+and its registrations stay as they were (a car the QR had bound stays on the
+pass; ending the car is `end-registration`) — and a fresh QR is issued with
+`issue-enrolment`, for the same plate, on the registration the car already has.
 
 The holder's own details: a one-time link (`issue-holder-link`), the same
 primitive scoped to the pass, lets the holder write their name and phone onto
@@ -135,9 +213,17 @@ database driver.
 $ garage-pass set-garage-enrols-at --tenant T --garage garage-downtown --enrols-at entry \
       --by owner --at 2026-06-01T09:00:00-06:00 --reason "readers are at the entry lanes"
 $ garage-pass issue-enrolment --tenant T --garage garage-downtown --pass-id pass-1 \
-      --enrolment-id qr-1 --starts-on 2026-06-01 --days-valid 3 --by owner --at ...
+      --enrolment-id qr-1 --plate "ABC-123" --starts-on 2026-06-01 --days-valid 3 \
+      --by owner --at ...
 $ garage-pass redeem-enrolment --tenant T --garage garage-downtown --token <what the QR carried> \
       --vehicle CAR-1 --lane L1 --direction entry --at 2026-06-01T09:00:00-06:00
+$ garage-pass replace-car --tenant T --garage garage-downtown --enrolment-id qr-1 \
+      --new-enrolment-id qr-2 --plate "XYZ 789" --starts-on 2026-06-02 --days-valid 3 --by desk \
+      --reason "rental car swapped" --at ...
+$ garage-pass confirm-match --tenant T --garage garage-downtown --enrolment-id qr-1 \
+      --matched yes --decided-by fingerprint --lane L1 --direction entry --at ...
+$ garage-pass cancel-code --tenant T --garage garage-downtown --enrolment-id qr-2 \
+      --by desk --reason "never received" --at ...
 ```
 
 ### One car, one pass per garage
@@ -194,9 +280,15 @@ every entitlement at a garage — a lane refreshing what it decides from — was
 never told a pass id. It takes the two arguments every store command takes
 (`--tenant`, `--garage`) and prints **every** registration recorded at that
 garage, history included — ended rows too — each as the identity as recorded,
-the pass's id, `effective_day`, `end_day` and `ended_reason`; and, for every
-pass those rows name, the pass id, its stored state and its two valid days. The
-same rules as `show-pass`, and one more thing that does not travel: the pass's
+the pass's id, `effective_day`, `end_day` and `ended_reason`; **every QR** of
+every pass that names the garage, so a lane can decide on a QR with no
+database — each as its `register_hash` (the SHA-256 of its stored digest: the
+lane hashes the token it reads twice and looks it up; never the token, never the
+stored digest), its id, its pass, its stored state, the car it is bound to or
+`null`, `exit_only`, and the first and last local day an unbound QR may be used
+on; and, for every pass those rows and QRs name, the pass id, its stored state
+and its two valid days. The same rules as `show-pass`, and one more thing that
+does not travel: the pass's
 *other* garages — a reader at one garage learns which vehicles a pass holds
 there and when it covers, not where else it answers. The rows are selected by
 the garage alone, never through the pass's garage set; a row whose pass does

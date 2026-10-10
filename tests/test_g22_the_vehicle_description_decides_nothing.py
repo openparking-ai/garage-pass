@@ -4,10 +4,10 @@
 identity a lane might measure -- one that spells the description exactly, one
 that spells it in another case, one it contains, one unrelated -- enrolments
 that differ only in ``vehicle_description`` redeem IDENTICALLY: the same
-outcome, the same refusal code, the same answer; and in the two refusal
-situations that carry an identity (on another pass; already used) the same
-again. The description is reported on the enrolment and that is the only
-place it may differ.
+outcome, the same refusal code, the same answer; and in the situations that
+carry an identity (on another pass; bound to another car; bound to this very
+car) the same again. The description is reported on the enrolment and that is
+the only place it may differ.
 
 Its power is measured: five spellings of a description-keyed branch are
 planted as its controls -- an equality, a containment, a case-folded equality,
@@ -44,6 +44,7 @@ def outcome(redemption) -> tuple:
     refusal = redemption.refusal
     return (
         redemption.redeemed,
+        redemption.recognised,
         (refusal.code, refusal.field) if refusal else None,
         replace(redemption.answer, detail="", pass_id=None),
         redemption.registration and redemption.registration["vehicle_identity"],
@@ -51,7 +52,8 @@ def outcome(redemption) -> tuple:
     )
 
 
-SITUATIONS = ("fresh", "identity on another pass", "already used")
+SITUATIONS = ("fresh", "identity on another pass", "bound to another car",
+              "bound to this car")
 
 
 def situated(app, tenant_id, garage, situation: str, identity: str) -> None:
@@ -83,8 +85,10 @@ def test_enrolments_differing_only_in_description_redeem_identically(
         token = issue(app, tenant_id, here, pass_, f"qr-{i}", vehicle_description=description)[
             "token"
         ]
-        if situation == "already used":
+        if situation == "bound to another car":
             assert redeem(app, tenant_id, here, token, "CAR-9", "L1").redeemed
+        if situation == "bound to this car":
+            assert redeem(app, tenant_id, here, token, identity, "L1").redeemed
         out = redeem(app, tenant_id, here, token, identity, "L1", at=at(date(2026, 6, 2), 9))
         # The description is REPORTED, and that is the only place it may differ.
         assert credential(app, tenant_id, f"qr-{i}").vehicle_description == description
@@ -93,9 +97,11 @@ def test_enrolments_differing_only_in_description_redeem_identically(
     assert all(o == first for o in rest), [o for o in rest if o != first]
     expected = {"fresh": None, "identity on another pass": ("REFUSAL_VEHICLE_ON_ANOTHER_PASS",
                                                             "vehicle_identity"),
-                "already used": ("REFUSAL_CREDENTIAL_ALREADY_USED", "enrolment")}[situation]
-    assert first[1] == expected, "the situation, not the description, decided"
+                "bound to another car": ("REFUSAL_CREDENTIAL_WRONG_CAR", "vehicle_identity"),
+                "bound to this car": None}[situation]
+    assert first[2] == expected, "the situation, not the description, decided"
     assert first[0] is (situation == "fresh")
+    assert first[1] is (situation == "bound to this car")
 
 
 @pytest.mark.guarantee("G22")
@@ -105,7 +111,7 @@ def test_a_mismatch_between_the_description_and_the_identity_is_not_a_refusal(ap
     pass_ = seeded(app, tenant_id, GARAGES[0])
     token = issue(app, tenant_id, GARAGES[0], pass_, vehicle_description="silver Toyota")["token"]
     out = redeem(app, tenant_id, GARAGES[0], token, "BLACK-VAN-7")
-    assert out.redeemed and out.registration["vehicle_identity"] == "BLACK-VAN-7"
+    assert out.redeemed and out.registration["vehicle_identity"] == "BLACKVAN7"
     assert out.answer.vehicle_identity == "BLACK-VAN-7"
     read = credential(app, tenant_id, "qr-1")
     assert read.vehicle_description == "silver Toyota"

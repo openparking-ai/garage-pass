@@ -149,6 +149,14 @@ REFUSAL_LANES_AT_A_GARAGE_THE_PASS_DOES_NOT_NAME = (
     "REFUSAL_LANES_AT_A_GARAGE_THE_PASS_DOES_NOT_NAME"
 )
 REFUSAL_LANES_GARAGE_REPEATED = "REFUSAL_LANES_GARAGE_REPEATED"
+# --- a code keeps working for its own car (R1 registry): bound, exit only, one cancel ---
+REFUSAL_CREDENTIAL_WRONG_CAR = "REFUSAL_CREDENTIAL_WRONG_CAR"
+REFUSAL_CREDENTIAL_EXIT_ONLY = "REFUSAL_CREDENTIAL_EXIT_ONLY"
+REFUSAL_CREDENTIAL_STAY_ENDED = "REFUSAL_CREDENTIAL_STAY_ENDED"
+REFUSAL_CREDENTIAL_ALREADY_REPLACED = "REFUSAL_CREDENTIAL_ALREADY_REPLACED"
+REFUSAL_CREDENTIAL_NOT_BOUND = "REFUSAL_CREDENTIAL_NOT_BOUND"
+REFUSAL_PLATE_NOT_STATED = "REFUSAL_PLATE_NOT_STATED"
+REFUSAL_MATCH_DECIDED_BY_UNKNOWN = "REFUSAL_MATCH_DECIDED_BY_UNKNOWN"
 
 REFUSALS: dict[str, str] = {
     REFUSAL_VALID_TO_BEFORE_VALID_FROM: (
@@ -370,13 +378,61 @@ REFUSALS: dict[str, str] = {
         "token itself is never rendered and never stored: only its SHA-256 is compared."
     ),
     REFUSAL_CREDENTIAL_ALREADY_USED: (
-        "This credential was already redeemed. An enrolment is one QR, one car: it binds "
-        "exactly one vehicle identity and is then terminal; a holder link is used once. "
-        "The detail names the credential and when it was redeemed. Nothing is written."
+        "This credential was no longer open to be used. A holder link is used once. An "
+        "enrolment binds one car on first use and then answers for that car; this "
+        "refusal reaches an enrolment only when another lane bound it between this "
+        "lane's read and its write. The detail names the credential and when. Nothing "
+        "is written."
     ),
     REFUSAL_CREDENTIAL_CANCELLED: (
-        "This credential was cancelled -- the pass it opens was revoked, and a credential "
-        "must not outlive the pass. The detail names when and why. Nothing is written."
+        "This credential was cancelled -- by the revocation of the pass it opens, which "
+        "a credential must not outlive, or on its own, by the person who issued it, with "
+        "the pass left as it was. The detail names when and why. Nothing is written."
+    ),
+    REFUSAL_CREDENTIAL_WRONG_CAR: (
+        "This QR is bound to another car, and it answers for that car only. On a QR made for "
+        "a plate, this is the picture match's own answer -- the lane's match said it is not "
+        "the car the plate was registered for; a plate read never refuses on its own. On a "
+        "QR stored before plates were required, it is a car other than the one that first "
+        "used it. Refused with no exception, and the driver is sent to the person who issued "
+        "the QR. The detail names the QR, never the other car. Nothing is written. The "
+        "movement itself still gets its access answer, and an exit is never refused."
+    ),
+    REFUSAL_CREDENTIAL_EXIT_ONLY: (
+        "This QR's car was replaced on its pass -- or the stay it was made for ended "
+        "today (the guest checked out, or the car's next stay began) -- so the QR no "
+        "longer opens an entry. It still answers at an exit, so a car left inside can "
+        "leave. The detail names the QR and when, and why, that happened. Nothing is "
+        "written."
+    ),
+    REFUSAL_CREDENTIAL_STAY_ENDED: (
+        "The stay this QR was made for has ended: its last day passed, the guest checked "
+        "out, or the car's next stay began. After that day the QR opens nothing, at an "
+        "entry or an exit, and it never answers for the car's next stay. The detail names "
+        "the day the stay ended and why. Nothing is written; a new stay gets its own QR."
+    ),
+    REFUSAL_PLATE_NOT_STATED: (
+        "A QR is made for one car, and that car's licence plate is required to make it. "
+        "None was given, or it was blank once spaces, dashes and dots were taken out, so "
+        "nothing was made. The QR is bound to the plate from the moment it is made; the "
+        "plate is compared in capitals with no spaces, dashes or dots, so 'abc-123' and "
+        "'ABC 123' are the same plate."
+    ),
+    REFUSAL_CREDENTIAL_NOT_BOUND: (
+        "A picture match was answered for a QR that is bound to no car, so there is no "
+        "earlier picture it could have been matched against. A QR that has not bound is "
+        "presented with the identity the lane read, and binds it. Nothing is written."
+    ),
+    REFUSAL_MATCH_DECIDED_BY_UNKNOWN: (
+        "A picture match names who decided it, and the field named beside this code is "
+        "not one of the two this module records: 'fingerprint' (the car's own fingerprint "
+        "against its earlier pictures) or 'api' (an outside picture check, when the "
+        "fingerprint was unclear). Nothing is written."
+    ),
+    REFUSAL_CREDENTIAL_ALREADY_REPLACED: (
+        "This QR's car was already replaced on its pass. A replacement is made once, from "
+        "the QR of the car being replaced; replace the new car from its own QR. Nothing "
+        "is written."
     ),
     REFUSAL_CREDENTIAL_EXPIRED: (
         "This credential's window has passed: its last day, starts_on plus days_valid "
@@ -461,6 +517,7 @@ BLANK_LANE = "BLANK_LANE"
 PASS_NOT_HANDED_IN = "PASS_NOT_HANDED_IN"
 PASS_DUPLICATED = "PASS_DUPLICATED"
 RECORD_UNREADABLE = "RECORD_UNREADABLE"
+EXIT_ONLY = "EXIT_ONLY"
 
 NOT_COVERED_REASONS: dict[str, str] = {
     NO_PASS: (
@@ -480,6 +537,10 @@ NOT_COVERED_REASONS: dict[str, str] = {
     ),
     SUSPENDED: ("The owner has put the pass on hold. The hold is reversible."),
     REVOKED: ("The pass was revoked. Revocation is terminal."),
+    EXIT_ONLY: (
+        "This vehicle was replaced on its pass by another car. It is not covered for an "
+        "entry; at an exit the pass still covers it, so a car left inside can leave."
+    ),
     DIRECTION_NOT_ALLOWED: ("The pass's terms do not state this direction."),
     WRONG_LANE: (
         "The pass's terms name the lanes it may use AT THIS GARAGE, and this is not one. "

@@ -47,6 +47,7 @@ import pytest
 from fixtures import a_pass, everything_terms
 from garage_pass import findings as f
 from garage_pass.cli import _plain, main
+from garage_pass.enrolment import plate_key
 from garage_pass.garage import Garage
 from garage_pass.store.enrolments import issue_enrolment, issue_holder_link
 from garage_pass.store.postgres import all_tables, tenant
@@ -64,8 +65,9 @@ DENVER = Garage(id="garage-denver", timezone="America/Denver", transient_availab
 TOKYO = Garage(id="Garage-tokyo", timezone="Asia/Tokyo", transient_available=True)
 ELSEWHERE = Garage(id="garage-elsewhere", timezone="America/Denver", transient_available=True)
 
-#: (identity, effective day, end day) -- IN INSERTION ORDER, chosen so the heap
-#: order is not the code-point order: ``CAR-A`` < ``Car-C`` < ``car-b``.
+#: (identity as typed, effective day, end day) -- IN INSERTION ORDER, chosen so
+#: the heap order is not the code-point order. Stored and shown in the one
+#: normal form (migration 0006): ``CARA`` < ``CARB`` < ``CARC``.
 REGISTRATIONS = (
     ("Car-C", date(2027, 1, 1), None),            # starts on a future day
     ("CAR-A", date(2026, 3, 1), None),            # current
@@ -130,7 +132,7 @@ def expected_rows() -> list[dict]:
     rows = []
     for identity, effective, end in REGISTRATIONS:
         for garage in (DENVER, TOKYO):
-            rows.append({"vehicle_identity": identity, "garage": garage.id,
+            rows.append({"vehicle_identity": plate_key(identity), "garage": garage.id,
                          "effective_day": effective, "end_day": end,
                          "ended_reason": "ended" if end else None})
     return sorted(rows, key=lambda r: (r["vehicle_identity"], r["effective_day"], r["garage"]))
@@ -148,7 +150,7 @@ def test_the_read_shows_every_registration_history_included_sorted_by_code_point
 ):
     pass_ = seed_two_zone_pass(app, tenant_id)
     rows = expected_rows()
-    assert [r["vehicle_identity"] for r in rows][::2] == ["CAR-A", "Car-C", "car-b", "car-b"]
+    assert [r["vehicle_identity"] for r in rows][::2] == ["CARA", "CARB", "CARB", "CARC"]
     assert {r["end_day"] is not None for r in rows} == {True, False}, "ended AND open rows"
     assert max(r["effective_day"] for r in rows) > date(2026, 12, 31), "a future row"
     # THE PREMISE of the sort control: the database's own unsorted order is
@@ -248,7 +250,8 @@ def test_the_holder_the_terms_the_label_and_the_credentials_do_not_travel(
     pass_ = seed_two_zone_pass(app, tenant_id, terms=every)
     with tenant(app, tenant_id) as cursor:
         token = issue_enrolment(cursor, tenant_id, DENVER.id, pass_.id, "qr-1", date(2026, 6, 1),
-                                3, by="owner", at=CREATED_AT, vehicle_description="silver")
+                                3, by="owner", at=CREATED_AT, vehicle_description="silver",
+                                plate="PLATE-Q1")
         link = issue_holder_link(cursor, tenant_id, DENVER.id, pass_.id, "link-1",
                                  date(2026, 6, 1), 3, by="owner", at=CREATED_AT)
     app.commit()
@@ -409,7 +412,7 @@ def test_another_tenants_pass_with_the_same_id_is_not_shown_with_rls_on_and_with
                 if "registrations" in got else got["refused"]
         return out
 
-    expected = {tenant_id: ["CAR-MINE"], other: ["CAR-THEIRS"], third: f.REFUSAL_GARAGE_NOT_FOUND}
+    expected = {tenant_id: ["CARMINE"], other: ["CARTHEIRS"], third: f.REFUSAL_GARAGE_NOT_FOUND}
     assert reading() == expected, "with row-level security ON"
     def both_visible_to_the_app() -> bool:
         """A bare query as the application role, no tenant set: the two
@@ -450,7 +453,7 @@ def test_a_registration_outside_the_set_is_refused_by_the_constraint_and_shown_i
     ids = dict(query(app, tenant_id, "SELECT external_id, id FROM garages"))
     (pass_uuid,) = query(app, tenant_id, "SELECT id FROM passes")[0]
     insert = ("INSERT INTO vehicle_registrations (tenant_id, garage_id, pass_id, "
-              "vehicle_identity, effective_day) VALUES (%s, %s, %s, 'CAR-OUT', '2026-01-01')")
+              "vehicle_identity, effective_day) VALUES (%s, %s, %s, 'CAROUT', '2026-01-01')")
     # 1. the constraint, by name: a raw insert as the OWNER at a garage the
     #    pass does not name is refused
     with owner.cursor() as cursor, pytest.raises(psycopg.errors.ForeignKeyViolation) as raised:
@@ -463,7 +466,7 @@ def test_a_registration_outside_the_set_is_refused_by_the_constraint_and_shown_i
     assert raised.value.diag.constraint_name == OUTSIDE
     # the control for both: the same insert INSIDE the set is accepted
     with owner.cursor() as cursor:
-        cursor.execute(insert.replace("CAR-OUT", "CAR-IN"), (tenant_id, ids[DENVER.id], pass_uuid))
+        cursor.execute(insert.replace("CAROUT", "CARIN"), (tenant_id, ids[DENVER.id], pass_uuid))
     assert len(shown(app, tenant_id, DENVER.id, pass_.id)["registrations"]) == 9
     # 3. planted PAST the constraint -- its triggers disabled, which only a
     #    superuser may do -- the read shows the row and names the garage
@@ -478,7 +481,7 @@ def test_a_registration_outside_the_set_is_refused_by_the_constraint_and_shown_i
     out = shown(app, tenant_id, DENVER.id, pass_.id)
     outside = [r for r in out["registrations"] if r["garage"] == ELSEWHERE.id]
     assert len(out["registrations"]) == 10 and len(outside) == 1, "the row was dropped"
-    assert outside[0]["vehicle_identity"] == "CAR-OUT"
+    assert outside[0]["vehicle_identity"] == "CAROUT"
     assert out["garages"] == ["Garage-tokyo", "garage-denver"]
     assert out["garages_not_named"] == [ELSEWHERE.id]
 
@@ -506,23 +509,28 @@ def register_writers() -> list[tuple[str, str]]:
 @pytest.mark.guarantee("G26")
 @store_test
 def test_every_writer_of_the_register_is_reflected_by_the_read(app, tenant_id):
-    """The census: five write sites -- the set's INSERT (create_pass), the
+    """The census: seven write sites -- the set's INSERT (create_pass), the
     register's INSERT (register_vehicle, which redeem_enrolment goes through),
-    and its three UPDATEs (the revocation's, the expiry release's, and
-    end_registration's). Each is exercised and its effect read back:
-    ``ended_reason`` tells the three UPDATEs apart."""
+    and its five UPDATEs (the revocation's, the checkout-day turnover's, the
+    expiry release's, end_registration's and end_stay's). Each is exercised
+    and its effect read back: ``ended_reason`` tells the five UPDATEs apart."""
     from fixtures import BOTH, at
     from garage_pass.passes import State
-    from garage_pass.store.records import change_state, end_registration
+    from garage_pass.store.records import change_state, end_registration, end_stay
     from garage_pass.terms import Terms
 
     assert register_writers() == [
         ("INSERT INTO", "pass_garages"),
         ("UPDATE", "vehicle_registrations"),  # change_state -> revoked
+        ("UPDATE", "vehicle_registrations"),  # register_vehicle: the checkout-day turnover
         ("UPDATE", "vehicle_registrations"),  # register_vehicle: the expiry release
         ("INSERT INTO", "vehicle_registrations"),  # register_vehicle
         ("UPDATE", "vehicle_registrations"),  # end_registration
+        ("UPDATE", "vehicle_registrations"),  # end_stay
     ], "a writer of the register or the set was added or moved: prove the read reflects it"
+    stay_a = a_pass(id="stay-a", garage_ids={DENVER.id, TOKYO.id},
+                    terms=Terms(directions=BOTH, valid_to=date(2026, 10, 12)))
+    stay_b = a_pass(id="stay-b", garage_ids={DENVER.id, TOKYO.id})
     expiring = a_pass(id="pass-expiring", garage_ids={DENVER.id, TOKYO.id},
                       terms=Terms(directions=BOTH, valid_to=date(2026, 6, 30)))
     successor = a_pass(id="pass-successor", garage_ids={DENVER.id, TOKYO.id})
@@ -543,23 +551,42 @@ def test_every_writer_of_the_register_is_reflected_by_the_read(app, tenant_id):
         # the same local day at Denver and at Tokyo
         change_state(cursor, tenant_id, DENVER.id, successor.id, State.REVOKED, by="owner",
                      at=at(date(2026, 9, 1), 2), reason="divorced")
+        # the turnover's UPDATE: CAR-Z's stay on stay-a runs to its valid_to,
+        # Oct 12; its next stay, on stay-b, starts that day
+        for pass_ in (stay_a, stay_b):
+            create_pass(cursor, tenant_id, DENVER.id, pass_, by="seed", at=CREATED_AT)
+        register_vehicle(cursor, tenant_id, DENVER.id, stay_a.id, "CAR-Z", date(2026, 10, 10))
+        register_vehicle(cursor, tenant_id, DENVER.id, stay_b.id, "CAR-Z", date(2026, 10, 12))
+        # end_stay's UPDATE: the next guest checks out early, on Oct 14
+        end_stay(cursor, tenant_id, TOKYO.id, stay_b.id, date(2026, 10, 14), by="desk",
+                 reason="left early")
     app.commit()
+    turned = [(r["garage"], r["end_day"], r["ended_reason"])
+              for r in shown(app, tenant_id, DENVER.id, stay_a.id)["registrations"]]
+    assert turned == [("Garage-tokyo", date(2026, 10, 12), "the car's next stay began"),
+                      ("garage-denver", date(2026, 10, 12), "the car's next stay began")]
+    left = [(r["garage"], r["effective_day"], r["end_day"], r["ended_reason"])
+            for r in shown(app, tenant_id, DENVER.id, stay_b.id)["registrations"]]
+    assert left == [("Garage-tokyo", date(2026, 10, 12), date(2026, 10, 14),
+                     "checked out (desk): left early"),
+                    ("garage-denver", date(2026, 10, 12), date(2026, 10, 14),
+                     "checked out (desk): left early")]
     first = shown(app, tenant_id, TOKYO.id, expiring.id)
     assert first["garages"] == ["Garage-tokyo", "garage-denver"], "the set, from create_pass"
     assert first["state"] == "active"
     assert [(r["vehicle_identity"], r["garage"], r["end_day"], r["ended_reason"])
             for r in first["registrations"]] == [
-        ("CAR-X", "Garage-tokyo", date(2026, 7, 1), "pass valid_to passed"),
-        ("CAR-X", "garage-denver", date(2026, 7, 1), "pass valid_to passed"),
+        ("CARX", "Garage-tokyo", date(2026, 7, 1), "pass valid_to passed"),
+        ("CARX", "garage-denver", date(2026, 7, 1), "pass valid_to passed"),
     ]
     second = shown(app, tenant_id, DENVER.id, successor.id)
     assert second["state"] == "revoked"
     assert [(r["vehicle_identity"], r["garage"], r["effective_day"], r["end_day"],
              r["ended_reason"]) for r in second["registrations"]] == [
-        ("CAR-X", "Garage-tokyo", date(2026, 8, 1), date(2026, 9, 1), "pass revoked"),
-        ("CAR-X", "garage-denver", date(2026, 8, 1), date(2026, 9, 1), "pass revoked"),
-        ("CAR-Y", "Garage-tokyo", date(2026, 8, 1), date(2026, 8, 15), "ended"),
-        ("CAR-Y", "garage-denver", date(2026, 8, 1), date(2026, 8, 15), "ended"),
+        ("CARX", "Garage-tokyo", date(2026, 8, 1), date(2026, 9, 1), "pass revoked"),
+        ("CARX", "garage-denver", date(2026, 8, 1), date(2026, 9, 1), "pass revoked"),
+        ("CARY", "Garage-tokyo", date(2026, 8, 1), date(2026, 8, 15), "ended"),
+        ("CARY", "garage-denver", date(2026, 8, 1), date(2026, 8, 15), "ended"),
     ]
 
 

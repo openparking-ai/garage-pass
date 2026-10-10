@@ -328,8 +328,8 @@ def test_revoking_ends_the_passs_registrations_on_the_revocation_day(app, tenant
         app, tenant_id,
         "SELECT vehicle_identity, end_day, ended_reason FROM vehicle_registrations ORDER BY 1",
     ) == [
-        ("CAR-1", date(2026, 6, 1), ENDED_BY_REVOCATION),
-        ("CAR-2", date(2026, 7, 1), ENDED_BY_REVOCATION),
+        ("CAR1", date(2026, 6, 1), ENDED_BY_REVOCATION),
+        ("CAR2", date(2026, 7, 1), ENDED_BY_REVOCATION),
     ]
 
 

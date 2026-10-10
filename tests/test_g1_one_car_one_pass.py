@@ -91,7 +91,7 @@ def test_a_second_pass_is_refused_by_name_naming_the_holder_and_that_it_has_no_e
     assert refused.value.field == "vehicle_identity"
     assert "'pass-a'" in refused.value.detail and "Employee A" in refused.value.detail
     assert "has no end day" in refused.value.detail
-    assert registrations(app, tenant_id) == [("pass-a", "CAR-1", JAN_1, None, None)], (
+    assert registrations(app, tenant_id) == [("pass-a", "CAR1", JAN_1, None, None)], (
         "the refused registration was written anyway"
     )
 
@@ -130,7 +130,7 @@ def test_a_refusal_writes_nothing_even_inside_a_transaction_that_then_commits(ap
         (count,) = cursor.fetchone()
     app.commit()
     assert count == 1
-    assert registrations(app, tenant_id) == [("pass-a", "CAR-1", JAN_1, None, None)]
+    assert registrations(app, tenant_id) == [("pass-a", "CAR1", JAN_1, None, None)]
 
 
 @pytest.mark.guarantee("G1")
@@ -146,8 +146,8 @@ def test_ending_on_day_d_frees_the_identity_from_d_and_the_old_pass_covers_up_to
     app.commit()
     register(app, tenant_id, Z, effective=d)
     assert registrations(app, tenant_id) == [
-        ("pass-a", "CAR-1", JAN_1, d, ENDED_BY_OWNER),
-        ("pass-z", "CAR-1", d, None, None),
+        ("pass-a", "CAR1", JAN_1, d, ENDED_BY_OWNER),
+        ("pass-z", "CAR1", d, None, None),
     ]
     day_before = at(date(2026, 5, 31), 23, 30)
     before = access_from_store(app, tenant_id, GARAGE.id, "CAR-1", "L1", Direction.ENTRY,
@@ -167,8 +167,8 @@ def test_a_registration_on_an_expired_pass_is_released_to_the_next_pass(app, ten
     register(app, tenant_id, bounded)
     register(app, tenant_id, Z, effective=date(2026, 4, 1))
     assert registrations(app, tenant_id) == [
-        ("pass-b", "CAR-1", JAN_1, date(2026, 4, 1), ENDED_BY_EXPIRY),
-        ("pass-z", "CAR-1", date(2026, 4, 1), None, None),
+        ("pass-b", "CAR1", JAN_1, date(2026, 4, 1), ENDED_BY_EXPIRY),
+        ("pass-z", "CAR1", date(2026, 4, 1), None, None),
     ]
 
 
@@ -188,7 +188,7 @@ def test_a_pass_may_carry_many_vehicles(app, tenant_id):
     seed(app, tenant_id, GARAGE, (A,))
     for identity in ("CAR-1", "CAR-2", "CAR-3"):
         register(app, tenant_id, A, identity)
-    assert [r[1] for r in registrations(app, tenant_id)] == ["CAR-1", "CAR-2", "CAR-3"]
+    assert [r[1] for r in registrations(app, tenant_id)] == ["CAR1", "CAR2", "CAR3"]
 
 
 @pytest.mark.guarantee("G1")
@@ -200,7 +200,7 @@ def test_a_raw_insert_as_the_application_role_hits_the_exclusion_backstop(app, t
         with tenant(app, tenant_id) as cursor:
             cursor.execute(
                 "INSERT INTO vehicle_registrations (tenant_id, garage_id, pass_id, "
-                "vehicle_identity, effective_day) VALUES (%s, %s, %s, 'CAR-1', '2026-03-01')",
+                "vehicle_identity, effective_day) VALUES (%s, %s, %s, 'CAR1', '2026-03-01')",
                 (tenant_id, garage_uuid, z_uuid),
             )
     app.rollback()
@@ -557,9 +557,9 @@ def test_a_draft_awaiting_or_active_pass_takes_a_registration(app, tenant_id, st
     target = a_pass(id="pass-s", state=state)
     seed(app, tenant_id, GARAGE, (target,))
     out = register(app, tenant_id, target, "CAR-9")
-    assert out["pass"] == "pass-s" and out["vehicle_identity"] == "CAR-9"
-    assert [r for r in registrations(app, tenant_id) if r[1] == "CAR-9"] == [
-        ("pass-s", "CAR-9", JAN_1, None, None)
+    assert out["pass"] == "pass-s" and out["vehicle_identity"] == "CAR9"
+    assert [r for r in registrations(app, tenant_id) if r[1] == "CAR9"] == [
+        ("pass-s", "CAR9", JAN_1, None, None)
     ]
 
 
@@ -581,10 +581,10 @@ def test_a_registration_a_raw_write_left_open_on_a_revoked_pass_is_named_not_met
     with owner.cursor() as cursor:  # the owner is not bound by the module
         cursor.execute(
             "INSERT INTO vehicle_registrations (tenant_id, garage_id, pass_id, "
-            "vehicle_identity, effective_day, end_day) VALUES (%s, %s, %s, 'CAR-1', %s, NULL)",
+            "vehicle_identity, effective_day, end_day) VALUES (%s, %s, %s, 'CAR1', %s, NULL)",
             (tenant_id, garage_uuid, a_uuid, date(2026, 6, 2)),
         )
-    assert registrations(app, tenant_id) == [("pass-a", "CAR-1", date(2026, 6, 2), None, None)]
+    assert registrations(app, tenant_id) == [("pass-a", "CAR1", date(2026, 6, 2), None, None)]
     with pytest.raises(f.Refused) as refused:
         register(app, tenant_id, Z, effective=date(2026, 6, 3))
     app.rollback()

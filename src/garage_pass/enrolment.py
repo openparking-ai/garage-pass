@@ -34,17 +34,25 @@ product's number is three ("one-time use, valid 3 days from the starting
 day"); it is documented, never defaulted: ``days_valid`` is STATED, and
 ``require_days_valid`` refuses an absent one by name.
 
-**ONE QR PER CAR.** A redeemed enrolment is TERMINAL and binds exactly one
-vehicle identity. Several outstanding enrolments on one pass are allowed and
-intended -- a pass may carry several vehicles -- and each redeems to one car
-and dies. Nobody should build a one-outstanding-per-pass rule: his pooling
-forbids it.
+**ONE QR PER CAR, AND IT KEEPS WORKING FOR THAT CAR.** A redeemed enrolment
+is BOUND to exactly one vehicle identity, the one the lane measured at its
+first use. Shown again by that car it answers for that car, in and out, for as
+long as the pass covers it. Shown where the lane read no identity at all it
+opens nothing on its own: a picture match decides (``confirm_match``). Shown
+by a different car it is refused by name
+(wrong car), never "already used". Several outstanding enrolments on one pass
+are allowed and intended -- a pass may carry several vehicles -- and each binds
+one car. Nobody should build a one-outstanding-per-pass rule: his pooling
+forbids it. A bound QR whose car was replaced on the pass is EXIT ONLY: it
+answers at an exit and is refused at an entry (migration 0005). A holder link
+is still used once.
 """
 
 from __future__ import annotations
 
 import hashlib
 import secrets
+import unicodedata
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from enum import Enum
@@ -106,6 +114,48 @@ def mint() -> MintedToken:
 def digest(token: str) -> str:
     """The SHA-256 hex digest of a token -- the only form the store compares."""
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+#: What is not part of a plate when two plates are compared, wherever it is:
+#: the dot; EVERY DASH -- every character Unicode files as dash punctuation
+#: (category Pd: the hyphen-minus, en dash, em dash and the rest) and the minus
+#: sign; besides every character ``str.isspace()`` calls a space (the ASCII
+#: ones, non-breaking, thin, ideographic and the rest), the invisible ones a
+#: pasted plate carries: zero-width space, zero-width non-joiner and joiner, and
+#: the byte-order mark. "abc-123", "ABC 123", "ABC.123", "ABC\u00a0123" and
+#: "ABC\u2013123" are one plate.
+_PLATE_SEPARATORS = frozenset(".\u2212\u200b\u200c\u200d\ufeff")
+
+
+def _not_part_of_a_plate(ch: str) -> bool:
+    return ch.isspace() or ch in _PLATE_SEPARATORS or unicodedata.category(ch) == "Pd"
+
+
+def plate_key(text: str) -> str:
+    """THE ONE NORMAL FORM a plate is compared in -- EVERY comparison of a
+    plate in this module: what the desk types, what a lane reads, what a
+    registration holds and what a visit records. Capitals, with no space (any
+    Unicode space), no invisible character, no dash of any kind and no dot
+    anywhere. The plate as typed is kept beside it for display; this is what is
+    matched. Blank once normalised is the empty string, which the callers name
+    -- never a database error."""
+    return "".join(ch for ch in text.upper() if not _not_part_of_a_plate(ch))
+
+
+def register_hash(token_sha256: str) -> str:
+    """What a garage's register publishes for a QR: the SHA-256 of its stored
+    digest (the hex text), so a lane that caches the register can decide on a
+    QR with no database -- it hashes the token it read twice and looks the
+    result up. ONE-WAY TWICE: the register yields no working QR, and it is
+    never the digest the row holds, so a copy of the register matches no
+    stored value either (G23: the digest is never rendered)."""
+    return hashlib.sha256(token_sha256.encode("ascii")).hexdigest()
+
+
+def register_hash_of(presented: str) -> str:
+    """The lane's half: the register hash of what a QR carried (the payload or
+    the bare token)."""
+    return register_hash(digest(token_of(presented)))
 
 
 def payload_of(token: str) -> str:
@@ -214,6 +264,22 @@ class Credential:
     redeemed_at: datetime | None = None
     cancelled_at: datetime | None = None
     cancelled_reason: str | None = None
+    #: The car this enrolment is bound to, once it was used; None before, and
+    #: always None for a holder link. Kept when the enrolment is cancelled.
+    bound_identity: str | None = None
+    #: When the bound car was replaced on the pass: from then the QR opens no
+    #: entry and still answers at an exit. Enrolments only.
+    exit_only_at: datetime | None = None
+    #: The plate the QR was ISSUED for, in ``plate_key`` form: the QR is bound
+    #: to it from issue (migration 0005). None on a QR stored before plates were
+    #: required, which binds on first use as it always did.
+    plate: str | None = None
+
+    @property
+    def bound(self) -> str | None:
+        """The car this QR answers for: its plate from issue, or -- on a QR
+        stored without one -- the identity it bound at first use."""
+        return self.plate if self.plate is not None else self.bound_identity
 
     def __post_init__(self) -> None:
         require_typed(self)

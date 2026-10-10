@@ -96,15 +96,18 @@ def test_the_enrolment_the_link_issues_names_the_link_as_its_issuer_and_the_link
     pass_ = seeded(app, tenant_id, NO_TRANSIENT)
     link = issue_link(app, tenant_id, NO_TRANSIENT, pass_, "link-7")
     when = at(date(2026, 6, 2), 9)
-    out = redeem_link(app, tenant_id, NO_TRANSIENT, link["payload"], at=when)
+    out = redeem_link(app, tenant_id, NO_TRANSIENT, link["payload"], at=when, plate="car 1")
     issued = out["enrolment"]
+    assert issued["plate"] == "car 1" and issued["plate_key"] == "CAR1"
     assert issued["issued_by"] == "link-7" and issued["issued_at"] == when
     assert query(app, tenant_id, "SELECT issued_by FROM enrolments") == [("link-7",)]
     assert link_row(app, tenant_id, "link-7") == ("redeemed", when, None, None, None)
     assert credential(app, tenant_id, "link-7", HOLDER_LINK).redeemed_at == when
-    # the QR it issued works, once, like any other
-    assert redeem(app, tenant_id, NO_TRANSIENT, issued["token"], "CAR-1", at=when).redeemed
-    assert enrolment_row(app, tenant_id, "qr-from-link")[1] == "CAR-1"
+    # the QR it issued is bound to the holder's plate from issue, like any other:
+    # their car is recognised, and another plate asks for a picture match
+    assert redeem(app, tenant_id, NO_TRANSIENT, issued["token"], "CAR-1", at=when).recognised
+    other = redeem(app, tenant_id, NO_TRANSIENT, issued["token"], "VAN-99", at=when)
+    assert other.match_required and other.match_for == "CAR1" and other.refusal is None
 
 
 @pytest.mark.guarantee("G24")

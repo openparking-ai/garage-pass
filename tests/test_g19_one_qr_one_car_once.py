@@ -48,6 +48,7 @@ from enrolment_harness import (
     issue,
     issue_link,
     link_row,
+    other_end,
     pass_state,
     race,
     redeem,
@@ -70,6 +71,7 @@ from garage_pass.enrolment import (
     payload_of,
     require_days_valid,
     token_of,
+    where_enrolment_happens,
 )
 from garage_pass.passes import State
 from garage_pass.store.postgres import tenant
@@ -165,9 +167,9 @@ def test_a_redemption_writes_all_four_and_the_pass_moves_to_active_with_the_enro
     out = redeem(app, tenant_id, garage, token, "CAR-1", "L1", at=when)
     assert out.redeemed and out.refusal is None and out.enrolment == "qr-1"
     # 1. the registration, effective on the garage's local day
-    assert out.registration["vehicle_identity"] == "CAR-1"
+    assert out.registration["vehicle_identity"] == "CAR1"
     assert out.registration["effective_day"] == date(2026, 6, 2)
-    assert registrations(app, tenant_id) == [(pass_.id, "CAR-1", date(2026, 6, 2), None, None)]
+    assert registrations(app, tenant_id) == [(pass_.id, "CAR1", date(2026, 6, 2), None, None)]
     # 2. the pass to active, recorded, the enrolment as the actor
     assert pass_state(app, tenant_id, pass_) == "active"
     assert out.pass_state_change["from"] == "draft" and out.pass_state_change["to"] == "active"
@@ -199,32 +201,75 @@ def test_a_pass_already_active_takes_no_transition_the_second_car_on_a_pooled_pa
     assert [c[:3] for c in state_changes(app, tenant_id)] == [
         (None, "awaiting_enrolment", "seed"), ("awaiting_enrolment", "active", "qr-1"),
     ]
-    assert [r[:2] for r in registrations(app, tenant_id)] == [(pass_.id, "CAR-1"),
-                                                             (pass_.id, "CAR-2")]
+    assert [r[:2] for r in registrations(app, tenant_id)] == [(pass_.id, "CAR1"),
+                                                             (pass_.id, "CAR2")]
     assert enrolment_row(app, tenant_id, "qr-1")[1] == "CAR-1"
     assert enrolment_row(app, tenant_id, "qr-2")[1] == "CAR-2"
     assert two.answer.outcome is Outcome.COVERED and two.answer.vehicle_identity == "CAR-2"
 
 
+def _written(app, tenant_id) -> tuple:
+    """Every row a redemption could write, read whole: the QRs, the
+    registrations and the state history."""
+    return (
+        query(app, tenant_id, "SELECT external_id, state, redeemed_vehicle_identity, "
+                              "redeemed_lane, redeemed_at FROM enrolments ORDER BY external_id"),
+        registrations(app, tenant_id),
+        state_changes(app, tenant_id),
+    )
+
+
 @pytest.mark.guarantee("G19")
-def test_a_redeemed_enrolment_can_never_be_redeemed_again(app, tenant_id):
-    """The same car scanning again, and a different car with the used QR: both
-    refused by name, nothing written. The same car is still COVERED -- it is
-    on the pass -- and the other car is not: the answer is the access call's."""
-    pass_ = seeded(app, tenant_id, TRANSIENT_ENTRY)
-    token = issue(app, tenant_id, TRANSIENT_ENTRY, pass_)["token"]
-    first = redeem(app, tenant_id, TRANSIENT_ENTRY, token, "CAR-1")
-    assert first.redeemed
-    again = redeem(app, tenant_id, TRANSIENT_ENTRY, token, "CAR-1", at=at(date(2026, 6, 2), 9))
-    assert not again.redeemed and again.refusal.code == f.REFUSAL_CREDENTIAL_ALREADY_USED
-    assert again.enrolment == "qr-1" and "'qr-1'" in again.refusal.detail
-    assert again.registration is None and again.pass_state_change is None
-    assert again.answer.outcome is Outcome.COVERED, "CAR-1 is on the pass: the answer says so"
-    other = redeem(app, tenant_id, TRANSIENT_ENTRY, token, "CAR-2", at=at(date(2026, 6, 2), 9))
-    assert not other.redeemed and other.refusal.code == f.REFUSAL_CREDENTIAL_ALREADY_USED
-    assert other.answer.outcome is Outcome.NOT_COVERED and other.answer.reason == f.NO_PASS
-    assert len(registrations(app, tenant_id)) == 1
-    assert enrolment_row(app, tenant_id)[1] == "CAR-1", "the first redemption stands"
+@pytest.mark.parametrize("garage", GARAGES, ids=[g.id for g in GARAGES])
+def test_a_bound_qr_keeps_working_for_its_own_car_in_and_out_and_writes_nothing(
+    app, tenant_id, garage
+):
+    """THE BRIEF'S CHECK 1. The QR binds CAR-1 at the end this garage enrols at;
+    then, by the same car, out and in again -- at BOTH ends, past the QR's own
+    three days (a bound QR answers for the pass's dates, not its issue
+    window) -- each one RECOGNISED and covered, and nothing written after the
+    bind. (A lane that measured no identity at all is G30's: a picture match.)"""
+    pass_ = seeded(app, tenant_id, garage)
+    token = issue(app, tenant_id, garage, pass_)["token"]
+    end = Direction(where_enrolment_happens(garage))
+    first = redeem(app, tenant_id, garage, token, "CAR-1", direction=end)
+    assert first.redeemed and not first.recognised
+    after_the_bind = _written(app, tenant_id)
+    movements = [(other_end(end), at(date(2026, 6, 1), 18)), (end, at(date(2026, 6, 10), 8)),
+                 (other_end(end), at(date(2026, 6, 10), 18)), (end, at(date(2026, 6, 11), 8))]
+    for direction, when in movements:
+        again = redeem(app, tenant_id, garage, token, "CAR-1", direction=direction, at=when)
+        assert again.recognised and not again.redeemed and again.refusal is None, again.refusal
+        assert again.enrolment == "qr-1"
+        assert again.registration is None and again.pass_state_change is None
+        assert again.answer.outcome is Outcome.COVERED, again.answer
+        assert again.answer.vehicle_identity == "CAR-1" and again.answer.direction is direction
+    assert _written(app, tenant_id) == after_the_bind, "a recognised QR wrote something"
+
+
+@pytest.mark.guarantee("G19")
+@pytest.mark.parametrize("garage", GARAGES, ids=[g.id for g in GARAGES])
+def test_a_bound_qr_on_a_different_car_is_refused_wrong_car_never_already_used(
+    app, tenant_id, garage
+):
+    """THE BRIEF'S CHECK 2. A different car with the bound QR, at either end:
+    refused WRONG CAR, never ALREADY USED; the detail names the QR and the
+    instant of the bind and never the bound car; nothing written; and the
+    movement still answered -- for the car that is there, which is on no pass."""
+    pass_ = seeded(app, tenant_id, garage)
+    token = issue(app, tenant_id, garage, pass_)["token"]
+    assert redeem(app, tenant_id, garage, token, "CAR-1").redeemed
+    after_the_bind = _written(app, tenant_id)
+    for direction in (Direction.ENTRY, Direction.EXIT):
+        other = redeem(app, tenant_id, garage, token, "CAR-2", direction=direction,
+                       at=at(date(2026, 6, 2), 9))
+        assert not other.redeemed and not other.recognised
+        assert other.refusal.code == f.REFUSAL_CREDENTIAL_WRONG_CAR, other.refusal
+        assert other.refusal.code != f.REFUSAL_CREDENTIAL_ALREADY_USED
+        assert "'qr-1'" in other.refusal.detail and "CAR-1" not in other.refusal.detail
+        assert other.answer.vehicle_identity == "CAR-2"
+        assert other.answer.outcome is Outcome.NOT_COVERED and other.answer.reason == f.NO_PASS
+    assert _written(app, tenant_id) == after_the_bind, "a refused QR wrote something"
 
 
 #: The spring-forward morning in the fixture zone, as UTC instants: 01:59 MST is
@@ -264,8 +309,12 @@ def test_the_instant_a_refusal_names_is_the_garages_wall_clock_across_the_dst_ed
             redeem_link(app, tenant_id, TRANSIENT_ENTRY, token, starts_on=SPRING_FORWARD, at=when,
                         enrolment_external_id="qr-again")
         again = raised.value
-    assert again.code == f.REFUSAL_CREDENTIAL_ALREADY_USED
-    assert f"was redeemed at {wall}." in again.detail, again.detail
+    if kind == ENROLMENT:  # a bound QR shown by another car: wrong car, since the bind
+        assert again.code == f.REFUSAL_CREDENTIAL_WRONG_CAR
+        assert f"is bound to another car since {wall}." in again.detail, again.detail
+    else:  # a holder link is used once
+        assert again.code == f.REFUSAL_CREDENTIAL_ALREADY_USED
+        assert f"was redeemed at {wall}." in again.detail, again.detail
     assert when.isoformat() not in again.detail, "the caller's offset is not the rendering"
     # the same rule for the cancelled instant, written by a revocation at `when`
     outstanding = (issue if kind == ENROLMENT else issue_link)(
@@ -407,8 +456,10 @@ def test_revocation_cancels_every_outstanding_credential_and_the_state_check_sti
     app, owner, tenant_id
 ):
     """R5: outstanding enrolments and links are cancelled with the revocation
-    -- by the revoker, at the revocation instant, 'pass revoked' -- and
-    redeemed ones are left as they are. Then the brief's control, in the
+    -- by the revoker, at the revocation instant, 'pass revoked' -- and so is
+    an enrolment BOUND to a car, which is live (it answers for that car), its
+    bind kept on the row; a used holder link is left as it is. Then the
+    brief's control, in the
     test: the cancellation put back by a raw write, and the redemption must
     refuse the revoked pass by its own state check."""
     pass_ = seeded(app, tenant_id, TRANSIENT_ENTRY)
@@ -421,12 +472,16 @@ def test_revocation_cancels_every_outstanding_credential_and_the_state_check_sti
         out = change_state(cursor, tenant_id, TRANSIENT_ENTRY.id, pass_.id, State.REVOKED,
                            by="owner", at=when, reason="divorced")
     app.commit()
-    assert out["enrolments_cancelled"] == 1 and out["holder_links_cancelled"] == 1
+    assert out["enrolments_cancelled"] == 2 and out["holder_links_cancelled"] == 1
     assert out["registrations_ended"] == 1
     assert enrolment_row(app, tenant_id, "qr-outstanding") == (
         "cancelled", None, None, None, None, "owner", when, CANCELLED_BY_REVOCATION,
     )
-    assert enrolment_row(app, tenant_id, "qr-used")[0] == "redeemed", "terminal stays terminal"
+    used_row = enrolment_row(app, tenant_id, "qr-used")
+    assert used_row[0] == "cancelled" and used_row[1] == "CAR-1", "cancelled, the bind kept"
+    shown = redeem(app, tenant_id, TRANSIENT_ENTRY, used, "CAR-1", at=when)
+    assert not shown.redeemed and not shown.recognised
+    assert shown.refusal.code == f.REFUSAL_CREDENTIAL_CANCELLED, shown.refusal
     assert link_row(app, tenant_id, "link-1") == ("cancelled", None, "owner", when,
                                                  CANCELLED_BY_REVOCATION)
     cancelled = redeem(app, tenant_id, TRANSIENT_ENTRY, outstanding, "CAR-2", at=when)
@@ -448,7 +503,7 @@ def test_revocation_cancels_every_outstanding_credential_and_the_state_check_sti
     assert not still.redeemed, "a revoked pass took a car through an uncancelled QR"
     assert still.refusal.code == f.REFUSAL_PASS_NOT_REGISTRABLE
     assert "revoked" in still.refusal.detail
-    assert [r[:2] for r in registrations(app, tenant_id)] == [(pass_.id, "CAR-1")]
+    assert [r[:2] for r in registrations(app, tenant_id)] == [(pass_.id, "CAR1")]
     assert still.answer.outcome is Outcome.NOT_COVERED and still.answer.reason == f.NO_PASS
 
 
@@ -513,8 +568,8 @@ def test_the_swap_is_end_registration_then_a_new_qr_and_the_half_open_range_hold
     swapped = redeem(app, tenant_id, TRANSIENT_ENTRY, new, "CAR-NEW", at=at(D, 8))
     assert swapped.redeemed and swapped.pass_state_change is None, "the pass stayed active"
     assert registrations(app, tenant_id) == [
-        (pass_.id, "CAR-OLD", date(2026, 6, 1), D, "ended"),
-        (pass_.id, "CAR-NEW", D, None, None),
+        (pass_.id, "CAROLD", date(2026, 6, 1), D, "ended"),
+        (pass_.id, "CARNEW", D, None, None),
     ]
     # the old car is covered up to and not including D, and free from D: another
     # pass's QR binds it effective D
@@ -588,15 +643,17 @@ def test_two_lanes_one_token_exactly_one_redeems_and_the_loser_is_refused_by_nam
 ):
     """THE BLOCKER, the other way: exactly one registration, exactly one
     redeemed row recording the lane that won, the loser refused by name --
-    ALREADY USED, with the instant the winner redeemed at -- and no traceback
-    at either lane. A draft pass (the first car) and an active one (a second
-    car on a pooled pass) both."""
+    WRONG CAR, since the instant the winner bound it: re-read under the lock,
+    the QR is bound to CAR-A and CAR-B is another car -- and no traceback at
+    either lane. A draft pass (the first car) and an active one (a second car
+    on a pooled pass) both."""
     pass_, token, a, b = two_lanes(state=state)
     assert not isinstance(a, BaseException) and not isinstance(b, BaseException), (a, b)
     assert a.redeemed and a.refusal is None
-    assert not b.redeemed and b.refusal.code == f.REFUSAL_CREDENTIAL_ALREADY_USED, b.refusal
-    assert "was redeemed at 2026-06-01T" in b.refusal.detail, "the winner's instant, by name"
-    assert [r[1] for r in registrations(app, tenant_id)] == ["CAR-A"], "exactly one registration"
+    assert not b.redeemed and b.refusal.code == f.REFUSAL_CREDENTIAL_WRONG_CAR, b.refusal
+    assert "bound to another car since 2026-06-01T" in b.refusal.detail, "the bind's instant"
+    assert "CAR-A" not in b.refusal.detail, "the other car is never named to this lane"
+    assert [r[1] for r in registrations(app, tenant_id)] == ["CARA"], "exactly one registration"
     row = enrolment_row(app, tenant_id)
     assert row[0] == "redeemed" and row[1] == "CAR-A" and row[2] == "L1", row
     assert pass_state(app, tenant_id, pass_) == "active"
@@ -635,7 +692,7 @@ def test_the_backstop_holds_one_spend_with_the_lock_removed(
     assert a.redeemed
     assert not b.redeemed and b.refusal.code == f.REFUSAL_CREDENTIAL_ALREADY_USED, b.refusal
     assert "0 row(s) matched state 'issued'" in b.refusal.detail, "the backstop's own sentence"
-    assert [r[1] for r in registrations(app, tenant_id)] == ["CAR-A"]
+    assert [r[1] for r in registrations(app, tenant_id)] == ["CARA"]
     assert enrolment_row(app, tenant_id)[1] == "CAR-A"
     assert len(_moves_to_active(app, tenant_id)) == (1 if state is State.DRAFT else 0)
 
@@ -662,9 +719,10 @@ def test_the_lock_holds_one_spend_with_the_predicate_removed(app, tenant_id, two
     pass_, token, a, b = two_lanes()
     assert not isinstance(b, BaseException), b
     assert a.redeemed
-    assert not b.redeemed and b.refusal.code == f.REFUSAL_CREDENTIAL_ALREADY_USED, b.refusal
-    assert "was redeemed at" in b.refusal.detail, "the state check's sentence, not the backstop's"
-    assert [r[1] for r in registrations(app, tenant_id)] == ["CAR-A"]
+    assert not b.redeemed and b.refusal.code == f.REFUSAL_CREDENTIAL_WRONG_CAR, b.refusal
+    assert "bound to another car since" in b.refusal.detail, (
+        "the bind read under the lock decided, not the backstop's sentence")
+    assert [r[1] for r in registrations(app, tenant_id)] == ["CARA"]
     assert enrolment_row(app, tenant_id)[1] == "CAR-A"
 
 
@@ -693,7 +751,7 @@ def test_a_caller_at_a_stricter_isolation_level_meets_a_named_refusal_not_a_trac
     assert "could not serialize" in b.refusal.detail
     assert "Roll back and read again" in b.refusal.detail
     assert "PostgreSQL's own account" in b.refusal.detail
-    assert [r[1] for r in registrations(app, tenant_id)] == ["CAR-A"]
+    assert [r[1] for r in registrations(app, tenant_id)] == ["CARA"]
 
 
 @pytest.mark.guarantee("G19")
@@ -713,7 +771,7 @@ def test_two_holders_one_link_exactly_one_enrolment_is_issued(app, owner, tenant
             return redeem_holder_link(
                 cursor, tenant_id, TRANSIENT_ENTRY.id, link, name=name, phone="+1 555 0100",
                 enrolment_external_id=enrolment_id, starts_on=STARTS_ON, days_valid=DAYS,
-                at=NOON_MONDAY,
+                at=NOON_MONDAY, plate=f"PLATE-{enrolment_id}",
             )
         return run
 
@@ -740,7 +798,7 @@ def test_two_qrs_on_one_draft_pass_move_it_to_active_once(app, owner, tenant_id)
                 _lane(tenant_id, TRANSIENT_ENTRY, two, "CAR-B", "L2"))
     assert a.redeemed and b.redeemed, (a, b)
     assert a.pass_state_change is not None and b.pass_state_change is None
-    assert sorted(r[1] for r in registrations(app, tenant_id)) == ["CAR-A", "CAR-B"]
+    assert sorted(r[1] for r in registrations(app, tenant_id)) == ["CARA", "CARB"]
     assert [c[2] for c in _moves_to_active(app, tenant_id)] == ["qr-1"], "once, by the first QR"
 
 
@@ -763,8 +821,9 @@ def test_an_issue_racing_a_revocation_leaves_no_issued_credential_on_the_revoked
     table = "enrolments" if kind == ENROLMENT else "holder_links"
 
     def issue_(cursor):
+        plate = {"plate": "CAR-1"} if kind == ENROLMENT else {}
         return issue_call(cursor, tenant_id, TRANSIENT_ENTRY.id, pass_.id, "cred-1", STARTS_ON,
-                          DAYS, by="owner", at=NOON_MONDAY)
+                          DAYS, by="owner", at=NOON_MONDAY, **plate)
 
     def revoke(cursor):
         return change_state(cursor, tenant_id, TRANSIENT_ENTRY.id, pass_.id, State.REVOKED,
@@ -913,7 +972,7 @@ def test_temporal_non_coverage_still_binds(app, tenant_id, label, terms, starts_
     out = redeem(app, tenant_id, TRANSIENT_ENTRY, token, "CAR-1", at=when)
     assert out.redeemed and out.refusal is None, (label, out.refusal)
     assert enrolment_row(app, tenant_id)[0] == "redeemed"
-    assert [r[1] for r in registrations(app, tenant_id)] == ["CAR-1"]
+    assert [r[1] for r in registrations(app, tenant_id)] == ["CAR1"]
     assert out.answer.outcome is Outcome.NOT_COVERED and out.answer.reason == reason
 
 
@@ -960,9 +1019,11 @@ def test_a_revocation_racing_a_redemption_leaves_no_live_registration_on_the_rev
     if first == "redeem":
         assert redeemed.redeemed
         assert registrations(app, tenant_id) == [
-            (pass_.id, "CAR-1", date(2026, 6, 1), date(2026, 6, 1), "pass revoked")]
-        assert revoked["registrations_ended"] == 1 and revoked["enrolments_cancelled"] == 0
-        assert enrolment_row(app, tenant_id)[0] == "redeemed"
+            (pass_.id, "CAR1", date(2026, 6, 1), date(2026, 6, 1), "pass revoked")]
+        # the QR bound CAR-1 before the revocation read it, so it was live, and
+        # the revocation cancelled it with the rest -- its bind kept on the row
+        assert revoked["registrations_ended"] == 1 and revoked["enrolments_cancelled"] == 1
+        assert enrolment_row(app, tenant_id)[:2] == ("cancelled", "CAR-1")
         # the revocation judged the pass AS IT STOOD after the redemption: from
         # active, never from the draft row it may have read before the lock
         assert revoked["from"] == "active"

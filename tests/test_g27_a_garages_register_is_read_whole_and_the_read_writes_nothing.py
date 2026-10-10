@@ -41,6 +41,7 @@ import pytest
 from fixtures import a_pass, everything_terms
 from garage_pass import findings as f
 from garage_pass.cli import _plain, main
+from garage_pass.enrolment import plate_key
 from garage_pass.garage import Garage
 from garage_pass.store.enrolments import issue_enrolment, issue_holder_link
 from garage_pass.store.postgres import all_tables, tenant
@@ -67,7 +68,10 @@ from test_g26_a_pass_is_read_whole_and_the_read_writes_nothing import (
 #: point (``P`` 80 < ``p`` 112) and after it under en_US on glibc.
 ONLY_DENVER = "Pass-0"
 
-KEYS = {"garage", "unreadable_garage", "passes", "passes_not_naming_garage", "registrations"}
+KEYS = {"garage", "unreadable_garage", "passes", "passes_not_naming_garage", "registrations",
+        "codes"}
+CODE_KEYS = {"register_hash", "enrolment", "pass", "state", "bound_identity", "exit_only",
+             "starts_on", "last_day"}
 ROW_KEYS = {"vehicle_identity", "pass", "effective_day", "end_day", "ended_reason"}
 PASS_KEYS = {"pass", "state", "valid_from", "valid_to", "unreadable"}
 
@@ -114,12 +118,12 @@ def run(argv: list[str], capsys) -> tuple[int, dict]:
 
 def expected_rows(garage: Garage) -> list[dict]:
     rows = [
-        {"vehicle_identity": identity, "pass": "pass-1", "effective_day": effective,
+        {"vehicle_identity": plate_key(identity), "pass": "pass-1", "effective_day": effective,
          "end_day": end, "ended_reason": "ended" if end else None}
         for identity, effective, end in REGISTRATIONS
     ]
     if garage is DENVER:
-        rows.append({"vehicle_identity": "CAR-D", "pass": ONLY_DENVER,
+        rows.append({"vehicle_identity": "CARD", "pass": ONLY_DENVER,
                      "effective_day": date(2026, 4, 1), "end_day": None, "ended_reason": None})
     return sorted(rows, key=lambda r: (r["vehicle_identity"], r["effective_day"], r["pass"]))
 
@@ -142,7 +146,7 @@ def test_the_read_shows_every_registration_at_the_garage_history_included_sorted
     seed_two_passes(app, tenant_id)
     denver_rows = expected_rows(DENVER)
     assert [r["vehicle_identity"] for r in denver_rows] == [
-        "CAR-A", "CAR-D", "Car-C", "car-b", "car-b"]
+        "CARA", "CARB", "CARB", "CARC", "CARD"]
     assert {r["end_day"] is not None for r in denver_rows} == {True, False}, "ended AND open"
     assert max(r["effective_day"] for r in denver_rows) > date(2026, 12, 31), "a future row"
     # THE PREMISE of the sort control: the database's own unsorted order is
@@ -235,7 +239,7 @@ def test_the_holder_the_terms_the_label_the_credentials_and_the_other_garages_do
     with tenant(app, tenant_id) as cursor:
         token = issue_enrolment(cursor, tenant_id, DENVER.id, two_zone.id, "qr-1",
                                 date(2026, 6, 1), 3, by="owner", at=CREATED_AT,
-                                vehicle_description="silver")
+                                vehicle_description="silver", plate="PLATE-Q1")
         link = issue_holder_link(cursor, tenant_id, DENVER.id, two_zone.id, "link-1",
                                  date(2026, 6, 1), 3, by="owner", at=CREATED_AT)
     app.commit()
@@ -253,7 +257,7 @@ def test_the_holder_the_terms_the_label_the_credentials_and_the_other_garages_do
     must_not_travel = {
         "holder name": two_zone.holder.name, "holder phone": two_zone.holder.phone,
         "holder email": two_zone.holder.email, "label": two_zone.label,
-        "enrolment id": "qr-1", "vehicle description": "silver", "link id": "link-1",
+        "vehicle description": "silver", "link id": "link-1",
         "enrolment token": token["token"], "link token": link["token"],
         "enrolment digest": digest(token["token"]), "link digest": digest(link["token"]),
         **{f"term {name}": f'"{name}"' for name in other_terms},
@@ -263,6 +267,13 @@ def test_the_holder_the_terms_the_label_the_credentials_and_the_other_garages_do
     }
     for what, value in must_not_travel.items():
         assert value not in text, f"the {what} travelled: {value!r}"
+    # what DOES travel of the credentials: each QR by its register hash, and the
+    # four facts a lane decides on -- never the link, never the description
+    from garage_pass.enrolment import register_hash_of
+
+    assert [set(c) for c in printed["codes"]] == [CODE_KEYS]
+    assert printed["codes"][0]["register_hash"] == register_hash_of(token["token"])
+    assert printed["codes"][0]["enrolment"] == "qr-1"
     # THE CONTROL: every one of them IS stored, in this tenant, to be leaked
     (label, name, phone, email) = query(
         app, tenant_id, "SELECT label, holder_name, holder_phone, holder_email FROM passes "
@@ -359,7 +370,7 @@ def test_no_such_garage_is_refused_by_name_and_a_garage_with_no_registration_ans
     # for that garage is legitimately empty
     empty = read_or_refused(app, tenant_id, ELSEWHERE.id)
     assert empty == {"garage": ELSEWHERE.id, "unreadable_garage": None, "passes": [],
-                     "passes_not_naming_garage": [], "registrations": []}
+                     "passes_not_naming_garage": [], "registrations": [], "codes": []}
     _dsn_for_the_app(monkeypatch)
     status, printed = run(["show-garage-register", "--tenant", str(tenant_id),
                            "--garage", ELSEWHERE.id], capsys)
@@ -400,7 +411,7 @@ def test_another_tenants_garage_with_the_same_id_is_not_read_with_rls_on_and_wit
                 if "registrations" in got else got["refused"]
         return out
 
-    expected = {tenant_id: ["CAR-MINE"], other: ["CAR-THEIRS"], third: f.REFUSAL_GARAGE_NOT_FOUND}
+    expected = {tenant_id: ["CARMINE"], other: ["CARTHEIRS"], third: f.REFUSAL_GARAGE_NOT_FOUND}
     assert reading() == expected, "with row-level security ON"
 
     def both_visible_to_the_app() -> bool:
@@ -440,7 +451,7 @@ def test_a_row_whose_pass_does_not_name_the_garage_is_refused_by_the_constraint_
     ids = dict(query(app, tenant_id, "SELECT external_id, id FROM garages"))
     (pass_uuid,) = query(app, tenant_id, "SELECT id FROM passes WHERE external_id = 'pass-1'")[0]
     insert = ("INSERT INTO vehicle_registrations (tenant_id, garage_id, pass_id, "
-              "vehicle_identity, effective_day) VALUES (%s, %s, %s, 'CAR-OUT', '2026-01-01')")
+              "vehicle_identity, effective_day) VALUES (%s, %s, %s, 'CAROUT', '2026-01-01')")
     # 1. the constraint, by name: a raw insert as the OWNER at a garage the
     #    pass does not name is refused -- so the register at that garage stays empty
     with owner.cursor() as cursor, pytest.raises(psycopg.errors.ForeignKeyViolation) as raised:
@@ -449,9 +460,9 @@ def test_a_row_whose_pass_does_not_name_the_garage_is_refused_by_the_constraint_
     assert read(app, tenant_id, ELSEWHERE.id)["registrations"] == []
     # the control: the same insert at a garage the pass names is accepted and read
     with owner.cursor() as cursor:
-        cursor.execute(insert.replace("CAR-OUT", "CAR-IN"), (tenant_id, ids[TOKYO.id], pass_uuid))
+        cursor.execute(insert.replace("CAROUT", "CARIN"), (tenant_id, ids[TOKYO.id], pass_uuid))
     assert [r["vehicle_identity"] for r in read(app, tenant_id, TOKYO.id)["registrations"]] == [
-        "CAR-A", "CAR-IN", "Car-C", "car-b", "car-b"]
+        "CARA", "CARB", "CARB", "CARC", "CARIN"]
     # 2. planted PAST the constraint -- its triggers disabled, which only a
     #    superuser may do -- the read at that garage shows the row and names the pass
     with owner.cursor() as cursor:
@@ -464,7 +475,7 @@ def test_a_row_whose_pass_does_not_name_the_garage_is_refused_by_the_constraint_
             cursor.execute("ALTER TABLE vehicle_registrations ENABLE TRIGGER ALL")
     out = read(app, tenant_id, ELSEWHERE.id)
     assert [(r["vehicle_identity"], r["pass"]) for r in out["registrations"]] == [
-        ("CAR-OUT", "pass-1")], "the row was dropped"
+        ("CAROUT", "pass-1")], "the row was dropped"
     assert out["passes"] == [a_pass_entry("pass-1")]
     assert out["passes_not_naming_garage"] == ["pass-1"]
     # and at a garage the pass does name, nothing is named
@@ -479,16 +490,17 @@ def test_a_row_whose_pass_does_not_name_the_garage_is_refused_by_the_constraint_
 @pytest.mark.guarantee("G27")
 @store_test
 def test_every_writer_of_the_register_is_reflected_by_the_read(app, tenant_id):
-    """G26's census names the five write sites; the same scenario, read
-    BY GARAGE: the expiry release, end_registration's UPDATE and the
-    revocation's UPDATE each show at each garage with their ``ended_reason``,
-    and the pass list carries the revoked state as stored."""
+    """G26's census names the seven write sites; the same scenario, read
+    BY GARAGE: the expiry release, end_registration's UPDATE, the revocation's
+    UPDATE, the checkout-day turnover's and end_stay's each show at each
+    garage with their ``ended_reason``, and the pass list carries the revoked
+    state as stored."""
     from fixtures import BOTH, at
     from garage_pass.passes import State
-    from garage_pass.store.records import change_state, end_registration
+    from garage_pass.store.records import change_state, end_registration, end_stay
     from garage_pass.terms import Terms
 
-    assert len(register_writers()) == 5, (
+    assert len(register_writers()) == 7, (
         "a writer of the register or the set was added or moved: prove this read reflects it")
     expiring = a_pass(id="pass-expiring", garage_ids={DENVER.id, TOKYO.id},
                       terms=Terms(directions=BOTH, valid_to=date(2026, 6, 30)))
@@ -504,19 +516,35 @@ def test_every_writer_of_the_register_is_reflected_by_the_read(app, tenant_id):
         end_registration(cursor, tenant_id, TOKYO.id, successor.id, "CAR-Y", date(2026, 8, 15))
         change_state(cursor, tenant_id, DENVER.id, successor.id, State.REVOKED, by="owner",
                      at=at(date(2026, 9, 1), 2), reason="divorced")
+        stay_a = a_pass(id="stay-a", garage_ids={DENVER.id, TOKYO.id},
+                        terms=Terms(directions=BOTH, valid_to=date(2026, 10, 12)))
+        stay_b = a_pass(id="stay-b", garage_ids={DENVER.id, TOKYO.id})
+        for pass_ in (stay_a, stay_b):
+            create_pass(cursor, tenant_id, DENVER.id, pass_, by="seed", at=CREATED_AT)
+        register_vehicle(cursor, tenant_id, DENVER.id, stay_a.id, "CAR-Z", date(2026, 10, 10))
+        register_vehicle(cursor, tenant_id, DENVER.id, stay_b.id, "CAR-Z", date(2026, 10, 12))
+        end_stay(cursor, tenant_id, TOKYO.id, stay_b.id, date(2026, 10, 14), by="desk",
+                 reason="left early")
     app.commit()
     for garage in (DENVER, TOKYO):
         out = read(app, tenant_id, garage.id)
+        assert [(r["pass"], r["end_day"], r["ended_reason"]) for r in out["registrations"]
+                if r["vehicle_identity"] == "CARZ"] == [
+            ("stay-a", date(2026, 10, 12), "the car's next stay began"),
+            ("stay-b", date(2026, 10, 14), "checked out (desk): left early"),
+        ], garage.id
+        out["passes"] = [p for p in out["passes"] if not p["pass"].startswith("stay-")]
+        out["registrations"] = [r for r in out["registrations"] if r["vehicle_identity"] != "CARZ"]
         assert [(p["pass"], p["state"], p["valid_to"]) for p in out["passes"]] == [
             ("pass-expiring", "active", date(2026, 6, 30)),
             ("pass-successor", "revoked", None),
         ], garage.id
         assert [(r["vehicle_identity"], r["pass"], r["effective_day"], r["end_day"],
                  r["ended_reason"]) for r in out["registrations"]] == [
-            ("CAR-X", "pass-expiring", date(2026, 1, 1), date(2026, 7, 1),
+            ("CARX", "pass-expiring", date(2026, 1, 1), date(2026, 7, 1),
              "pass valid_to passed"),
-            ("CAR-X", "pass-successor", date(2026, 8, 1), date(2026, 9, 1), "pass revoked"),
-            ("CAR-Y", "pass-successor", date(2026, 8, 1), date(2026, 8, 15), "ended"),
+            ("CARX", "pass-successor", date(2026, 8, 1), date(2026, 9, 1), "pass revoked"),
+            ("CARY", "pass-successor", date(2026, 8, 1), date(2026, 8, 15), "ended"),
         ], garage.id
 
 
@@ -561,6 +589,89 @@ def test_the_two_valid_days_travel_and_the_stored_state_is_shown_whatever_the_da
          "valid_to": "2020-12-31", "unreadable": None},
     ], "the stored state, not a derived expired"
     assert [(r["vehicle_identity"], r["end_day"]) for r in printed["registrations"]] == [
-        ("CAR-AHEAD", None), ("CAR-OVER", "2020-06-01")], "the ended row is not dropped"
+        ("CARAHEAD", None), ("CAROVER", "2020-06-01")], "the ended row is not dropped"
     # and nothing else of either pass's terms is in the text
     assert '"directions"' not in json.dumps(printed)
+
+
+# ---------------------------------------------------------------------------
+# the QRs a lane may be shown: by register hash, with the bound car and exit only
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.guarantee("G27")
+@store_test
+def test_the_register_carries_every_qr_by_its_register_hash_bound_car_and_exit_only(
+    app, tenant_id, capsys, monkeypatch
+):
+    """THE BRIEF'S CHECK 5. A QR bound and then replaced, the new QR it issued,
+    a QR cancelled before it bound, and a QR of a pass with no car yet: each is
+    in the register by its register hash -- the hash a lane computes from the
+    token it reads -- with its state, its bound car, exit only and its days;
+    and neither a token nor a stored digest is anywhere in the printed text.
+    The control: the tokens and digests are real, and stored."""
+    from datetime import UTC, datetime
+
+    from garage_pass.enrolment import digest, register_hash_of
+    from garage_pass.store.enrolments import (
+        _mint_enrolment,
+        cancel_code,
+        redeem_enrolment,
+        replace_car,
+    )
+    from garage_pass.terms import Direction
+
+    garage = Garage(id="garage-denver", timezone="America/Denver", transient_available=True,
+                    enrols_at="entry")
+    with_car = a_pass(id="pass-with-car", garage_ids={garage.id})
+    no_car = a_pass(id="pass-no-car", garage_ids={garage.id})
+    ON_THE_FIRST = datetime(2026, 6, 1, 18, tzinfo=UTC)  # noon in Denver, the QRs' first day
+    tokens = {}
+    with tenant(app, tenant_id) as cursor:
+        store_garage(cursor, tenant_id, garage)
+        for pass_ in (with_car, no_car):
+            create_pass(cursor, tenant_id, garage.id, pass_, by="seed", at=CREATED_AT)
+        # qr-a: a QR stored before plates were required (the module's own mint,
+        # no plate), bound at its first use; qr-c and qr-d: made by plate
+        tokens["qr-a"] = _mint_enrolment(cursor, tenant_id, garage.id, with_car.id, "qr-a",
+                                         date(2026, 6, 1), 3, by="owner",
+                                         at=CREATED_AT)["token"]
+        for pass_, ext, plate in ((with_car, "qr-c", "cee 3"), (no_car, "qr-d", "dee-4")):
+            tokens[ext] = issue_enrolment(cursor, tenant_id, garage.id, pass_.id, ext,
+                                          date(2026, 6, 1), 3, by="owner", at=CREATED_AT,
+                                          plate=plate)["token"]
+        bound = redeem_enrolment(cursor, tenant_id, garage.id, tokens["qr-a"], "CAR-1", "L1",
+                                 Direction.ENTRY, ON_THE_FIRST)
+        assert bound.redeemed, bound.refusal
+        tokens["qr-b"] = replace_car(cursor, tenant_id, garage.id, "qr-a", "qr-b",
+                                     date(2026, 6, 2), 3, by="desk", at=CREATED_AT,
+                                     reason="rental swapped", plate="bee.2")["new"]["token"]
+        cancel_code(cursor, tenant_id, garage.id, "qr-c", by="desk", at=CREATED_AT,
+                    reason="never received")
+    app.commit()
+    _dsn_for_the_app(monkeypatch)
+    status, printed = run(["show-garage-register", "--tenant", str(tenant_id),
+                           "--garage", garage.id], capsys)
+    assert status == 0
+
+    def code(ext, pass_id, state, bound, exit_only, starts_on, last_day):
+        return {"register_hash": register_hash_of(tokens[ext]), "enrolment": ext,
+                "pass": pass_id, "state": state, "bound_identity": bound,
+                "exit_only": exit_only, "starts_on": starts_on, "last_day": last_day}
+    # a QR made by plate shows its plate, in the one normal form, BEFORE any use
+    # (qr-d, qr-b); the one stored without a plate shows the car of its first use
+    assert printed["codes"] == [
+        code("qr-d", "pass-no-car", "issued", "DEE4", False, "2026-06-01", "2026-06-03"),
+        code("qr-a", "pass-with-car", "redeemed", "CAR-1", True, "2026-06-01", "2026-06-03"),
+        code("qr-b", "pass-with-car", "issued", "BEE2", False, "2026-06-02", "2026-06-04"),
+        code("qr-c", "pass-with-car", "cancelled", "CEE3", False, "2026-06-01", "2026-06-03"),
+    ]
+    # a pass a QR names is in the pass list, though no car is registered on it
+    assert [p["pass"] for p in printed["passes"]] == ["pass-no-car", "pass-with-car"]
+    text = json.dumps(printed)
+    for ext, token in tokens.items():
+        assert token not in text, f"{ext}'s token travelled"
+        assert digest(token) not in text, f"{ext}'s stored digest travelled"
+    # THE CONTROL: the digests are stored, so the scan above could have found them
+    stored = {sha for (sha,) in query(app, tenant_id, "SELECT token_sha256 FROM enrolments")}
+    assert stored == {digest(t) for t in tokens.values()}

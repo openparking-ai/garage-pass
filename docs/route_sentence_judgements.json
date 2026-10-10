@@ -414,10 +414,10 @@
   "why": "CONTRACT's authored copy of the G20 registry claim: Garage.__post_init__, set_garage_enrols_at, and the CHECK exercised by a raw INSERT and UPDATE as the owner"
  },
  {
-  "sentence": "Against the store (``GARAGE_PASS_DSN``, ``--tenant``): ``create-garage``, ``set-garage-timezone`` (the repair for a garage stored with a timezone the system does not carry -- the one write that takes an unreadable garage, and it records who, when and why like a state change does), ``set-garage-enrols-at`` (where a garage enrols -- entry or exit -- recorded the same way), ``create-pass`` (the document's ``garage_ids`` names one or more garages, and ``--garage`` is one of them; the pass answers at every garage it names and at no other), ``register-vehicle`` (one row per garage the pass names, together or not at all), ``end-registration``, ``set-state``, ``record-entry``, ``record-exit``, ``access-in-store``, ``show-pass`` (the one read of a pass: its state, its two valid days, its garages and every registration it holds, history included, sorted in Python by code point; it writes nothing, carries no holder, label or term beyond the two valid days, and a pass or garage stored unreadable is still shown with the refusal named), ``show-garage-register`` (the one read of a garage's register: every registration recorded at that garage, history included, and the state and two valid days of every pass those rows name -- the same rules as ``show-pass``, selected by the garage so a reader need know no pass id first), and the enrolment: ``issue-enrolment`` (mint the QR for a pass: the token is printed ONCE, here, and by nothing else), ``redeem-enrolment`` (the lane presents the QR with the vehicle identity it measured: the bind, and the access answer for that same movement -- always, refused or not; exit status follows the answer's outcome, and the enrolment half is in the JSON), ``issue-holder-link`` and ``redeem-holder-link`` (the holder writes their own name and phone onto the pass and gets their QR).",
+  "sentence": "Against the store (``GARAGE_PASS_DSN``, ``--tenant``): ``create-garage``, ``set-garage-timezone`` (the repair for a garage stored with a timezone the system does not carry -- the one write that takes an unreadable garage, and it records who, when and why like a state change does), ``set-garage-enrols-at`` (where a garage enrols -- entry or exit -- recorded the same way), ``create-pass`` (the document's ``garage_ids`` names one or more garages, and ``--garage`` is one of them; the pass answers at every garage it names and at no other), ``register-vehicle`` (one row per garage the pass names, together or not at all), ``end-registration``, ``end-stay`` (a stay ends early -- the guest checked out -- every car of the pass ends on that day, at every garage, recorded as a checkout with who and why), ``set-state``, ``record-entry``, ``record-exit``, ``access-in-store``, ``show-pass`` (the one read of a pass: its state, its two valid days, its garages and every registration it holds, history included, sorted in Python by code point; it writes nothing, carries no holder, label or term beyond the two valid days, and a pass or garage stored unreadable is still shown with the refusal named), ``show-garage-register`` (the one read of a garage's register: every registration recorded at that garage, history included, and the state and two valid days of every pass those rows name -- the same rules as ``show-pass``, selected by the garage so a reader need know no pass id first), and the enrolment: ``issue-enrolment`` (mint the QR for a pass: the token is printed ONCE, here, and by nothing else), ``redeem-enrolment`` (the lane presents the QR with the vehicle identity it measured: the bind, and the access answer for that same movement -- always, refused or not; exit status follows the answer's outcome, and the enrolment half is in the JSON), ``issue-holder-link`` and ``redeem-holder-link`` (the holder writes their own name and phone onto the pass and gets their QR).",
   "file": "src/garage_pass/cli.py",
   "verdict": "NOT-PUBLISHED",
-  "why": "cli module docstring (G2 rewrite of the judged verb list): the timezone repair is still the one write an unreadable garage takes -- set_garage_enrols_at, issue_*, redeem_holder_link go through load_readable_garage and redeem_enrolment carries the refusal (G17's derived write list exercises every one); the token is printed by the issue calls and by nothing else (G23) (G3a rewrite: create-pass's garage_ids and register-vehicle's per-garage rows, measured by G25 and the G25 walk) (G3b rewrite: show-pass added to the verb list -- the one read, measured by G26) (G3b fix: show-pass carries the two valid days -- G26) (G27: show-garage-register added to the verb list -- the one read of a garage's register, selected by the garage; measured by G27, and G17's derived read list carries it past an unreadable garage)"
+  "why": "cli module docstring (G2 rewrite of the judged verb list): the timezone repair is still the one write an unreadable garage takes -- set_garage_enrols_at, issue_*, redeem_holder_link go through load_readable_garage and redeem_enrolment carries the refusal (G17's derived write list exercises every one); the token is printed by the issue calls and by nothing else (G23) (G3a rewrite: create-pass's garage_ids and register-vehicle's per-garage rows, measured by G25 and the G25 walk) (G3b rewrite: show-pass added to the verb list -- the one read, measured by G26) (G3b fix: show-pass carries the two valid days -- G26) (G27: show-garage-register added to the verb list -- the one read of a garage's register, selected by the garage; measured by G27, and G17's derived read list carries it past an unreadable garage) Re-judged after the stay-ends round: Usage list of verbs; end-stay -> records.end_stay ends every registration of the pass in force on or after the day, at every garage, ended_reason 'checked out (by): reason' (G32 test_a_stay_ended_early...)."
  },
  {
   "sentence": "The detail names the garage and the pass's own set; the database's key backs it for a raw write.",
@@ -550,5 +550,47 @@
   "file": "README.md",
   "verdict": "TRUE",
   "why": "README (G27): the same three claims as the G27 sentences above, measured by the same tests"
+ },
+ {
+  "sentence": "An enrolment binds one car on first use and then answers for that car; this refusal reaches an enrolment only when another lane bound it between this lane's read and its write.",
+  "file": "src/garage_pass/findings.py",
+  "verdict": "TRUE",
+  "why": "_present_bound refuses a bound QR WRONG_CAR/CANCELLED/EXIT_ONLY under the lock; ALREADY_USED for an enrolment is raised only by _spend's rowcount backstop (G19 test_the_backstop_holds_one_spend_with_the_lock_removed) and _one_row; the holder link keeps it from _refuse_unless_redeemable"
+ },
+ {
+  "sentence": "Asked only at the end this garage does not enrol at: a bound QR answers at both ends, so the wrong-end refusal is for a QR that has not bound yet.",
+  "file": "src/garage_pass/store/enrolments.py",
+  "verdict": "TRUE",
+  "why": "_is_bound is called only in redeem_enrolment's `direction.value != end` test; G19 test_a_bound_qr_keeps_working_for_its_own_car_in_and_out_and_writes_nothing presents a bound QR at both ends of all three garage shapes; G21 census keeps WRONG_END for every unbound situation at the other end"
+ },
+ {
+  "sentence": "``plate`` is (as typed, ``plate_key`` form); None writes the row a QR had before plates were required -- reached by no public door now (``issue_enrolment`` requires the plate), kept because such rows exist and are read exactly as they always were.",
+  "file": "src/garage_pass/store/enrolments.py",
+  "verdict": "TRUE",
+  "why": "_mint_enrolment is called with plate=None only by the test harness; issue_enrolment, redeem_holder_link and replace_car (and the CLI verbs over them) all pass require_plate's pair; G31 check 1 refuses each door without a plate"
+ },
+ {
+  "sentence": "At the lane, against that plate: the same plate is RECOGNISED, at either end, for its stay (G32); its first use writes no registration and moves a pass still waiting for its first car to active (recorded, the QR as the actor); THE PLATE SUPPORTS THE PICTURE MATCH AND NEVER REFUSES ON ITS OWN: anything else -- nothing read, part of it, a misread, another plate -- is a PICTURE MATCH (G30) carrying the registered plate and what was read, never wrong car -- nothing opens on the QR, and the answer beside it is for what was read, so another plate with its own valid pass is let through on that pass; a QR made for a plate is WRONG CAR only by the match's own no (confirm-match), and a yes, whatever was read, is a recognised use that moves a pass still waiting for its first car to active as a recognised read does.",
+  "file": "tests/_guarantees.py",
+  "verdict": "TRUE",
+  "why": "_present_bound: on a plate QR, unread = plate_key(identity) != plate, never a refusal; confirm_match: WRONG_CAR only on matched=False for a plate QR (_same_car True), a yes activates a draft/awaiting pass; G31 test_any_read_but_the_plate_asks_for_a_match_and_never_refuses, test_the_match_decides_no_is_wrong_car_and_yes_is_a_recognised_use, test_a_new_qr_is_bound_from_issue_and_its_first_use_binds_nothing_new Gate fix F3: on match_required the answer is answer_in_transaction(vehicle_identity), the read, never enrolment.bound -- test_another_plate_read_is_answered_on_its_own_pass_never_on_the_qr measures COVERED on the other pass and match_required True. Re-judged after the stay-ends round: Unchanged route except 'for its stay': _stay_of judges a bound QR on its own pass's registrations (G32); the rest as judged before."
+ },
+ {
+  "sentence": "EVERY plate comparison uses it: a plate read with no QR meets the registration in it, and registrations and visits are stored in it (migration 0006).",
+  "file": "tests/_guarantees.py",
+  "verdict": "TRUE",
+  "why": "records.vehicle_key (plate_key) on register_vehicle, end_registration, record_entry/exit; registrations_of looks up plate_key(identity); access() and _open_visit compare plate_key both sides; migration 0006 CHECKs. G31 test_a_plate_read_with_no_qr_meets_the_registration_in_the_one_normal_form."
+ },
+ {
+  "sentence": "On the day a stay ended early or turned over, its QR is refused EXIT ONLY at an entry and lets the car out at an exit, answered on its own pass; after that day it is refused STAY ENDED at either end, and before its stay begins NOT STARTED.",
+  "file": "tests/_guarantees.py",
+  "verdict": "TRUE",
+  "why": "_stay_of + _refuse_outside_the_stay: STAY_LAST_DAY entry -> EXIT_ONLY, exit -> answer_on_the_stays_last_day on the QR's pass; STAY_ENDED -> REFUSAL_CREDENTIAL_STAY_ENDED; STAY_NOT_STARTED -> NOT_STARTED. G32 checks 1, 3, 4."
+ },
+ {
+  "sentence": "Registrations and visits are stored in that form (migration 0006 makes the database refuse any other).",
+  "file": "README.md",
+  "verdict": "TRUE",
+  "why": "vehicle_key writes plate_key form; migration 0006 adds CHECK vehicle_identity = upper(...) AND !~ '[[:space:].-]' on vehicle_registrations and visits (raw inserts in G1/G9/G25 tests use the normal form)."
  }
 ]

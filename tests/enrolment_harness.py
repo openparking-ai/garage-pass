@@ -20,6 +20,7 @@ from garage_pass.store.enrolments import (
     ENROLMENT,
     HOLDER_LINK,
     Redemption,
+    _mint_enrolment,
     issue_enrolment,
     issue_holder_link,
     load_credential,
@@ -61,9 +62,27 @@ def seeded(app: Any, tenant_id: Any, garage: Garage, state: State = State.DRAFT,
 def issue(app: Any, tenant_id: Any, garage: Garage, pass_: Pass, external_id: str = "qr-1",
           starts_on: date = STARTS_ON, days_valid: object = DAYS, by: str = "owner",
           at: datetime = NOON_MONDAY, vehicle_description: str | None = None) -> dict:
+    """A QR STORED WITHOUT A PLATE -- the row every QR was before plates were
+    required (migration 0005), made by the module's own mint and its own
+    validations, with no plate: it binds on first use, as it always did. Such
+    rows exist, so their whole behaviour stays proven; a QR made through the
+    public door now is ``issue_plate``'s."""
+    with tenant(app, tenant_id) as cursor:
+        out = _mint_enrolment(cursor, tenant_id, garage.id, pass_.id, external_id, starts_on,
+                              days_valid, by=by, at=at, vehicle_description=vehicle_description)
+    app.commit()
+    return out
+
+
+def issue_plate(app: Any, tenant_id: Any, garage: Garage, pass_: Pass, plate: object,
+                external_id: str = "qr-1", starts_on: date = STARTS_ON,
+                days_valid: object = DAYS, by: str = "owner", at: datetime = NOON_MONDAY,
+                vehicle_description: str | None = None) -> dict:
+    """A QR made the one way the module makes one now: for a car, by its plate."""
     with tenant(app, tenant_id) as cursor:
         out = issue_enrolment(cursor, tenant_id, garage.id, pass_.id, external_id, starts_on,
-                              days_valid, by=by, at=at, vehicle_description=vehicle_description)
+                              days_valid, by=by, at=at, plate=plate,
+                              vehicle_description=vehicle_description)
     app.commit()
     return out
 
@@ -93,12 +112,13 @@ def redeem(app: Any, tenant_id: Any, garage: Garage, token: str, identity: str =
 def redeem_link(app: Any, tenant_id: Any, garage: Garage, token: str, *, name: str = "A Holder",
                 phone: str = "+1 555 0100", enrolment_external_id: str = "qr-from-link",
                 starts_on: date = STARTS_ON, days_valid: object = DAYS,
-                at: datetime = NOON_MONDAY, vehicle_description: str | None = None) -> dict:
+                at: datetime = NOON_MONDAY, vehicle_description: str | None = None,
+                plate: object = "HOLDER-1") -> dict:
     with tenant(app, tenant_id) as cursor:
         out = redeem_holder_link(
             cursor, tenant_id, garage.id, token, name=name, phone=phone,
             enrolment_external_id=enrolment_external_id, starts_on=starts_on,
-            days_valid=days_valid, at=at, vehicle_description=vehicle_description,
+            days_valid=days_valid, at=at, plate=plate, vehicle_description=vehicle_description,
         )
     app.commit()
     return out
