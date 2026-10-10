@@ -425,9 +425,9 @@ REFUSALS: dict[str, str] = {
     ),
     REFUSAL_MATCH_DECIDED_BY_UNKNOWN: (
         "A picture match names who decided it, and the field named beside this code is "
-        "not one of the two this module records: 'fingerprint' (the car's own fingerprint "
+        "not one of the two this module records: 'opa_id' (the car's own OPA ID "
         "against its earlier pictures) or 'api' (an outside picture check, when the "
-        "fingerprint was unclear). Nothing is written."
+        "OPA ID was unclear). Nothing is written."
     ),
     REFUSAL_CREDENTIAL_ALREADY_REPLACED: (
         "This QR's car was already replaced on its pass. A replacement is made once, from "

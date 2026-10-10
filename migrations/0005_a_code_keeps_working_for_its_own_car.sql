@@ -26,7 +26,7 @@
 --     identity opens nothing on its own; the lane matches the car's picture to
 --     the bound car's earlier ones and answers (`confirm-match`). EACH answer
 --     is kept on the code's own row, in order, with its instant, whether it
---     matched, what identity was read if any, who decided (the fingerprint or
+--     matched, what identity was read if any, who decided (the OPA ID or
 --     the outside picture check) and the outcome -- so a car that keeps
 --     needing a match is visible on its code. A JSON array, appended to by the
 --     module and never rewritten by it.

@@ -274,7 +274,7 @@ def _parser() -> argparse.ArgumentParser:
     s.add_argument("--enrolment-id", required=True, help="the QR that asked for a match")
     s.add_argument("--matched", required=True, choices=["yes", "no"])
     s.add_argument("--vehicle", default="", help="the identity the lane read, if any")
-    s.add_argument("--decided-by", required=True, help="fingerprint or api")
+    s.add_argument("--decided-by", required=True, help="opa_id or api")
     s.add_argument("--lane", required=True)
     s.add_argument("--direction", required=True, choices=[d.value for d in Direction])
     s.add_argument("--at", required=True, help="ISO instant with an offset")

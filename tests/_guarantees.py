@@ -541,7 +541,7 @@ GUARANTEES: dict[str, str] = {
         "nothing, and its access answer opens nothing -- an entry is refused an answer for "
         "want of an identity, an exit is not covered and never refused. (A cancelled QR is "
         "refused CANCELLED, and an entry on a replaced car EXIT ONLY, first.) The lane then "
-        "answers with confirm-match, naming who decided -- the fingerprint, or an outside "
+        "answers with confirm-match, naming who decided -- the OPA ID, or an outside "
         "picture check -- and the identity it read, if any: matched, with no other identity "
         "read, is a RECOGNISED use answered for the bound car; not matched, or another "
         "identity read, is refused WRONG CAR and opens nothing on the QR (the answer is "

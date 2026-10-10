@@ -1159,9 +1159,9 @@ def _same_car(read: str, code: Credential) -> bool:
     return read == code.bound_identity
 
 
-#: Who may decide a picture match: the car's own fingerprint against its earlier
-#: pictures, or an outside picture check when the fingerprint was unclear.
-MATCH_DECIDERS = ("fingerprint", "api")
+#: Who may decide a picture match: the car's own OPA ID against its earlier
+#: pictures, or an outside picture check when the OPA ID was unclear.
+MATCH_DECIDERS = ("opa_id", "api")
 
 
 def confirm_match(
