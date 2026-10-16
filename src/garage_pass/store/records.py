@@ -56,6 +56,7 @@ from uuid import UUID
 from garage_pass.enrolment import (
     CANCELLED_BY_REVOCATION,
     CredentialState,
+    credential_state,
     plate_key,
     register_hash,
 )
@@ -532,8 +533,9 @@ def _readable_pass_from_row(
 
 #: THE ONE LOCK ORDER, everywhere a pass or its credentials are written: THE
 #: PASS ROW FIRST, then the credential row, then the registrations. A redemption
-#: takes it, a state change takes it, so two writers on one pass serialise on
-#: the pass row and never meet the other's lock in the other order -- two lock
+#: takes it, a state change takes it, registering a car and ending one take it,
+#: so two writers on one pass serialise on the pass row and never meet the
+#: other's lock in the other order -- two lock
 #: targets in two orders is an ABBA deadlock waiting for its first concurrent
 #: day. Written for READ COMMITTED, the store's default (verified, not assumed:
 #: SHOW default_transaction_isolation): under it a row read before the lock is a
@@ -732,6 +734,9 @@ def register_vehicle(
     those garages on any of those days, naming that garage. ``effective_day``
     is the caller's: a redemption passes the local day of the garage the car
     is standing at, and that one day is the registration's day everywhere.
+    Takes ``LOCK_ORDER``: the pass row is locked and the pass re-read before
+    its state is judged, so a revocation racing this either ends the row this
+    writes or is seen here and refused by name.
 
     CHECKOUT-DAY TURNOVER: a registration on another pass whose LAST DAY (the
     day before its end day, or its pass's valid_to) is this registration's
@@ -742,6 +747,11 @@ def register_vehicle(
     tenant_uuid = as_uuid(tenant_id)
     identity = vehicle_key(vehicle_identity)
     garage_uuid, _garage = load_readable_garage(cursor, tenant_uuid, garage_external_id)
+    pass_uuid, _stale = load_pass(cursor, tenant_uuid, garage_uuid, pass_external_id)
+    # LOCK_ORDER: the pass row first, and the pass re-read under it -- a
+    # revocation landing between an unlocked read and the write below would
+    # end every registration but this one, and leave the car on a revoked pass
+    lock_pass_row(cursor, tenant_uuid, pass_uuid)
     pass_uuid, pass_ = load_pass(cursor, tenant_uuid, garage_uuid, pass_external_id)
     garages = garages_of(cursor, tenant_uuid, pass_uuid)
     # The TARGET pass first, by name. Revoked outranks unreadable here as it
@@ -910,6 +920,9 @@ def end_registration(
     identity = vehicle_key(vehicle_identity)
     garage_uuid, _garage = load_readable_garage(cursor, tenant_uuid, garage_external_id)
     pass_uuid, _pass = load_pass(cursor, tenant_uuid, garage_uuid, pass_external_id)
+    # LOCK_ORDER: the pass row first, so the rows below are read after any
+    # revocation or issue on this pass has landed, never before it
+    lock_pass_row(cursor, tenant_uuid, pass_uuid)
     cursor.execute(
         "SELECT r.id, r.effective_day, r.end_day, g.external_id, r.ended_reason "
         "FROM vehicle_registrations r "
@@ -995,7 +1008,7 @@ def end_stay(
 
 
 def registrations_of(
-    cursor: Any, tenant_id: Any, garage_uuid: UUID, identity: str
+    cursor: Any, tenant_id: Any, garage_uuid: UUID, identity: str, today: date | None = None,
 ) -> list[tuple[UUID, Registration]]:
     """Every registration of the identity at the garage, as (pass uuid, value),
     the identity looked up in the ONE NORMAL FORM (``plate_key``) -- the form
@@ -1004,7 +1017,12 @@ def registrations_of(
     ``exit_only`` is DERIVED here from the car's QRs on that pass, never stored
     on the registration (migration 0005): the car was replaced -- a QR bound to
     it carries ``exit_only_at`` -- and no QR bound to it on the pass is still
-    live. One fact, one place. The QR's car is compared in the normal form too."""
+    live. One fact, one place. The QR's car is compared in the normal form too.
+    A QR is live on ``today`` only while its state that day is issued or
+    redeemed: a cancelled QR is not, and neither is a QR made for a plate whose
+    last day has passed (expired), so an old QR of the car's earlier stay does
+    not keep a replaced car entering. ``exit_only_at`` is the latest
+    replacement's instant."""
     key = plate_key(identity) if isinstance(identity, str) else ""
     if not key:
         return []
@@ -1021,29 +1039,60 @@ def registrations_of(
     rows = cursor.fetchall()
     pass_uuids = sorted({as_uuid(pid) for pid, *_rest in rows}, key=str)
     replaced: dict[UUID, tuple[bool, bool]] = {}
+    replaced_at: dict[UUID, datetime] = {}
     if pass_uuids:
         cursor.execute(
             "SELECT e.pass_id, COALESCE(e.plate, e.redeemed_vehicle_identity), e.state, "
-            "e.exit_only_at IS NOT NULL FROM enrolments e "
+            "e.exit_only_at IS NOT NULL, e.exit_only_at, e.starts_on, e.days_valid "
+            "FROM enrolments e "
             "WHERE e.tenant_id = %s AND e.pass_id = ANY(%s) "
             "AND COALESCE(e.plate, e.redeemed_vehicle_identity) IS NOT NULL",
             (as_uuid(tenant_id), pass_uuids),
         )
-        for pid, bound, state, exit_only in cursor.fetchall():
+        for pid, bound, state, exit_only, when, starts_on, days in cursor.fetchall():
             if plate_key(bound) != key:
                 continue
+            live_states = (CredentialState.ISSUED.value, CredentialState.REDEEMED.value)
+            live = (
+                state != CredentialState.CANCELLED.value if today is None
+                else credential_state(starts_on, days, CredentialState(state), today) in live_states
+            )
             was_replaced, still_live = replaced.get(as_uuid(pid), (False, False))
             replaced[as_uuid(pid)] = (
                 was_replaced or exit_only,
-                still_live or (state != CredentialState.CANCELLED.value and not exit_only),
+                still_live or (live and not exit_only),
             )
-    return [
-        (as_uuid(pid), Registration(
+            if when is not None:
+                replaced_at[as_uuid(pid)] = max(when, replaced_at.get(as_uuid(pid), when))
+    out = []
+    for pid, ext, eff, end in rows:
+        exit_only = replaced.get(as_uuid(pid), (False, False)) == (True, False)
+        out.append((as_uuid(pid), Registration(
             pass_id=ext, vehicle_identity=key, effective_day=eff, end_day=end,
-            exit_only=(replaced.get(as_uuid(pid), (False, False)) == (True, False)),
-        ))
-        for pid, ext, eff, end in rows
-    ]
+            exit_only=exit_only,
+            exit_only_at=replaced_at.get(as_uuid(pid)) if exit_only else None,
+        )))
+    return out
+
+
+def stays_checked_out_on(
+    cursor: Any, tenant_id: Any, garage_uuid: UUID, identity: str, day: date,
+) -> set[UUID]:
+    """The passes on which the identity's stay at the garage ENDED EARLY ON
+    ``day`` -- a registration that was in force before ``day`` and that
+    end-stay ended on it (``ENDED_BY_CHECKOUT``). A turnover (the car's next
+    stay began) is not one: that day is the next stay's."""
+    key = plate_key(identity) if isinstance(identity, str) else ""
+    if not key:
+        return set()
+    cursor.execute(
+        "SELECT pass_id, ended_reason FROM vehicle_registrations "
+        "WHERE tenant_id = %s AND garage_id = %s AND vehicle_identity = %s AND end_day = %s "
+        "AND effective_day < end_day",
+        (as_uuid(tenant_id), garage_uuid, key, day),
+    )
+    return {as_uuid(pid) for pid, why in cursor.fetchall()
+            if why is not None and why.startswith(ENDED_BY_CHECKOUT)}
 
 
 def show_pass(

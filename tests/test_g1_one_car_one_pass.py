@@ -400,12 +400,14 @@ def test_the_other_shape_of_the_race_a_deadlock_is_named_as_the_constraint_not_a
 def test_a_deadlock_from_a_lock_the_module_never_takes_names_no_cause_and_carries_the_detail(
     app, owner, tenant_id
 ):
-    """THE DEADLOCK SHAPE THAT IS NOT A RACE. The module issues no FOR UPDATE,
-    FOR SHARE or LOCK (measured); another transaction takes a raw
-    ``SELECT ... FOR UPDATE`` on the target pass's row, then waits on a row
-    THIS transaction holds; this transaction's INSERT then waits on that raw
-    lock through the pass foreign key (KEY SHARE against FOR UPDATE). No second
-    registration of the identity exists anywhere. Measured before this: the
+    """THE DEADLOCK SHAPE THAT IS NOT A RACE. The module takes no lock on a
+    garage row; another transaction takes a raw ``SELECT ... FOR UPDATE`` on
+    the garage's row, then waits on a row THIS transaction holds; this
+    transaction's INSERT then waits on that raw lock through the garage
+    foreign key (KEY SHARE against FOR UPDATE). (The target PASS's row is no
+    longer such a lock: registering takes it first, in LOCK_ORDER, so a raw
+    lock there is waited on before the INSERT.) No second registration of the
+    identity exists anywhere. Measured before this: the
     caller was told "two registrations of 'CAR-1' raced" -- a cause that did
     not happen -- and PostgreSQL's DETAIL was dropped. Now the refusal says
     only that the database rolled this write back, carries the DETAIL, and is
@@ -428,6 +430,8 @@ def test_a_deadlock_from_a_lock_the_module_never_takes_names_no_cause_and_carrie
         (timeout,) = cursor.fetchone()
     assert timeout == "1s", f"the timing below assumes the default deadlock_timeout, not {timeout}"
     ids = dict(query(app, tenant_id, "SELECT external_id, id FROM passes"))
+    [(garage_uuid,)] = query(app, tenant_id, "SELECT id FROM garages WHERE external_id = %s",
+                             (GARAGE.id,))
     raw = connect(DSN)  # the owner: a raw transaction past the module, as the walk's was
     try:
         with tenant(app, tenant_id) as cursor:
@@ -435,8 +439,8 @@ def test_a_deadlock_from_a_lock_the_module_never_takes_names_no_cause_and_carrie
             change_state(cursor, tenant_id, GARAGE.id, Z.id, State.SUSPENDED, by="owner",
                          at=NOON_MONDAY, reason="hold")
         with raw.cursor() as cursor:
-            # theirs: the lock this module never takes, on the pass we will register onto
-            cursor.execute("SELECT id FROM passes WHERE id = %s FOR UPDATE", (ids["pass-a"],))
+            # theirs: the lock this module never takes, on the garage we will register at
+            cursor.execute("SELECT id FROM garages WHERE id = %s FOR UPDATE", (garage_uuid,))
             assert cursor.fetchone() is not None
         # theirs now waits on ours (Z's row), in a thread so this test keeps the clock
         import threading
@@ -598,3 +602,44 @@ def test_a_registration_a_raw_write_left_open_on_a_revoked_pass_is_named_not_met
     app.commit()
     register(app, tenant_id, Z, effective=date(2026, 6, 3))
     assert [r[0] for r in registrations(app, tenant_id)] == ["pass-a", "pass-z"]
+
+
+@pytest.mark.guarantee("G1")
+@pytest.mark.parametrize("write", ["register", "end"])
+def test_registering_or_ending_beside_a_revocation_waits_for_it_and_never_outlives_it(
+    app, owner, tenant_id, write
+):
+    """Registering a car, and ending one, take LOCK_ORDER: the pass row first,
+    and the pass re-read under it. A revocation holding the pass is waited
+    for; then the registration is refused by name (revoked), and the end
+    reads the row the revocation ended and says so. Measured before this:
+    the registration read the pass with no lock, waited only at its INSERT,
+    and landed after the revocation had ended every registration -- an open
+    registration on a revoked pass, which then refused the car at every other
+    pass; and the end reported a day it never wrote."""
+    from enrolment_harness import race
+    from garage_pass.store.records import change_state
+
+    seed(app, tenant_id, GARAGE, (A,))
+    if write == "end":
+        register(app, tenant_id, A, "CAR-1")
+
+    def revoke(cursor):
+        return change_state(cursor, tenant_id, GARAGE.id, A.id, State.REVOKED, by="owner",
+                            at=NOON_MONDAY, reason="they got divorced")
+
+    def write_(cursor):
+        if write == "register":
+            return register_vehicle(cursor, tenant_id, GARAGE.id, A.id, "CAR-1", JAN_1)
+        return end_registration(cursor, tenant_id, GARAGE.id, A.id, "CAR-1", date(2026, 7, 1))
+
+    revoked, written = race(owner, tenant_id, revoke, write_)
+    assert not isinstance(revoked, BaseException), revoked
+    assert isinstance(written, f.Refused), f"the write beside the revocation landed: {written!r}"
+    if write == "register":
+        assert written.code == f.REFUSAL_PASS_NOT_REGISTRABLE and "revoked" in written.detail
+        assert registrations(app, tenant_id) == [], "a registration on the revoked pass"
+    else:
+        assert written.code == f.REFUSAL_REGISTRATION_ALREADY_ENDED, written
+        assert registrations(app, tenant_id) == [
+            ("pass-a", "CAR1", JAN_1, date(2026, 6, 1), "pass revoked")]

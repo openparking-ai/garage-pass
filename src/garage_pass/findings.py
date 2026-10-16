@@ -415,8 +415,9 @@ REFUSALS: dict[str, str] = {
         "A QR is made for one car, and that car's licence plate is required to make it. "
         "None was given, or it was blank once spaces, dashes and dots were taken out, so "
         "nothing was made. The QR is bound to the plate from the moment it is made; the "
-        "plate is compared in capitals with no spaces, dashes or dots, so 'abc-123' and "
-        "'ABC 123' are the same plate."
+        "plate is compared in capitals with no spaces, dashes or dots, and with O read as 0 "
+        "and I as 1, so 'abc-123' and 'ABC 123' are the same plate, and so are 'GO4IT' and "
+        "'G041T'."
     ),
     REFUSAL_CREDENTIAL_NOT_BOUND: (
         "A picture match was answered for a QR that is bound to no car, so there is no "
@@ -539,7 +540,9 @@ NOT_COVERED_REASONS: dict[str, str] = {
     REVOKED: ("The pass was revoked. Revocation is terminal."),
     EXIT_ONLY: (
         "This vehicle was replaced on its pass by another car. It is not covered for an "
-        "entry; at an exit the pass still covers it, so a car left inside can leave."
+        "entry; at an exit the pass still covers the stay that was inside at the "
+        "replacement, so a car left inside can leave -- a stay the caller says entered "
+        "after the replacement is not covered."
     ),
     DIRECTION_NOT_ALLOWED: ("The pass's terms do not state this direction."),
     WRONG_LANE: (

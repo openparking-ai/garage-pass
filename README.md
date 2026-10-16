@@ -39,7 +39,8 @@ $ garage-pass register-vehicle --tenant T --garage garage-downtown --pass-id pas
 $ garage-pass record-entry --tenant T --garage garage-downtown --pass-id pass-1 \
       --vehicle CAR-1 --lane L1 --at 2026-06-01T09:00:00-06:00
 $ garage-pass access-in-store --tenant T --garage garage-downtown \
-      --vehicle CAR-1 --lane L1 --direction exit --at 2026-06-01T12:00:00-06:00
+      --vehicle CAR-1 --lane L1 --direction exit --at 2026-06-01T12:00:00-06:00 \
+      [--entered-at 2026-06-01T09:00:00-06:00]
 $ garage-pass show-pass --tenant T --garage garage-downtown --pass-id pass-1
 $ garage-pass show-garage-register --tenant T --garage garage-downtown
 ```
@@ -128,17 +129,20 @@ taken out — nothing is made. The plate is kept as typed for display, and
 compared in one normal form: capitals, with no space of any kind (a
 non-breaking or other Unicode space included), no invisible character
 (zero-width space, joiner and non-joiner, byte-order mark), no dash of any kind
-(hyphen, en dash, em dash, minus sign and the rest) and no dot, so `abc-123`
-typed and `ABC 123` read are the same car. **Every** plate comparison uses it:
+(hyphen, en dash, em dash, minus sign and the rest) and no dot, and with the
+letter O read as the digit 0 and I as 1 (a plate reader prints the digit for
+either), so `abc-123` typed and `ABC 123` read are the same car, and so are
+`GO4IT` typed and `G041T` read. **Every** plate comparison uses it:
 what the desk types, what a lane reads with or without a QR, what a
 registration holds and what a visit records — a car asked about by its plate
 alone, read as `xyz 789`, is the `XYZ789` registered. Registrations and visits
-are stored in that form (migration 0006 makes the database refuse any other). The QR is **bound to
+are stored in that form (migrations 0006 and 0007 make the database refuse any other). The QR is **bound to
 that plate from the moment it is made**: the plate is registered on the pass in
 the same transaction (a plate another pass holds is refused there, at the desk;
 a plate THIS pass already holds — a QR reissued for the same car, a replaced
 car coming back — keeps the registration it has, never registered twice and
-never refused as another pass), the garage's register shows it before
+never refused as another pass, and that registration runs on to the new QR's
+last day where it ended sooner), the garage's register shows it before
 any use, and the QR's first use binds nothing new — it is recognised, and moves
 a pass still waiting for its first car to active. A car whose plate is asked
 about without a QR is asked about in that normal form. At the lane **the plate
@@ -181,8 +185,10 @@ as before. **A stay ended early** (`end-stay`: the guest checked out — the day
 who and why) ends every car of the pass on that day, at every garage. On the
 day a stay ended early or turned over, its QR is refused
 `REFUSAL_CREDENTIAL_EXIT_ONLY` at an entry and lets the car out at an exit, on
-its own pass; after that day it is refused `REFUSAL_CREDENTIAL_STAY_ENDED` at
-either end, and before its stay begins `REFUSAL_CREDENTIAL_NOT_STARTED`.
+its own pass — and on the day a stay ended early, the car read by its plate at
+an exit is let out on that pass the same way; after that day, and after the
+QR's own last day, it is refused `REFUSAL_CREDENTIAL_STAY_ENDED` at either end,
+and before its stay begins `REFUSAL_CREDENTIAL_NOT_STARTED`.
 **Nothing carries over**: a plate read, a QR and a picture match for the next
 stay answer on the next stay's pass, never the earlier one. A shorter stay is
 `end-registration` (to an earlier day) or `end-stay`.
@@ -193,7 +199,12 @@ at an entry, recognised and covered at an exit, so a car that broke down inside
 can leave without paying — and a new QR is issued on the same pass for the
 replacement car, its token returned once by that call. The old car read by its
 identity alone is answered the same way (not covered for an entry, reason
-`EXIT_ONLY`; covered at the exit). A QR that never bound has no car inside and
+`EXIT_ONLY`; covered at the exit). The exit covered is the stay that was inside
+at the replacement: `--entered-at` states when the stay that is leaving entered,
+and a stay that entered after the replacement is not covered (`EXIT_ONLY`);
+with no entry instant the exit is covered and the replacement is named in
+`unmeasured`. A QR of the car whose own last day has passed no longer keeps the
+replaced car entering. A QR that never bound has no car inside and
 is cancelled instead. All of it or none of it. **Cancelling one QR**
 (`cancel-code`) cancels that QR alone, bound or not — the pass, its other QRs
 and its registrations stay as they were (a car the QR had bound stays on the
@@ -311,7 +322,9 @@ answer**, naming the field that would let it: a garage that has not stated
 whether it sells transient parking, a blank identity, a pass whose stored terms
 cannot be read. It does not guess: a maximum stay with no recorded entry to
 measure from is answered on the terms that can be evaluated and named
-**unmeasured**, never silently satisfied.
+**unmeasured**, never silently satisfied — and so is, for a car replaced on its
+pass, whether the stay leaving entered before the replacement, when no entry
+instant is stated.
 
 **No fee, no amount, no balance ever crosses this call.** It is an access fact.
 
@@ -437,7 +450,10 @@ GARAGE_PASS_APP_PASSWORD=... python scripts/ensure-app-role.py "$DSN"
 
 Both steps are run by the suite, not only described here: a test applies the
 migration and runs `ensure-app-role.py` against the test cluster, logs in as the
-application role with the password it set, and shows a wrong one refused.
+application role with the password it set, and shows a wrong one refused. The
+script sends the server the SCRAM-SHA-256 verifier it computes from the
+password, never the password, so no statement and no server log of statements
+holds it.
 
 A garage stored with a timezone the running system does not carry — a raw
 write, or tzdata that lost the name — still answers (not-covered at an exit,

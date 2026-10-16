@@ -159,6 +159,7 @@ from garage_pass.states import effective_state
 from garage_pass.store.access import answer_in_transaction, answer_on_the_stays_last_day
 from garage_pass.store.records import (
     ENDED_AFTER_LAST_DAY,
+    ONE_PASS_PER_GARAGE,
     REGISTRABLE_STATES,
     as_uuid,
     change_state,
@@ -402,6 +403,12 @@ def _stay_of(
     for row in rows:
         effective, end, _why = row
         if effective <= today and (end is None or today < end):
+            if code.plate is not None and today > code.last_day:
+                # A QR MADE FOR A PLATE answers for its own days, to its last
+                # day and no later: a registration of the car that runs on past
+                # it -- the car's next QR on this pass -- is that QR's stay
+                return STAY_ENDED, (code.starts_on, code.last_day + timedelta(days=1),
+                                    ENDED_AFTER_LAST_DAY)
             return STAY_LIVE, row
     for row in rows:
         if row[1] == today and ends_a_stay_that_day(row[2]):
@@ -438,27 +445,98 @@ def _refuse_outside_the_stay(
 
 def _held_by_this_pass(
     cursor: Any, tenant_uuid: UUID, pass_external_id: str, key: str, starts_on: date,
-) -> bool:
-    """Whether THIS pass already holds the plate from ``starts_on`` on -- a
-    registration of it on this pass overlapping that day onwards, at EVERY
-    garage the pass names. Then a new QR for the same car (reissued after a
-    cancel, or a replaced car coming back) REUSES that registration: the car
-    is registered once, and the same car on the same pass is never "another
-    pass". A plate another pass holds is not looked at here; register_vehicle
-    refuses it by name, as before."""
+    end: date | None = None,
+) -> list[tuple]:
+    """THIS pass's registrations of the plate over the days ``starts_on`` to
+    ``end`` (exclusive; None: onwards), held at EVERY garage the pass names, as
+    (effective_day, end_day, ended_reason, row ids) in day order. A new QR for
+    the same car (reissued after a cancel, or a replaced car coming back)
+    REUSES them: the car is registered once, and the same car on the same pass
+    is never "another pass". A plate another pass holds is not looked at here;
+    register_vehicle refuses it by name, as before."""
     cursor.execute(
-        "SELECT count(DISTINCT r.garage_id), "
+        "SELECT r.effective_day, r.end_day, r.ended_reason, array_agg(r.id), "
+        "count(DISTINCT r.garage_id), "
         "(SELECT count(*) FROM pass_garages pg WHERE pg.tenant_id = p.tenant_id "
         "AND pg.pass_id = p.id) "
         "FROM passes p JOIN vehicle_registrations r "
         "ON r.tenant_id = p.tenant_id AND r.pass_id = p.id "
         "WHERE p.tenant_id = %s AND p.external_id = %s AND r.vehicle_identity = %s "
-        "AND daterange(r.effective_day, r.end_day, '[)') && daterange(%s, NULL, '[)') "
-        "GROUP BY p.id, p.tenant_id",
-        (tenant_uuid, pass_external_id, key, starts_on),
+        "AND daterange(r.effective_day, r.end_day, '[)') && daterange(%s, %s, '[)') "
+        "GROUP BY p.id, p.tenant_id, r.effective_day, r.end_day, r.ended_reason",
+        (tenant_uuid, pass_external_id, key, starts_on, end),
     )
-    row = cursor.fetchone()
-    return row is not None and row[0] == row[1]
+    held = [row[:4] for row in cursor.fetchall() if row[4] == row[5]]
+    return sorted(held, key=lambda row: row[0])
+
+
+def _hold_the_whole_stay(
+    cursor: Any, tenant_uuid: UUID, garage_external_id: str, pass_external_id: str, key: str,
+    starts_on: date, end: date,
+) -> None:
+    """THE PLATE IS HELD ON THIS PASS FOR EVERY DAY OF THE NEW QR'S STAY,
+    ``starts_on`` to ``end``. What this pass already holds is reused, never
+    registered twice; a day it does not hold is registered (one car, one pass:
+    another pass's hold is refused by name, as for any registration). The
+    stay's registration that ran to an earlier last day RUNS ON to the new
+    one: measured before this, a reissued or returning car's QR reused a
+    shorter registration and stopped working before its own last day."""
+    day = starts_on
+    held = _held_by_this_pass(cursor, tenant_uuid, pass_external_id, key, starts_on, end)
+    for effective, stop, _why, _ids in held:
+        if effective > day:  # days before this registration: the pass holds none of them
+            register_vehicle(cursor, tenant_uuid, garage_external_id, pass_external_id, key,
+                             day, effective, ENDED_AFTER_LAST_DAY)
+        day = max(day, end if stop is None else stop)
+    if day >= end:
+        return
+    if held and held[-1][1] == day and held[-1][2] == ENDED_AFTER_LAST_DAY:
+        _run_on(cursor, tenant_uuid, garage_external_id, pass_external_id, key, held[-1][3],
+                day, end)
+    else:
+        register_vehicle(cursor, tenant_uuid, garage_external_id, pass_external_id, key, day,
+                         end, ENDED_AFTER_LAST_DAY)
+
+
+def _run_on(
+    cursor: Any, tenant_uuid: UUID, garage_external_id: str, pass_external_id: str, key: str,
+    ids: list, day: date, end: date,
+) -> None:
+    """The stay's registration, which ends on ``day``, ends on ``end`` instead
+    -- one registration, at every garage of the pass. When any registration of
+    the plate already stands on those days at a garage of the pass, the days
+    are registered instead, so register_vehicle names it, or turns the other
+    stay over, exactly as for any new registration; the EXCLUDE is the
+    backstop for a race, named, never a traceback."""
+    import psycopg
+
+    cursor.execute(
+        "SELECT 1 FROM vehicle_registrations r "
+        "JOIN pass_garages pg ON pg.tenant_id = r.tenant_id AND pg.garage_id = r.garage_id "
+        "JOIN passes p ON p.tenant_id = pg.tenant_id AND p.id = pg.pass_id "
+        "WHERE p.tenant_id = %s AND p.external_id = %s AND r.vehicle_identity = %s "
+        "AND daterange(r.effective_day, r.end_day, '[)') && daterange(%s, %s, '[)') LIMIT 1",
+        (tenant_uuid, pass_external_id, key, day, end),
+    )
+    if cursor.fetchone() is not None:
+        register_vehicle(cursor, tenant_uuid, garage_external_id, pass_external_id, key, day,
+                         end, ENDED_AFTER_LAST_DAY)
+        return
+    try:
+        cursor.execute(
+            "UPDATE vehicle_registrations SET end_day = %s "
+            "WHERE tenant_id = %s AND id = ANY(%s) AND end_day = %s",
+            (end, tenant_uuid, list(ids), day),
+        )
+    except (psycopg.errors.ExclusionViolation, psycopg.errors.DeadlockDetected) as race:
+        detail = (race.diag.message_detail or "").strip()
+        raise Refused(
+            REFUSAL_CONSTRAINT, "vehicle_identity",
+            f"constraint {ONE_PASS_PER_GARAGE}: another registration of {key!r} landed while "
+            f"this one ran on to {end}, and the database refused this write. PostgreSQL's own "
+            "account: " + (detail if detail else "(no DETAIL was supplied)")
+            + " Roll back and read again.",
+        ) from race
 
 
 def issue_enrolment(
@@ -474,7 +552,9 @@ def issue_enrolment(
     held by another pass is refused by name here, at the desk, not at the
     lane. A plate THIS pass already holds from ``starts_on`` (a QR reissued
     for the same car after a cancel, or a replaced car coming back) is not
-    registered a second time: the registration it has is reused. The pass's
+    registered a second time: the registration it has is reused, and runs on
+    to this QR's last day where it ended sooner (``_hold_the_whole_stay``),
+    so the QR works to its own last day. The pass's
     state is not touched: its move to active is still the lane's, at the QR's
     first use, which binds nothing new.
     ``days_valid`` is STATED -- ``None`` is refused by name, never defaulted --
@@ -491,11 +571,9 @@ def issue_enrolment(
             days_valid, by=by, at=at, vehicle_description=vehicle_description, plate=plate_pair,
         )
         typed, key = plate_pair
-        if not _held_by_this_pass(cursor, tenant_uuid, pass_external_id, key, starts_on):
-            register_vehicle(cursor, tenant_uuid, garage_external_id, pass_external_id, key,
+        _hold_the_whole_stay(cursor, tenant_uuid, garage_external_id, pass_external_id, key,
                              starts_on, _stay_end(cursor, tenant_uuid, garage_external_id,
-                                                  pass_external_id, starts_on, days_valid),
-                             ENDED_AFTER_LAST_DAY)
+                                                  pass_external_id, starts_on, days_valid))
         return {**issued, "plate": typed, "plate_key": key}
 
     return _under_savepoint(cursor, write, "issue")

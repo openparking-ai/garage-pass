@@ -172,6 +172,11 @@ class Registration:
     #: can leave. The store derives it from the car's QR (migration 0005); it is
     #: never a second copy of that fact.
     exit_only: bool = False
+    #: When the car was replaced, beside ``exit_only``: at an exit the pass
+    #: covers the stay that was inside at that instant, and not a stay that
+    #: entered after it. Derived by the store from the same QR; None when the
+    #: car was not replaced, or the instant is not known.
+    exit_only_at: datetime | None = None
 
     def __post_init__(self) -> None:
         # Every field against its declared type, derived from the annotation
@@ -179,6 +184,8 @@ class Registration:
         # identity was None, or whose day was the JSON string, was constructed
         # without complaint and raised at an EXIT lane instead.
         require_typed(self)
+        if self.exit_only_at is not None:
+            require_aware(self.exit_only_at, "exit_only_at")
 
     def covers(self, day: date) -> bool:
         return self.effective_day <= day and (self.end_day is None or day < self.end_day)

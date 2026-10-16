@@ -203,3 +203,32 @@ def test_end_stay_with_nothing_in_force_is_refused_and_writes_nothing(app, tenan
     app.rollback()
     assert refused.value.code == f.REFUSAL_REGISTRATION_NOT_FOUND
     assert registrations(app, tenant_id) == before
+
+
+@pytest.mark.guarantee("G32")
+def test_on_the_day_a_stay_ended_early_the_plate_lets_the_car_out_as_its_qr_does(
+    app, tenant_id
+):
+    """A, Oct 8 to Oct 12, ends early on Oct 10 (end-stay). On Oct 10 the car
+    read by its plate -- the main path -- leaves covered on A, as A's QR does:
+    the guest is still in the car. It does not enter on A that day, and after
+    it the plate is not A's. A next stay that began that day answers instead
+    (nothing carries over). Measured before this: the plate exit on Oct 10 was
+    NO_PASS, priced as a paying car, while the QR's was covered."""
+    a = seeded(app, tenant_id, TRANSIENT_ENTRY)
+    a_token = issue_plate(app, tenant_id, TRANSIENT_ENTRY, a, "ABC123", "qr-a",
+                          starts_on=OCT[8], days_valid=5, at=DESK)["token"]
+    assert shown(app, tenant_id, a_token, 8, Direction.ENTRY).recognised  # A is active
+    with tenant(app, tenant_id) as cursor:
+        end_stay(cursor, tenant_id, TRANSIENT_ENTRY.id, a.id, OCT[10], by="desk",
+                 reason="left early")
+    app.commit()
+    out = plate_read(app, tenant_id, 10, Direction.EXIT)
+    assert out.outcome is Outcome.COVERED and out.pass_id == a.id, out.detail
+    assert plate_read(app, tenant_id, 10, Direction.ENTRY).outcome is not Outcome.COVERED
+    assert plate_read(app, tenant_id, 11, Direction.EXIT).outcome is not Outcome.COVERED
+    b = stay_b(app, tenant_id)
+    b_token = minted(lambda: issue_plate(app, tenant_id, TRANSIENT_ENTRY, b, "ABC123", "qr-b",
+                                         starts_on=OCT[10], days_valid=3, at=at(OCT[10], 7)))
+    assert shown(app, tenant_id, b_token["token"], 10, Direction.ENTRY).recognised
+    assert plate_read(app, tenant_id, 10, Direction.EXIT).pass_id == b.id

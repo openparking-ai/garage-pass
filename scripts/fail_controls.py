@@ -920,11 +920,11 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
         G10, "scripts/ensure-app-role.py",
         source(
             '                sql.SQL("ALTER ROLE garage_pass_app LOGIN PASSWORD {}").format(',
-            "                    sql.Literal(password)",
+            "                    sql.Literal(verifier)",
             "                )",
         ),
         source(
-            '                "ALTER ROLE garage_pass_app LOGIN PASSWORD %s", (password,)'
+            '                "ALTER ROLE garage_pass_app LOGIN PASSWORD %s", (verifier,)'
             "  # PLANTED: a bind parameter in a utility statement",
         ),
         "the published install step dies on `syntax error at or near \"$1\"` again -- and "
@@ -2541,23 +2541,22 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
     # --- the gate's fixes: F1 (the same car on the same pass), F2 (the normal form)
     "G31/reissue-registers-twice": (
         G31, "store/enrolments.py",
-        "        if not _held_by_this_pass(cursor, tenant_uuid, pass_external_id, key, "
-        "starts_on):\n",
-        "        if True:  # PLANTED: the same car is registered on its pass a second time\n",
+        "    held = _held_by_this_pass(cursor, tenant_uuid, pass_external_id, key, starts_on, "
+        "end)\n",
+        "    held = []  # PLANTED: the same car is registered on its pass a second time\n",
         "a QR reissued for the same car on the same pass registers the plate again, and the "
         "pass's own registration refuses it (the gate fixes' check 1)",
     ),
     "G31/reissue-is-another-pass": (
         G31, "store/enrolments.py",
-        "        if not _held_by_this_pass(cursor, tenant_uuid, pass_external_id, key, "
-        "starts_on):\n",
-        "        if _held_by_this_pass(cursor, tenant_uuid, pass_external_id, key, starts_on):"
-        "  # PLANTED\n"
-        "            from garage_pass.findings import REFUSAL_VEHICLE_ON_ANOTHER_PASS\n"
-        "            raise Refused(REFUSAL_VEHICLE_ON_ANOTHER_PASS, \"vehicle_identity\", "
-        "\"PLANTED\")\n"
-        "        if not _held_by_this_pass(cursor, tenant_uuid, pass_external_id, key, "
-        "starts_on):\n",
+        "    held = _held_by_this_pass(cursor, tenant_uuid, pass_external_id, key, starts_on, "
+        "end)\n",
+        "    held = _held_by_this_pass(cursor, tenant_uuid, pass_external_id, key, starts_on, "
+        "end)\n"
+        "    if held:  # PLANTED\n"
+        "        from garage_pass.findings import REFUSAL_VEHICLE_ON_ANOTHER_PASS\n"
+        "        raise Refused(REFUSAL_VEHICLE_ON_ANOTHER_PASS, \"vehicle_identity\", "
+        "\"PLANTED\")\n",
         "the same car on the same pass is refused as another pass (the gate fixes' check 1)",
     ),
     "G31/car-coming-back-refused": (
@@ -2573,8 +2572,8 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
     ),
     "G31/another-pass-reused": (
         G31, "store/enrolments.py",
-        "    return row is not None and row[0] == row[1]\n",
-        "    return True  # PLANTED: a plate any pass holds is taken as this pass's\n",
+        '        "ON r.tenant_id = p.tenant_id AND r.pass_id = p.id "\n',
+        '        "ON r.tenant_id = p.tenant_id "  # PLANTED: another pass holds it for this one\n',
         "a plate registered on a DIFFERENT pass is minted for without a registration, "
         "instead of refused as another pass (the gate fixes' check 3)",
     ),
@@ -2642,6 +2641,90 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
         "    return STAY_LAST_DAY, (rows[-1] if rows else None)  # PLANTED\n",
         "after its stay ended, the earlier QR is still answered on its own pass, as if every "
         "later day were its last (check 4)",
+    ),
+    # --- a reissued QR's stay, the replaced car's QRs and exits, the checkout-day
+    # plate, O and I, the lock on a registration, the install step's password
+    "G31/reissue-stops-short": (
+        G31, "store/enrolments.py",
+        "    for effective, stop, _why, _ids in held:\n",
+        "    if held:  # PLANTED: a held day reuses the registration, whatever its end\n"
+        "        return\n"
+        "    for effective, stop, _why, _ids in held:\n",
+        "a QR for a car the pass already holds reuses a shorter registration and stops "
+        "working before its own last day",
+    ),
+    "G31/o-and-i-are-letters": (
+        G31, "enrolment.py",
+        "    return _unseparated(text).translate(_READ_AS_DIGITS)\n",
+        "    return _unseparated(text)  # PLANTED: O and I are not read as 0 and 1\n",
+        "a plate typed GO4IT never meets the reader's G041T",
+    ),
+    "G31/0007-rekeys-nothing": (
+        G31, "migrations/0007_plate_key_folds_o_and_i.sql",
+        "UPDATE vehicle_registrations SET vehicle_identity = translate(vehicle_identity, "
+        "'OI', '01')\n WHERE vehicle_identity ~ '[OI]';\n",
+        "-- PLANTED: the registrations are not re-keyed\n",
+        "a registration stored before 0007 keeps its O or I, and a lane's read never meets it",
+    ),
+    "G31/0007-picks-a-winner": (
+        G31, "migrations/0007_plate_key_folds_o_and_i.sql",
+        "  IF clash IS NOT NULL THEN\n"
+        "    RAISE EXCEPTION 'migration 0007 refuses to run: two registrations",
+        "  IF false THEN  -- PLANTED: the clash is not named\n"
+        "    RAISE EXCEPTION 'migration 0007 refuses to run: two registrations",
+        "two registrations that become one car meet the EXCLUDE as a raw error, not a refusal "
+        "naming them",
+    ),
+    "G28/expired-qr-is-live": (
+        G28, "store/records.py",
+        "                else credential_state(starts_on, days, CredentialState(state), today) "
+        "in live_states\n",
+        "                else state != CredentialState.CANCELLED.value  # PLANTED: expired "
+        "is live\n",
+        "an expired QR of the car's earlier stay keeps the replaced car entering by its plate",
+    ),
+    "G28/qr-past-its-last-day": (
+        G28, "store/enrolments.py",
+        "            if code.plate is not None and today > code.last_day:\n",
+        "            if False:  # PLANTED: a QR answers past its own last day\n",
+        "an expired QR of the replaced car is recognised at the entry on the car's later stay",
+    ),
+    "G28/later-stay-leaves-covered": (
+        G28, "access.py",
+        "            if entered_at is not None and replaced is not None and entered_at >= "
+        "replaced:\n",
+        "            if False:  # PLANTED: a stay that entered after the replacement is covered\n",
+        "the replaced car, entered as a paying car after the replacement, leaves covered",
+    ),
+    "G32/plate-on-checkout-day": (
+        G32, "store/access.py",
+        "        checked_out = stays_checked_out_on(cursor, tenant_uuid, garage_uuid, identity, "
+        "today)\n",
+        "        checked_out = set()  # PLANTED: the plate is not let out on the checkout day\n",
+        "on the day a stay ended early the car read by its plate is priced as a paying car, "
+        "while its QR lets it out",
+    ),
+    "G1/register-unlocked": (
+        G1, "store/records.py",
+        "    lock_pass_row(cursor, tenant_uuid, pass_uuid)\n"
+        "    pass_uuid, pass_ = load_pass(cursor, tenant_uuid, garage_uuid, pass_external_id)\n"
+        "    garages = garages_of(cursor, tenant_uuid, pass_uuid)\n",
+        "    pass_ = _stale  # PLANTED: no lock, and the pass as read before it\n"
+        "    garages = garages_of(cursor, tenant_uuid, pass_uuid)\n",
+        "a registration racing a revocation lands on the revoked pass",
+    ),
+    "G1/end-unlocked": (
+        G1, "store/records.py",
+        "    # revocation or issue on this pass has landed, never before it\n"
+        "    lock_pass_row(cursor, tenant_uuid, pass_uuid)\n",
+        "    # PLANTED: no lock\n",
+        "an end racing a revocation reports a day it never wrote",
+    ),
+    "G10/password-sent": (
+        G10, "scripts/ensure-app-role.py",
+        "        verifier = scram_verifier(connection, password)\n",
+        "        verifier = password  # PLANTED: the password itself is sent\n",
+        "the install step sends the application role's password to the server as plain text",
     ),
 }
 

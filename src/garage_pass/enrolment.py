@@ -131,14 +131,25 @@ def _not_part_of_a_plate(ch: str) -> bool:
     return ch.isspace() or ch in _PLATE_SEPARATORS or unicodedata.category(ch) == "Pd"
 
 
+#: The letter O is read as the digit 0 and the letter I as the digit 1. A plate
+#: reader's alphabet has no I and no O, so it prints the digit for either
+#: letter: a plate typed GO4IT is read G041T, and the two must be one plate.
+_READ_AS_DIGITS = str.maketrans("OI", "01")
+
+
 def plate_key(text: str) -> str:
     """THE ONE NORMAL FORM a plate is compared in -- EVERY comparison of a
     plate in this module: what the desk types, what a lane reads, what a
     registration holds and what a visit records. Capitals, with no space (any
     Unicode space), no invisible character, no dash of any kind and no dot
-    anywhere. The plate as typed is kept beside it for display; this is what is
-    matched. Blank once normalised is the empty string, which the callers name
-    -- never a database error."""
+    anywhere, and O read as 0 and I as 1 (``_READ_AS_DIGITS``). The plate as
+    typed is kept beside it for display; this is what is matched. Blank once
+    normalised is the empty string, which the callers name -- never a database
+    error."""
+    return _unseparated(text).translate(_READ_AS_DIGITS)
+
+
+def _unseparated(text: str) -> str:
     return "".join(ch for ch in text.upper() if not _not_part_of_a_plate(ch))
 
 
