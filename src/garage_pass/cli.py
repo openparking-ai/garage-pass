@@ -3,7 +3,13 @@
     garage-pass check-terms --pass pass.json
     garage-pass access --garage g.json --pass p.json [--pass ...] \
         [--registrations r.json] [--visits v.json] [--garages gs.json] \
-        --vehicle ID --lane L --direction entry|exit --at 2026-04-01T09:00:00-06:00
+        --vehicle ID --lane L --direction entry|exit --at 2026-04-01T09:00:00-06:00 \
+        [--entered-at 2026-04-01T07:30:00-06:00]
+
+``--entered-at`` (``access`` and ``access-in-store``) is when the stay that is
+leaving entered. A car replaced on its pass is covered at an exit for the stay
+that was inside at the replacement, and not for a later one; without it, that
+is answered as before and named unmeasured.
 
 ``--garages`` is a JSON list of garage documents: the OTHER garages the passes
 name, so that a recorded entry at one of them is read on that garage's clock
@@ -156,6 +162,7 @@ def _parser() -> argparse.ArgumentParser:
     s.add_argument("--garages", help="JSON list of the other garages the passes name, "
                    "so a recorded entry at one of them is read on its own clock")
     _movement(s)
+    _entered_at(s)
 
     s = sub.add_parser("create-garage", help="store a garage document")
     s.add_argument("--tenant", required=True, type=UUID, help="the tenant's uuid")
@@ -227,6 +234,7 @@ def _parser() -> argparse.ArgumentParser:
     s.add_argument("--at", required=True)
     s = store("access-in-store", "the access answer, from the store")
     _movement(s)
+    _entered_at(s)
     s = store("show-pass", "read a pass: its state, its valid days, its garages and every "
               "registration it holds, history included; writes nothing")
     s.add_argument("--pass-id", required=True)
@@ -323,6 +331,12 @@ def _movement(s: argparse.ArgumentParser) -> None:
     s.add_argument("--at", required=True, help="ISO instant with an offset")
 
 
+def _entered_at(s: argparse.ArgumentParser) -> None:
+    s.add_argument("--entered-at", help="when the stay that is leaving entered, as an ISO "
+                   "instant with an offset: a car replaced on its pass is covered at an exit "
+                   "for the stay that was inside at the replacement, and not for a later one")
+
+
 # ---- the boundary: what the libraries raise, rendered as refusals ----------
 
 
@@ -342,6 +356,7 @@ def _access_from_documents(args: argparse.Namespace) -> Answer:
     store."""
     direction = Direction(args.direction)
     at = _at(args.at)
+    entered_at = _entered(args)
     garage_document = _document(args.garage, "--garage")
     pass_documents = [_document(p, "--pass") for p in args.passes]
     if direction is not Direction.EXIT:
@@ -356,6 +371,7 @@ def _access_from_documents(args: argparse.Namespace) -> Answer:
             vehicle_identity=args.vehicle, lane=args.lane, direction=direction, at=at,
             garages=[load_garage(g) for g in _list(args.garages, "--garages")]
             if args.garages is not None else [],
+            entered_at=entered_at,
         )
     loaded: list[Any] = [load_or_degrade(Garage, garage_document, "garage")]
     loaded += [load_or_degrade(Pass, d, "pass") for d in pass_documents]
@@ -380,7 +396,7 @@ def _access_from_documents(args: argparse.Namespace) -> Answer:
         registrations=[r for r in loaded if isinstance(r, Registration)],
         visits=[v for v in loaded if isinstance(v, Visit)],
         vehicle_identity=args.vehicle, lane=args.lane, direction=direction, at=at,
-        garages=[g for g in loaded[1:] if isinstance(g, Garage)],
+        garages=[g for g in loaded[1:] if isinstance(g, Garage)], entered_at=entered_at,
     )
 
 
@@ -398,6 +414,12 @@ def _at(text: str, option: str = "--at") -> datetime:
             f"{option} must be an ISO instant with an offset, such as "
             f"2026-06-01T09:00:00-06:00, not {text!r}: {exc}",
         ) from None
+
+
+def _entered(args: argparse.Namespace) -> datetime | None:
+    """``--entered-at`` when it was given -- an empty value is a value, refused
+    like any instant that does not parse -- else None."""
+    return None if args.entered_at is None else _at(args.entered_at, "--entered-at")
 
 
 def _day(text: str, option: str) -> date:
@@ -680,7 +702,7 @@ def _run(args: argparse.Namespace) -> int:
         if args.command == "access-in-store":
             answer = access_from_store(
                 connection, args.tenant, args.garage, args.vehicle, args.lane,
-                Direction(args.direction), _at(args.at),
+                Direction(args.direction), _at(args.at), _entered(args),
             )
             _print(answer)
             return EXIT_BY_OUTCOME[answer.outcome]

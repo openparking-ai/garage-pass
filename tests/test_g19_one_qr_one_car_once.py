@@ -568,7 +568,7 @@ def test_the_swap_is_end_registration_then_a_new_qr_and_the_half_open_range_hold
     swapped = redeem(app, tenant_id, TRANSIENT_ENTRY, new, "CAR-NEW", at=at(D, 8))
     assert swapped.redeemed and swapped.pass_state_change is None, "the pass stayed active"
     assert registrations(app, tenant_id) == [
-        (pass_.id, "CAROLD", date(2026, 6, 1), D, "ended"),
+        (pass_.id, "CAR0LD", date(2026, 6, 1), D, "ended"),  # O read as 0: the one normal form
         (pass_.id, "CARNEW", D, None, None),
     ]
     # the old car is covered up to and not including D, and free from D: another

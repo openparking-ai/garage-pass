@@ -582,15 +582,15 @@
   "why": "records.vehicle_key (plate_key) on register_vehicle, end_registration, record_entry/exit; registrations_of looks up plate_key(identity); access() and _open_visit compare plate_key both sides; migration 0006 CHECKs. G31 test_a_plate_read_with_no_qr_meets_the_registration_in_the_one_normal_form."
  },
  {
-  "sentence": "On the day a stay ended early or turned over, its QR is refused EXIT ONLY at an entry and lets the car out at an exit, answered on its own pass; after that day it is refused STAY ENDED at either end, and before its stay begins NOT STARTED.",
+  "sentence": "On the day a stay ended early or turned over, its QR is refused EXIT ONLY at an entry and lets the car out at an exit, answered on its own pass -- and on the day a stay ended early, the car read by its plate at an exit is let out on that pass the same way, where no other stay holds it that day; after that day the QR is refused STAY ENDED at either end, and before its stay begins NOT STARTED.",
   "file": "tests/_guarantees.py",
   "verdict": "TRUE",
-  "why": "_stay_of + _refuse_outside_the_stay: STAY_LAST_DAY entry -> EXIT_ONLY, exit -> answer_on_the_stays_last_day on the QR's pass; STAY_ENDED -> REFUSAL_CREDENTIAL_STAY_ENDED; STAY_NOT_STARTED -> NOT_STARTED. G32 checks 1, 3, 4."
+  "why": "_stay_of + _refuse_outside_the_stay: STAY_LAST_DAY entry -> EXIT_ONLY, exit -> answer_on_the_stays_last_day on the QR's pass; STAY_ENDED -> REFUSAL_CREDENTIAL_STAY_ENDED; STAY_NOT_STARTED -> NOT_STARTED. G32 checks 1, 3, 4; the plate on an early-checkout day: store/access.answer_in_transaction + stays_checked_out_on, measured in G32's test_on_the_day_a_stay_ended_early_the_plate_lets_the_car_out_as_its_qr_does"
  },
  {
-  "sentence": "Registrations and visits are stored in that form (migration 0006 makes the database refuse any other).",
+  "sentence": "Registrations and visits are stored in that form (migrations 0006 and 0007 make the database refuse any other).",
   "file": "README.md",
   "verdict": "TRUE",
-  "why": "vehicle_key writes plate_key form; migration 0006 adds CHECK vehicle_identity = upper(...) AND !~ '[[:space:].-]' on vehicle_registrations and visits (raw inserts in G1/G9/G25 tests use the normal form)."
+  "why": "vehicle_key writes plate_key form; migration 0006 adds CHECK vehicle_identity = upper(...) AND !~ '[[:space:].-]' on vehicle_registrations and visits (raw inserts in G1/G9/G25 tests use the normal form); 0007 adds O and I to the floor, measured in G31's 0007 test"
  }
 ]

@@ -102,8 +102,10 @@ answers first (without a clock nothing else can be read). Then the blank
 identity and lane. Then, at entry, the transient mode. Then which pass. Per
 pass: revoked outranks everything (revoked is revoked); then an unreadable
 pass (its expiry cannot be derived); then expiry, which is derived; then the
-typed state; then, at entry, a car REPLACED on the pass (``EXIT_ONLY``: it
-leaves on the pass and does not enter on it); then the terms: direction, lane,
+typed state; then a car REPLACED on the pass (``EXIT_ONLY``: it does not enter
+on the pass, and at an exit it leaves on it for the stay that was inside at the
+replacement, never for a stay ``entered_at`` says began after it); then the
+terms: direction, lane,
 window, and -- at entry -- the visit allowance; at exit, the maximum stay. The
 first thing that fails is the reason; nothing after it is evaluated or
 reported.
@@ -201,9 +203,10 @@ class Answer:
     #: ``findings.EXIT_IS_NEVER_REFUSED`` on every exit answer; None on entry.
     exit_note: str | None
     #: A term that could not be measured and was NOT treated as satisfied
-    #: silently: names the term and why. Only a maximum stay at an exit with no
-    #: open recorded entry to measure from, today. None when everything the
-    #: answer rests on was measured.
+    #: silently: names the term and why. At an exit only: a maximum stay with no
+    #: open recorded entry to measure from; and, for a car replaced on its pass,
+    #: whether the stay leaving entered before the replacement, when no entry
+    #: instant was stated. None when everything the answer rests on was measured.
     unmeasured: str | None
 
 
@@ -218,15 +221,22 @@ def access(
     direction: Direction,
     at: datetime,
     garages: Sequence[Garage] = (),
+    entered_at: datetime | None = None,
 ) -> Answer:
     """``garages``: the garages the passes name, so that a recorded entry at
     another garage of a pass is read on ITS clock (the module docstring). The
     store hands in every garage of every pass it selected; the command line
     hands in ``--garages``. Absent means not handed in -- an entry recorded at
     a garage that is not here is then refused by name at an entry with a
-    per-window allowance, and nothing else reads the sequence."""
+    per-window allowance, and nothing else reads the sequence.
+
+    ``entered_at``: when the stay that is leaving entered, as the caller knows
+    it. Read for one thing: a car REPLACED on its pass is covered at an exit
+    for the stay that was inside at the replacement, and not for a stay that
+    entered after it. Absent, that is UNMEASURED and named, and the exit is
+    answered on the rest of the terms."""
     _require_inputs(garage, passes, registrations, visits, vehicle_identity, lane, direction, at,
-                    garages)
+                    garages, entered_at)
     identity = vehicle_identity.strip()
     lane_name = lane.strip()
     is_exit = direction is Direction.EXIT
@@ -464,8 +474,13 @@ def access(
 
     # A car REPLACED on a pass enters on it no more and still leaves on it
     # (``Registration.exit_only``). Read per pass from the registrations in
-    # force today; the exit half never consults it.
+    # force today. At an exit it leaves covered on the stay that was inside at
+    # the replacement (``replaced_at``), never on a stay that entered after it.
     exit_only_on = {r.pass_id for r in effective if r.exit_only}
+    replaced_at: dict[str, datetime] = {}
+    for r in effective:
+        if r.exit_only and r.exit_only_at is not None:
+            replaced_at[r.pass_id] = max(r.exit_only_at, replaced_at.get(r.pass_id, r.exit_only_at))
 
     def evaluate(pass_: Pass) -> Answer:
         """One pass, in the order that is the contract."""
@@ -513,6 +528,27 @@ def access(
                 "car; it may leave on the pass and not enter on it.",
                 pass_,
             )
+        replacement_unmeasured: str | None = None
+        if is_exit and pass_.id in exit_only_on:
+            replaced = replaced_at.get(pass_.id)
+            if entered_at is not None and replaced is not None and entered_at >= replaced:
+                return not_covered(
+                    EXIT_ONLY,
+                    f"{identity!r} was replaced on pass {pass_.id!r} ({pass_.label}) by another "
+                    f"car at {rendered(replaced)}, and this stay entered at "
+                    f"{rendered(entered_at)}, after it: the pass lets out the stay that was "
+                    "inside at the replacement, not a later one.",
+                    pass_,
+                )
+            if entered_at is None or replaced is None:
+                replacement_unmeasured = (
+                    f"{identity!r} was replaced on pass {pass_.id!r}"
+                    + (f" at {rendered(replaced)}" if replaced is not None else "")
+                    + "; whether this stay entered before the replacement could not be "
+                    "measured: "
+                    + ("no entry instant was stated." if entered_at is None
+                       else "the replacement's instant is not known.")
+                )
 
         # --- the terms ----------------------------------------------------------
         if direction not in terms.directions:
@@ -596,6 +632,10 @@ def access(
                     )
                 covering.append(f"stayed {stayed} of at most {terms.max_stay}")
 
+        if replacement_unmeasured is not None:
+            covering.append("replacement UNMEASURED (see unmeasured)")
+            unmeasured = (replacement_unmeasured if unmeasured is None
+                          else f"{unmeasured} {replacement_unmeasured}")
         return covered(pass_, "; ".join(covering), unmeasured)
 
     if len(effective) == 1 and not dangling and not duplicated_named:
@@ -676,6 +716,7 @@ def _duplication(pass_id: str, copies: Sequence[Pass]) -> str:
 def _require_inputs(
     garage: object, passes: object, registrations: object, visits: object,
     vehicle_identity: object, lane: object, direction: object, at: object, garages: object,
+    entered_at: object = None,
 ) -> None:
     """Every parameter of ``access()`` has the type its signature declares, or a
     ``TypeError`` naming the parameter -- raised on the first touch, before an
@@ -684,6 +725,8 @@ def _require_inputs(
     identity, which read a caller's bug as a car with no plate. G4's test
     enumerates the signature and hands each parameter a wrong-typed value."""
     require_aware(at, "at")
+    if entered_at is not None:
+        require_aware(entered_at, "entered_at")
     if not isinstance(direction, Direction):
         raise TypeError(f"direction must be a Direction, not {direction!r}")
     if not isinstance(garage, Garage):

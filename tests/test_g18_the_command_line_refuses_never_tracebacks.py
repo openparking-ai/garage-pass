@@ -924,6 +924,8 @@ def test_a_driver_error_the_store_did_not_name_is_a_sentence_and_a_named_one_is_
     A, Z = a_pass(id="pass-a"), a_pass(id="pass-z")
     seed(app, tenant_id, G, (A, Z))
     ids = dict(query(app, tenant_id, "SELECT external_id, id FROM passes"))
+    [(garage_uuid,)] = query(app, tenant_id, "SELECT id FROM garages WHERE external_id = %s",
+                             (G.id,))
     raw = connect(DSN)
     theirs: dict = {}
     original_holders = records._holders
@@ -932,11 +934,13 @@ def test_a_driver_error_the_store_did_not_name_is_a_sentence_and_a_named_one_is_
         """The module's own read before its INSERT, then -- on the COMMAND'S
         transaction -- a row lock on Z, the raw side made to wait on it, and
         the clock run past its deadlock_timeout; the INSERT that follows is
-        the last waiter and the victim."""
+        the last waiter and the victim. The raw side's own lock is on the
+        GARAGE's row, which the INSERT's foreign key meets: the target pass's
+        row the command already holds (registering takes it first)."""
         rows = original_holders(cursor, *args)
         cursor.execute("SELECT id FROM passes WHERE id = %s FOR UPDATE", (ids["pass-z"],))
         with raw.cursor() as c:
-            c.execute("SELECT id FROM passes WHERE id = %s FOR UPDATE", (ids["pass-a"],))
+            c.execute("SELECT id FROM garages WHERE id = %s FOR UPDATE", (garage_uuid,))
 
         def wait_on_ours():
             try:

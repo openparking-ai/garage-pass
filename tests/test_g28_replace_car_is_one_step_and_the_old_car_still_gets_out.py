@@ -236,3 +236,120 @@ def test_every_refusal_of_the_two_writes_is_rendered_through_the_command_line(
     status, result = sweep.judge_rendered(list(rendered))
     assert result["unjudged"] == [] and result["false"] == [], sweep.report_rendered(result)
     assert status == 0
+
+
+@pytest.mark.guarantee("G28")
+def test_after_replace_car_an_expired_qr_of_the_same_car_does_not_let_it_in(app, tenant_id):
+    """The car held two QRs on the pass, one stay after the other (June 1 to 3,
+    then June 4 to 6), and the desk replaced it from the second on June 5. The
+    first QR's own days are over: it keeps the car entering neither by its
+    plate nor by itself -- shown at the entry it is answered not covered,
+    EXIT_ONLY, as the plate is -- and the car still leaves on the pass.
+    Measured before this: the expired QR still counted as live, so the plate
+    was covered at the entry, and so was the QR itself -- two cars on one
+    pass."""
+    from enrolment_harness import issue_plate
+    from garage_pass.passes import State
+
+    pass_ = seeded(app, tenant_id, TRANSIENT_ENTRY, state=State.ACTIVE)
+    first = issue_plate(app, tenant_id, TRANSIENT_ENTRY, pass_, "CAR-OLD", "qr-1",
+                        starts_on=date(2026, 6, 1), days_valid=3)["token"]
+    issue_plate(app, tenant_id, TRANSIENT_ENTRY, pass_, "CAR-OLD", "qr-2",
+                starts_on=date(2026, 6, 4), days_valid=3)
+    replaced(app, tenant_id, TRANSIENT_ENTRY, old="qr-2", new="qr-3",
+             at_=at(date(2026, 6, 5), 9))
+    when = at(date(2026, 6, 5), 12)
+    by_plate = access_from_store(app, tenant_id, TRANSIENT_ENTRY.id, "CAR-OLD", "L1",
+                                 Direction.ENTRY, when)
+    assert by_plate.outcome is Outcome.NOT_COVERED and by_plate.reason == f.EXIT_ONLY, (
+        by_plate.detail)
+    shown = redeem(app, tenant_id, TRANSIENT_ENTRY, first, "CAR-OLD", direction=Direction.ENTRY,
+                   at=when)
+    assert shown.answer.outcome is Outcome.NOT_COVERED, "the expired QR covered the entry"
+    assert shown.answer.reason == f.EXIT_ONLY, shown.answer.detail
+    leaving = access_from_store(app, tenant_id, TRANSIENT_ENTRY.id, "CAR-OLD", "L1",
+                                Direction.EXIT, when)
+    assert leaving.outcome is Outcome.COVERED, leaving.detail
+
+
+@pytest.mark.guarantee("G28")
+def test_after_replace_car_a_later_qr_of_the_same_car_does_not_let_it_in_before_its_stay(
+    app, tenant_id
+):
+    """Consecutive QRs for one plate, then replace-car on the EARLIER one: the
+    car holds qr-1 (June 1 to 5) and qr-later (June 10 to 12) on the pass, and
+    the desk replaces it from qr-1 on June 3. On June 4 the car is exit only:
+    its plate is not covered at the entry, EXIT_ONLY, and it still leaves on
+    the pass. qr-later is the car's own later stay: from June 10 the plate is
+    covered on it. Measured before this: an issued QR counted as live before
+    its first day, so on June 4 the replaced car was still covered at the
+    entry by its plate -- two cars on one pass."""
+    from enrolment_harness import issue_plate
+    from garage_pass.passes import State
+
+    pass_ = seeded(app, tenant_id, TRANSIENT_ENTRY, state=State.ACTIVE)
+    issue_plate(app, tenant_id, TRANSIENT_ENTRY, pass_, "CAR-OLD", "qr-1",
+                starts_on=date(2026, 6, 1), days_valid=5)
+    issue_plate(app, tenant_id, TRANSIENT_ENTRY, pass_, "CAR-OLD", "qr-later",
+                starts_on=date(2026, 6, 10), days_valid=3)
+    replaced(app, tenant_id, TRANSIENT_ENTRY, old="qr-1", new="qr-2",
+             at_=at(date(2026, 6, 3), 9))
+    when = at(date(2026, 6, 4), 12)
+    by_plate = access_from_store(app, tenant_id, TRANSIENT_ENTRY.id, "CAR-OLD", "L1",
+                                 Direction.ENTRY, when)
+    assert by_plate.outcome is Outcome.NOT_COVERED and by_plate.reason == f.EXIT_ONLY, (
+        "the replaced car entered on a QR whose stay had not begun: " + by_plate.detail)
+    leaving = access_from_store(app, tenant_id, TRANSIENT_ENTRY.id, "CAR-OLD", "L1",
+                                Direction.EXIT, when)
+    assert leaving.outcome is Outcome.COVERED, leaving.detail
+    later = access_from_store(app, tenant_id, TRANSIENT_ENTRY.id, "CAR-OLD", "L1",
+                              Direction.ENTRY, at(date(2026, 6, 10), 9))
+    assert later.outcome is Outcome.COVERED and later.pass_id == pass_.id, later.detail
+
+
+@pytest.mark.guarantee("G28")
+def test_at_an_exit_the_replaced_car_is_covered_for_the_stay_inside_at_the_replacement_only(
+    app, tenant_id, capsys, monkeypatch
+):
+    """The old car still gets out -- the stay that was inside when it was
+    replaced (June 2, 09:00). A later stay of the same car, entered as a paying
+    car after the replacement, is not covered at its exit when the caller
+    states its entry instant (``entered_at``, ``--entered-at``). Stated
+    nothing, the exit is covered as before and the answer says the
+    replacement could not be measured. Measured before this: every later exit
+    of the old car was covered, for as long as its registration ran."""
+    import json
+
+    from enrolment_harness import app_dsn_into_the_environment, issue_plate
+    from garage_pass.cli import main
+    from garage_pass.passes import State
+
+    pass_ = seeded(app, tenant_id, TRANSIENT_ENTRY, state=State.ACTIVE)
+    issue_plate(app, tenant_id, TRANSIENT_ENTRY, pass_, "CAR-OLD", starts_on=date(2026, 6, 1),
+                days_valid=10)
+    replaced(app, tenant_id, TRANSIENT_ENTRY)
+    leaving = at(date(2026, 6, 3), 18)
+
+    def exit_(entered_at=None):
+        return access_from_store(app, tenant_id, TRANSIENT_ENTRY.id, "CAR-OLD", "L1",
+                                 Direction.EXIT, leaving, entered_at)
+
+    inside = exit_(at(date(2026, 6, 2), 8))
+    assert inside.outcome is Outcome.COVERED and inside.unmeasured is None, inside
+    later = exit_(at(date(2026, 6, 3), 10))
+    assert later.outcome is Outcome.NOT_COVERED and later.reason == f.EXIT_ONLY, later.detail
+    assert later.exit_note == f.EXIT_IS_NEVER_REFUSED and "after it" in later.detail
+    unstated = exit_()
+    assert unstated.outcome is Outcome.COVERED, unstated.detail
+    assert unstated.unmeasured is not None and "replaced" in unstated.unmeasured
+    assert "no entry instant was stated" in unstated.unmeasured
+    # the same through the command line
+    app_dsn_into_the_environment(monkeypatch)
+    T = ["access-in-store", "--tenant", str(tenant_id), "--garage", TRANSIENT_ENTRY.id,
+         "--vehicle", "CAR-OLD", "--lane", "L1", "--direction", "exit",
+         "--at", "2026-06-03T18:00:00-06:00"]
+    assert main([*T, "--entered-at", "2026-06-03T10:00:00-06:00"]) == 1
+    out = json.loads(capsys.readouterr().out)
+    assert (out["outcome"], out["reason"]) == ("not_covered", f.EXIT_ONLY), out
+    assert main([*T, "--entered-at", "2026-06-02T08:00:00-06:00"]) == 0
+    assert json.loads(capsys.readouterr().out)["outcome"] == "covered"
