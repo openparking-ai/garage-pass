@@ -643,3 +643,289 @@ def test_registering_or_ending_beside_a_revocation_waits_for_it_and_never_outliv
         assert written.code == f.REFUSAL_REGISTRATION_ALREADY_ENDED, written
         assert registrations(app, tenant_id) == [
             ("pass-a", "CAR1", JAN_1, date(2026, 6, 1), "pass revoked")]
+
+
+# ---------------------------------------------------------------------------
+# A write to a registration ANOTHER pass's writer can move: the run-on of a
+# QR's stay, the checkout-day turnover and the expiry release, and an end. Each
+# writes the row only as it read it; a row moved in between is refused by name,
+# never reported as written.
+# ---------------------------------------------------------------------------
+
+JUN = {d: date(2026, 6, d) for d in range(1, 10)}
+
+
+@pytest.mark.guarantee("G1")
+@pytest.mark.parametrize("first", ["the next stay", "the run-on"])
+def test_a_run_on_and_another_passs_turnover_racing_never_both_report_success(
+    app, owner, tenant_id, first
+):
+    """Pass A holds ABC123 as a stay, June 1 to 3 (its QR's registration ends
+    June 4). Two writers race on that one registration: A's new QR for the
+    car from June 2 for five days, which runs A's registration on to June 7;
+    and Z's QR for the car from June 3 -- A's last day -- which turns A's
+    registration over and ends it on June 3. Whichever writes first wins, and
+    the other is refused by name (roll back and read again) and mints
+    nothing; read again, it is refused by name as another pass. Measured
+    before this: either order ended in a silent success. The next stay first:
+    the run-on matched no row, and A's new QR was minted for days Z held, on a
+    registration still ending June 3. The run-on first: the turnover, judged
+    on A's registration as it stood before the run-on, cut it back to June 3,
+    and Z was registered over A's new QR's days."""
+    from enrolment_harness import TRANSIENT_ENTRY, issue_plate, race
+    from garage_pass.store.enrolments import issue_enrolment
+    from garage_pass.store.records import ENDED_AFTER_LAST_DAY, ENDED_BY_NEXT_STAY
+
+    seed(app, tenant_id, TRANSIENT_ENTRY, (A, Z))
+    issue_plate(app, tenant_id, TRANSIENT_ENTRY, A, "ABC123", "qr-a1", starts_on=JUN[1],
+                days_valid=3)
+
+    def run_on(cursor):
+        return issue_enrolment(cursor, tenant_id, TRANSIENT_ENTRY.id, A.id, "qr-a2", JUN[2], 5,
+                               by="desk", at=NOON_MONDAY, plate="ABC123")
+
+    def next_stay(cursor):
+        return issue_enrolment(cursor, tenant_id, TRANSIENT_ENTRY.id, Z.id, "qr-z", JUN[3], 3,
+                               by="desk", at=NOON_MONDAY, plate="abc 123")
+
+    winner, loser = (next_stay, run_on) if first == "the next stay" else (run_on, next_stay)
+    won, lost = race(owner, tenant_id, winner, loser)
+    assert not isinstance(won, BaseException), won
+    assert isinstance(lost, f.Refused), f"both writers reported success; the second: {lost!r}"
+    assert lost.code == f.REFUSAL_CONSTRAINT and "Roll back and read again" in lost.detail, (
+        lost.detail)
+    if first == "the next stay":
+        assert registrations(app, tenant_id) == [
+            ("pass-a", "ABC123", JUN[1], JUN[3], ENDED_BY_NEXT_STAY),
+            ("pass-z", "ABC123", JUN[3], JUN[6], ENDED_AFTER_LAST_DAY)]
+        holder, unminted = "pass-z", "qr-a2"
+    else:
+        assert registrations(app, tenant_id) == [
+            ("pass-a", "ABC123", JUN[1], JUN[7], ENDED_AFTER_LAST_DAY)]
+        holder, unminted = "pass-a", "qr-z"
+    qrs = {row[0] for row in query(app, tenant_id, "SELECT external_id FROM enrolments")}
+    assert unminted not in qrs and qrs == {"qr-a1", "qr-a2", "qr-z"} - {unminted}, qrs
+    # read again: the loser is refused by name, as another pass
+    with tenant(app, tenant_id) as cursor, pytest.raises(f.Refused) as again:
+        loser(cursor)
+    app.rollback()
+    assert again.value.code == f.REFUSAL_VEHICLE_ON_ANOTHER_PASS, again.value.detail
+    assert f"'{holder}'" in again.value.detail
+
+
+@pytest.mark.guarantee("G1")
+def test_an_end_beside_another_passs_turnover_never_reports_a_day_it_did_not_write(
+    app, owner, tenant_id
+):
+    """Z holds CAR-1 as a stay, June 1 to 3 (it ends June 4, on its last day).
+    A registers the car from June 3 -- Z's last day, so Z's registration is
+    turned over and ends June 3 -- while the owner ends Z's registration on
+    June 2. The turnover holds the row; the end, which read it before the
+    turnover landed, finds it moved and is refused by name (roll back and
+    read again); read again, it is refused as already ended on June 3.
+    Measured before this: the end matched no row and still returned end_day
+    June 2, while the row ended June 3."""
+    from enrolment_harness import race
+    from garage_pass.store.records import ENDED_AFTER_LAST_DAY, ENDED_BY_NEXT_STAY
+
+    seed(app, tenant_id, GARAGE, (A, Z))
+    with tenant(app, tenant_id) as cursor:
+        register_vehicle(cursor, tenant_id, GARAGE.id, Z.id, "CAR-1", JUN[1], JUN[4],
+                         ENDED_AFTER_LAST_DAY)
+    app.commit()
+
+    def next_stay(cursor):
+        return register_vehicle(cursor, tenant_id, GARAGE.id, A.id, "CAR-1", JUN[3])
+
+    def end(cursor):
+        return end_registration(cursor, tenant_id, GARAGE.id, Z.id, "CAR-1", JUN[2])
+
+    turned, ended = race(owner, tenant_id, next_stay, end)
+    assert not isinstance(turned, BaseException), turned
+    assert isinstance(ended, f.Refused), f"the end reported a day it did not write: {ended!r}"
+    assert ended.code == f.REFUSAL_CONSTRAINT and "Roll back and read again" in ended.detail, (
+        ended.detail)
+    assert registrations(app, tenant_id) == [
+        ("pass-a", "CAR1", JUN[3], None, None),
+        ("pass-z", "CAR1", JUN[1], JUN[3], ENDED_BY_NEXT_STAY)]
+    with tenant(app, tenant_id) as cursor, pytest.raises(f.Refused) as again:
+        end(cursor)
+    app.rollback()
+    assert again.value.code == f.REFUSAL_REGISTRATION_ALREADY_ENDED, again.value.detail
+    assert "already ends on 2026-06-03" in again.value.detail
+
+
+@pytest.mark.guarantee("G1")
+def test_an_expiry_released_beside_an_end_keeps_the_end_that_was_written(app, owner, tenant_id):
+    """Z's terms end June 5, and its registration of CAR-1 is open (it runs to
+    that valid_to). The owner ends it on June 3 while A registers the car from
+    June 8, which releases what Z's expiry freed. The end holds the row; the
+    release, which read the row open before the end landed, leaves the end the
+    owner wrote, and A's registration is written. Measured before this: the
+    release wrote over the owner's June 3 with June 6, by expiry -- the end
+    reported a day the row no longer held."""
+    from enrolment_harness import race
+
+    expiring = a_pass(id="pass-z", label="Vendor Z", terms=simple_terms(valid_to=JUN[5]))
+    seed(app, tenant_id, GARAGE, (A, expiring))
+    register(app, tenant_id, expiring, "CAR-1", effective=JUN[1])
+
+    def end(cursor):
+        return end_registration(cursor, tenant_id, GARAGE.id, expiring.id, "CAR-1", JUN[3])
+
+    def next_(cursor):
+        return register_vehicle(cursor, tenant_id, GARAGE.id, A.id, "CAR-1", JUN[8])
+
+    ended, registered = race(owner, tenant_id, end, next_)
+    assert not isinstance(ended, BaseException), ended
+    assert ended["end_day"] == JUN[3]
+    assert not isinstance(registered, BaseException), registered
+    assert registrations(app, tenant_id) == [
+        ("pass-a", "CAR1", JUN[8], None, None),
+        ("pass-z", "CAR1", JUN[1], JUN[3], ENDED_BY_OWNER)], "the end the owner wrote moved"
+
+
+@pytest.mark.guarantee("G1")
+def test_an_end_refused_beside_a_turnover_leaves_nothing_written_even_for_a_caller_that_commits(
+    app, owner, tenant_id
+):
+    """Z names two garages and holds CAR-1 as a stay at both, June 1 to 3. A,
+    which names one of them, registers the car from June 3, turning Z's row
+    there over, while the owner ends Z's registration on June 2. The end
+    finds one of its two rows moved and is refused -- and the other row,
+    which it reached first, is taken back with it: a caller that commits
+    after the refusal commits nothing of the end. Measured with the
+    savepoint taken out: the row at the second garage ended June 2 beside a
+    refusal that said it was not ended."""
+    from enrolment_harness import race
+    from garage_pass.garage import Garage
+    from garage_pass.store.records import (
+        ENDED_AFTER_LAST_DAY,
+        ENDED_BY_NEXT_STAY,
+        create_pass,
+        store_garage,
+    )
+    from store_harness import CREATED_AT
+
+    uptown = Garage(id="garage-uptown", timezone=GARAGE.timezone, transient_available=True)
+    both = a_pass(id="pass-z", label="Vendor Z", garage_ids={GARAGE.id, uptown.id})
+    with tenant(app, tenant_id) as cursor:
+        for garage in (GARAGE, uptown):
+            store_garage(cursor, tenant_id, garage)
+        for pass_ in (A, both):
+            create_pass(cursor, tenant_id, GARAGE.id, pass_, by="seed", at=CREATED_AT)
+        register_vehicle(cursor, tenant_id, GARAGE.id, both.id, "CAR-1", JUN[1], JUN[4],
+                         ENDED_AFTER_LAST_DAY)
+    app.commit()
+
+    def next_stay(cursor):
+        return register_vehicle(cursor, tenant_id, GARAGE.id, A.id, "CAR-1", JUN[3])
+
+    def end_and_commit(cursor):
+        try:
+            return end_registration(cursor, tenant_id, GARAGE.id, both.id, "CAR-1", JUN[2])
+        except f.Refused as refused:
+            return refused  # the caller commits anyway: the race harness commits lane B
+
+    turned, ended = race(owner, tenant_id, next_stay, end_and_commit)
+    assert not isinstance(turned, BaseException), turned
+    assert isinstance(ended, f.Refused) and ended.code == f.REFUSAL_CONSTRAINT, ended
+    assert "1 of 2 row(s)" in ended.detail, ended.detail
+    rows = query(app, tenant_id,
+                 "SELECT p.external_id, g.external_id, r.effective_day, r.end_day, "
+                 "r.ended_reason FROM vehicle_registrations r "
+                 "JOIN passes p ON p.id = r.pass_id JOIN garages g ON g.id = r.garage_id "
+                 "ORDER BY 1, 2")
+    assert rows == [
+        ("pass-a", "garage-downtown", JUN[3], None, None),
+        ("pass-z", "garage-downtown", JUN[1], JUN[3], ENDED_BY_NEXT_STAY),
+        ("pass-z", "garage-uptown", JUN[1], JUN[4], ENDED_AFTER_LAST_DAY),
+    ], "a refused end left a row of itself written"
+
+
+@pytest.mark.guarantee("G1")
+def test_an_end_after_a_turnover_at_one_garage_reports_only_the_garage_it_ended(
+    app, tenant_id
+):
+    """Z names two garages and holds CAR-1 as a stay at both, June 1 to 3. A,
+    which names uptown only, has registered the car from June 3, so Z's row
+    at uptown ended June 3 by the next stay, while downtown it runs to June 4.
+    The owner then ends Z's registration on June 2 -- no race: the row
+    downtown ends June 2, the row uptown keeps the end the turnover gave it,
+    and the end reports downtown alone. Measured with the end's rows taken
+    as every row of the latest registration: the end was refused as a race
+    that never happened ("1 of 2 row(s)"), and before an end checked what it
+    wrote, it reported uptown ended on June 2, a day that row never took."""
+    from garage_pass.garage import Garage
+    from garage_pass.store.records import (
+        ENDED_AFTER_LAST_DAY,
+        ENDED_BY_NEXT_STAY,
+        create_pass,
+        store_garage,
+    )
+    from store_harness import CREATED_AT
+
+    uptown = Garage(id="garage-uptown", timezone=GARAGE.timezone, transient_available=True)
+    next_guest = a_pass(id="pass-a", label="Employee A", garage_ids={uptown.id})
+    both = a_pass(id="pass-z", label="Vendor Z", garage_ids={GARAGE.id, uptown.id})
+    with tenant(app, tenant_id) as cursor:
+        for garage in (GARAGE, uptown):
+            store_garage(cursor, tenant_id, garage)
+        create_pass(cursor, tenant_id, uptown.id, next_guest, by="seed", at=CREATED_AT)
+        create_pass(cursor, tenant_id, GARAGE.id, both, by="seed", at=CREATED_AT)
+        register_vehicle(cursor, tenant_id, GARAGE.id, both.id, "CAR-1", JUN[1], JUN[4],
+                         ENDED_AFTER_LAST_DAY)
+        register_vehicle(cursor, tenant_id, uptown.id, next_guest.id, "CAR-1", JUN[3])
+    app.commit()
+    with tenant(app, tenant_id) as cursor:
+        try:
+            ended = end_registration(cursor, tenant_id, GARAGE.id, both.id, "CAR-1", JUN[2])
+        except f.Refused as refused:
+            raise AssertionError(f"an end with no race was refused: {refused}") from None
+    app.commit()
+    assert ended["end_day"] == JUN[2] and ended["garages"] == [GARAGE.id], ended
+    rows = query(app, tenant_id,
+                 "SELECT p.external_id, g.external_id, r.effective_day, r.end_day, "
+                 "r.ended_reason FROM vehicle_registrations r "
+                 "JOIN passes p ON p.id = r.pass_id JOIN garages g ON g.id = r.garage_id "
+                 "ORDER BY 1, 2")
+    assert rows == [
+        ("pass-a", "garage-uptown", JUN[3], None, None),
+        ("pass-z", "garage-downtown", JUN[1], JUN[2], ENDED_BY_OWNER),
+        ("pass-z", "garage-uptown", JUN[1], JUN[3], ENDED_BY_NEXT_STAY),
+    ]
+
+
+@pytest.mark.guarantee("G1")
+def test_another_passs_hold_is_named_before_the_passs_own(app, tenant_id):
+    """Z names downtown and uptown and holds CAR-1 as a stay at both, June 1
+    to 3; A, at uptown only, took the car over there from June 3. Z's car
+    registered again from June 3 meets two holds: Z's own row downtown, which
+    runs to June 4, and A's at uptown. The refusal names A, at uptown -- the
+    other pass -- never Z as "another pass" to itself. Measured before this:
+    the holds were judged in garage order alone, so downtown came first and
+    the refusal said CAR-1 was registered to pass-z, the pass being
+    registered."""
+    from garage_pass.garage import Garage
+    from garage_pass.store.records import ENDED_AFTER_LAST_DAY, create_pass, store_garage
+    from store_harness import CREATED_AT
+
+    uptown = Garage(id="garage-uptown", timezone=GARAGE.timezone, transient_available=True)
+    next_guest = a_pass(id="pass-a", label="Employee A", garage_ids={uptown.id})
+    both = a_pass(id="pass-z", label="Vendor Z", garage_ids={GARAGE.id, uptown.id})
+    with tenant(app, tenant_id) as cursor:
+        for garage in (GARAGE, uptown):
+            store_garage(cursor, tenant_id, garage)
+        create_pass(cursor, tenant_id, uptown.id, next_guest, by="seed", at=CREATED_AT)
+        create_pass(cursor, tenant_id, GARAGE.id, both, by="seed", at=CREATED_AT)
+        register_vehicle(cursor, tenant_id, GARAGE.id, both.id, "CAR-1", JUN[1], JUN[4],
+                         ENDED_AFTER_LAST_DAY)
+        register_vehicle(cursor, tenant_id, uptown.id, next_guest.id, "CAR-1", JUN[3])
+    app.commit()
+    with tenant(app, tenant_id) as cursor, pytest.raises(f.Refused) as refused:
+        register_vehicle(cursor, tenant_id, GARAGE.id, both.id, "CAR-1", JUN[3], JUN[6],
+                         ENDED_AFTER_LAST_DAY)
+    app.rollback()
+    assert refused.value.code == f.REFUSAL_VEHICLE_ON_ANOTHER_PASS, refused.value.detail
+    assert refused.value.detail.startswith(
+        "at garage 'garage-uptown': 'CAR1' is registered to pass 'pass-a'"), refused.value.detail

@@ -321,8 +321,10 @@ REFUSALS: dict[str, str] = {
     ),
     REFUSAL_CONSTRAINT: (
         "The database refused the write by a constraint the module did not catch "
-        "first, or rolled it back to break a deadlock at that constraint's lock. "
-        "Named by its constraint so it is a refusal and not a traceback; two writers "
+        "first, or rolled it back to break a deadlock at that constraint's lock -- or a "
+        "registration the write had read was changed by another writer before the write "
+        "reached it. Named -- by its constraint where one fired -- so it is a refusal and "
+        "not a traceback, and never reported as a write that landed; two writers "
         "racing end here. Under a deadlock the detail carries the database's own "
         "account of the cycle and asserts no cause the module did not observe."
     ),

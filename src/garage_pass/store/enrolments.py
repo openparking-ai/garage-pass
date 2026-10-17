@@ -403,12 +403,6 @@ def _stay_of(
     for row in rows:
         effective, end, _why = row
         if effective <= today and (end is None or today < end):
-            if code.plate is not None and today > code.last_day:
-                # A QR MADE FOR A PLATE answers for its own days, to its last
-                # day and no later: a registration of the car that runs on past
-                # it -- the car's next QR on this pass -- is that QR's stay
-                return STAY_ENDED, (code.starts_on, code.last_day + timedelta(days=1),
-                                    ENDED_AFTER_LAST_DAY)
             return STAY_LIVE, row
     for row in rows:
         if row[1] == today and ends_a_stay_that_day(row[2]):
@@ -446,28 +440,51 @@ def _refuse_outside_the_stay(
 def _held_by_this_pass(
     cursor: Any, tenant_uuid: UUID, pass_external_id: str, key: str, starts_on: date,
     end: date | None = None,
-) -> list[tuple]:
+) -> tuple[int, list[tuple]]:
     """THIS pass's registrations of the plate over the days ``starts_on`` to
-    ``end`` (exclusive; None: onwards), held at EVERY garage the pass names, as
-    (effective_day, end_day, ended_reason, row ids) in day order. A new QR for
-    the same car (reissued after a cancel, or a replaced car coming back)
-    REUSES them: the car is registered once, and the same car on the same pass
-    is never "another pass". A plate another pass holds is not looked at here;
-    register_vehicle refuses it by name, as before."""
+    ``end`` (exclusive; None: onwards): the number of garages the pass names,
+    and its rows at those garages, each (garage, effective_day, end_day,
+    ended_reason, row id), in day order. A new QR for the same car (reissued
+    after a cancel, or a replaced car coming back) REUSES them: the car is
+    registered once, and the same car on the same pass is never "another
+    pass". A plate another pass holds is not looked at here; register_vehicle
+    refuses it by name, as before."""
     cursor.execute(
-        "SELECT r.effective_day, r.end_day, r.ended_reason, array_agg(r.id), "
-        "count(DISTINCT r.garage_id), "
+        "SELECT r.garage_id, r.effective_day, r.end_day, r.ended_reason, r.id, "
         "(SELECT count(*) FROM pass_garages pg WHERE pg.tenant_id = p.tenant_id "
         "AND pg.pass_id = p.id) "
         "FROM passes p JOIN vehicle_registrations r "
         "ON r.tenant_id = p.tenant_id AND r.pass_id = p.id "
         "WHERE p.tenant_id = %s AND p.external_id = %s AND r.vehicle_identity = %s "
+        "AND r.garage_id IN (SELECT pg.garage_id FROM pass_garages pg "
+        "WHERE pg.tenant_id = p.tenant_id AND pg.pass_id = p.id) "
         "AND daterange(r.effective_day, r.end_day, '[)') && daterange(%s, %s, '[)') "
-        "GROUP BY p.id, p.tenant_id, r.effective_day, r.end_day, r.ended_reason",
+        "ORDER BY r.effective_day, r.garage_id",
         (tenant_uuid, pass_external_id, key, starts_on, end),
     )
-    held = [row[:4] for row in cursor.fetchall() if row[4] == row[5]]
-    return sorted(held, key=lambda row: row[0])
+    found = cursor.fetchall()
+    return (found[0][5] if found else 0), [row[:5] for row in found]
+
+
+def _days_held(garages: int, rows: list[tuple], starts_on: date, end: date) -> list[tuple]:
+    """``starts_on`` to ``end`` cut wherever a row starts or ends, as (first
+    day, end day, held), alike spans joined: a day is HELD when EVERY garage
+    the pass names has a row of the plate covering it. Coverage is counted
+    per garage -- the rows at one garage need not match the rows at another
+    (another pass's stay may have turned the car over at one garage only)."""
+    cuts = sorted({starts_on, end} | {
+        day for _garage, effective, stop, _why, _id in rows for day in (effective, stop)
+        if day is not None and starts_on < day < end})
+    spans: list[tuple] = []
+    for first, stop in zip(cuts, cuts[1:], strict=False):
+        covering = {garage for garage, effective, until, _why, _id in rows
+                    if effective <= first and (until is None or first < until)}
+        held = garages > 0 and len(covering) == garages
+        if spans and spans[-1][2] == held:
+            spans[-1] = (spans[-1][0], stop, held)
+        else:
+            spans.append((first, stop, held))
+    return spans
 
 
 def _hold_the_whole_stay(
@@ -475,27 +492,29 @@ def _hold_the_whole_stay(
     starts_on: date, end: date,
 ) -> None:
     """THE PLATE IS HELD ON THIS PASS FOR EVERY DAY OF THE NEW QR'S STAY,
-    ``starts_on`` to ``end``. What this pass already holds is reused, never
-    registered twice; a day it does not hold is registered (one car, one pass:
-    another pass's hold is refused by name, as for any registration). The
-    stay's registration that ran to an earlier last day RUNS ON to the new
-    one: measured before this, a reissued or returning car's QR reused a
-    shorter registration and stopped working before its own last day."""
-    day = starts_on
-    held = _held_by_this_pass(cursor, tenant_uuid, pass_external_id, key, starts_on, end)
-    for effective, stop, _why, _ids in held:
-        if effective > day:  # days before this registration: the pass holds none of them
+    ``starts_on`` to ``end``. What this pass already holds -- at every garage
+    it names -- is reused, never registered twice; a day it does not hold is
+    registered (one car, one pass: another pass's hold is refused by name, as
+    for any registration). The stay's registration that ran to an earlier
+    last day RUNS ON to the new one, where its row at every garage ends on
+    that day by plan: measured before this, a reissued or returning car's QR
+    reused a shorter registration and stopped working before its own last
+    day."""
+    garages, held = _held_by_this_pass(cursor, tenant_uuid, pass_external_id, key, starts_on,
+                                       end)
+    for first, stop, is_held in _days_held(garages, held, starts_on, end):
+        if is_held:
+            continue
+        # the stay's registration up to ``first``: one row per garage, each
+        # ending on ``first`` as a stay's last day
+        ending = [row for row in held if row[1] < first and row[2] == first]
+        if stop == end and ending and len(ending) == garages == len({r[0] for r in ending}) \
+                and all(row[3] == ENDED_AFTER_LAST_DAY for row in ending):
+            _run_on(cursor, tenant_uuid, garage_external_id, pass_external_id, key,
+                    [row[4] for row in ending], first, end)
+        else:
             register_vehicle(cursor, tenant_uuid, garage_external_id, pass_external_id, key,
-                             day, effective, ENDED_AFTER_LAST_DAY)
-        day = max(day, end if stop is None else stop)
-    if day >= end:
-        return
-    if held and held[-1][1] == day and held[-1][2] == ENDED_AFTER_LAST_DAY:
-        _run_on(cursor, tenant_uuid, garage_external_id, pass_external_id, key, held[-1][3],
-                day, end)
-    else:
-        register_vehicle(cursor, tenant_uuid, garage_external_id, pass_external_id, key, day,
-                         end, ENDED_AFTER_LAST_DAY)
+                             first, stop, ENDED_AFTER_LAST_DAY)
 
 
 def _run_on(
@@ -507,7 +526,10 @@ def _run_on(
     the plate already stands on those days at a garage of the pass, the days
     are registered instead, so register_vehicle names it, or turns the other
     stay over, exactly as for any new registration; the EXCLUDE is the
-    backstop for a race, named, never a traceback."""
+    backstop for a race, named, never a traceback. THE ROW IS RUN ON ONLY AS
+    IT WAS READ: another pass's turnover writes it without this pass's lock,
+    so a row that no longer ends on ``day`` is a refusal by name, never a
+    run-on reported for days the registration does not hold."""
     import psycopg
 
     cursor.execute(
@@ -537,6 +559,13 @@ def _run_on(
             "account: " + (detail if detail else "(no DETAIL was supplied)")
             + " Roll back and read again.",
         ) from race
+    if cursor.rowcount != len(ids):
+        raise Refused(
+            REFUSAL_CONSTRAINT, "vehicle_identity",
+            f"another registration of {key!r} landed while this one ran on to {end}: "
+            f"{cursor.rowcount} of {len(ids)} row(s) of the stay still ended on {day} when "
+            "this write reached them, so the stay was not run on. Roll back and read again.",
+        )
 
 
 def issue_enrolment(

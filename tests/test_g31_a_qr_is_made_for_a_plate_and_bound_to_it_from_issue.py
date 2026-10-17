@@ -468,6 +468,118 @@ def test_a_qr_for_a_car_the_pass_already_holds_works_to_its_own_last_day(app, te
 
 
 @pytest.mark.guarantee("G31")
+def test_a_qr_for_a_car_the_pass_holds_on_a_longer_registration_answers_on_that_registration(
+    app, tenant_id
+):
+    """The car is registered on its pass from June 1 with no end day
+    (register-vehicle), and then a QR is made for it from June 1 for three
+    days. The pass keeps the ONE registration it holds, untouched, and the QR
+    is answered on it while it is in force -- on June 10 it is recognised and
+    covered, and with the plate not read it asks for a picture match -- as it
+    was before the run-on. The run-on lengthens a registration that ends
+    sooner than the new QR; it never shortens what a QR answers for."""
+    from garage_pass.passes import State
+    from garage_pass.store.records import register_vehicle
+
+    pass_ = seeded(app, tenant_id, TRANSIENT_ENTRY, state=State.ACTIVE)
+    with tenant(app, tenant_id) as cursor:
+        register_vehicle(cursor, tenant_id, TRANSIENT_ENTRY.id, pass_.id, "ABC-123",
+                         date(2026, 6, 1))
+    app.commit()
+    token = _minted(lambda: issue_plate(app, tenant_id, TRANSIENT_ENTRY, pass_, "abc 123",
+                                        starts_on=date(2026, 6, 1), days_valid=3))["token"]
+    assert [r[2:] for r in _held(app, tenant_id, "ABC123")] == [
+        (date(2026, 6, 1), None, None)], "the registration the pass held moved"
+    shown = redeem(app, tenant_id, TRANSIENT_ENTRY, token, "ABC 123", direction=Direction.ENTRY,
+                   at=at(date(2026, 6, 10), 9))
+    assert shown.recognised and shown.refusal is None, shown.refusal
+    assert shown.answer.outcome is Outcome.COVERED, shown.answer.detail
+    unread = redeem(app, tenant_id, TRANSIENT_ENTRY, token, "", direction=Direction.EXIT,
+                    at=at(date(2026, 6, 10), 18))
+    assert unread.match_required and unread.refusal is None, unread.refusal
+
+
+def _turned_over_at_one_of_two_garages(app, tenant_id):
+    """pass-1 names two garages, downtown and uptown; pass-2 names uptown
+    only. ABC123's QR on pass-1 runs June 1 to 3, at both. Its next stay, on
+    pass-2 from June 3 -- pass-1's last day -- turns pass-1's registration
+    over at uptown only: there it ends June 3, by the next stay, and
+    downtown it still runs to June 4. Then pass-1's QR is cancelled."""
+    from enrolment_harness import STARTS_ON
+    from fixtures import SHIFTING_ZONE
+    from garage_pass.garage import Garage
+    from garage_pass.store.records import ENDED_AFTER_LAST_DAY, ENDED_BY_NEXT_STAY, store_garage
+    from store_harness import CREATED_AT
+
+    uptown = Garage(id="garage-uptown", timezone=SHIFTING_ZONE, transient_available=True,
+                    enrols_at="entry")
+    pass_1 = a_pass(id="pass-1", garage_ids={TRANSIENT_ENTRY.id, uptown.id})
+    pass_2 = a_pass(id="pass-2", label="Next guest", garage_ids={uptown.id})
+    with tenant(app, tenant_id) as cursor:
+        for garage in (TRANSIENT_ENTRY, uptown):
+            store_garage(cursor, tenant_id, garage)
+        create_pass(cursor, tenant_id, TRANSIENT_ENTRY.id, pass_1, by="seed", at=CREATED_AT)
+        create_pass(cursor, tenant_id, uptown.id, pass_2, by="seed", at=CREATED_AT)
+    app.commit()
+    issue_plate(app, tenant_id, TRANSIENT_ENTRY, pass_1, "ABC-123", starts_on=STARTS_ON)
+    issue_plate(app, tenant_id, uptown, pass_2, "abc 123", external_id="qr-next",
+                starts_on=date(2026, 6, 3))
+    _cancel(app, tenant_id, "qr-1")
+    rows = query(app, tenant_id,
+                 "SELECT p.external_id, g.external_id, r.effective_day, r.end_day, "
+                 "r.ended_reason FROM vehicle_registrations r "
+                 "JOIN passes p ON p.id = r.pass_id JOIN garages g ON g.id = r.garage_id "
+                 "ORDER BY 1, 2")
+    assert rows == [
+        ("pass-1", "garage-downtown", STARTS_ON, date(2026, 6, 4), ENDED_AFTER_LAST_DAY),
+        ("pass-1", "garage-uptown", STARTS_ON, date(2026, 6, 3), ENDED_BY_NEXT_STAY),
+        ("pass-2", "garage-uptown", date(2026, 6, 3), date(2026, 6, 6), ENDED_AFTER_LAST_DAY),
+    ], "the premise: pass-1's registration turned over at one of its two garages"
+    return uptown, pass_1, rows
+
+
+@pytest.mark.guarantee("G31")
+def test_a_qr_for_days_the_pass_holds_at_every_garage_is_minted_on_them(app, tenant_id):
+    """After the next stay turned the car over at one of pass-1's two
+    garages, a QR is reissued on pass-1 for June 1 to 2 -- days pass-1 still
+    holds at BOTH garages, by rows that no longer match one another. It is
+    minted on what the pass holds, nothing is registered, and it is
+    recognised at either garage. Measured before this: a day counted as held
+    only where the rows were identical at every garage, so the reissue was
+    refused VEHICLE_ON_ANOTHER_PASS naming pass-1 itself as the other pass."""
+    uptown, pass_1, rows = _turned_over_at_one_of_two_garages(app, tenant_id)
+    token = _minted(lambda: issue_plate(app, tenant_id, TRANSIENT_ENTRY, pass_1, "ABC123",
+                                        external_id="qr-2", days_valid=2))["token"]
+    assert query(app, tenant_id,
+                 "SELECT p.external_id, g.external_id, r.effective_day, r.end_day, "
+                 "r.ended_reason FROM vehicle_registrations r "
+                 "JOIN passes p ON p.id = r.pass_id JOIN garages g ON g.id = r.garage_id "
+                 "ORDER BY 1, 2") == rows, "the reissue wrote a registration"
+    for garage in (TRANSIENT_ENTRY, uptown):
+        shown = redeem(app, tenant_id, garage, token, "ABC 123", direction=Direction.ENTRY,
+                       at=at(date(2026, 6, 2), 9))
+        assert shown.recognised and shown.refusal is None, (garage.id, shown.refusal)
+
+
+@pytest.mark.guarantee("G31")
+def test_a_qr_for_days_another_pass_holds_at_one_garage_names_that_pass(app, tenant_id):
+    """The same turnover, and a QR reissued on pass-1 for June 1 to 4: from
+    June 3 pass-2 holds the car at uptown, so the QR is refused at the desk,
+    by name, naming pass-2 and uptown -- not pass-1, which still holds the
+    car downtown on June 3 -- and nothing is minted."""
+    _uptown, pass_1, rows = _turned_over_at_one_of_two_garages(app, tenant_id)
+    before = written(app, tenant_id)
+    with pytest.raises(f.Refused) as refused:
+        issue_plate(app, tenant_id, TRANSIENT_ENTRY, pass_1, "ABC123", external_id="qr-2",
+                    days_valid=4)
+    app.rollback()
+    assert refused.value.code == f.REFUSAL_VEHICLE_ON_ANOTHER_PASS, refused.value.detail
+    assert "pass 'pass-2'" in refused.value.detail, refused.value.detail
+    assert "at garage 'garage-uptown'" in refused.value.detail, refused.value.detail
+    assert written(app, tenant_id) == before, "a refused QR wrote something"
+
+
+@pytest.mark.guarantee("G31")
 def test_o_reads_as_0_and_i_as_1_on_every_side(app, tenant_id):
     """A plate reader's alphabet has no I and no O: it prints 1 and 0. GO4IT
     typed at the desk is read G041T at the lane, and the one normal form makes
@@ -661,3 +773,72 @@ def test_0007_refuses_by_name_when_two_rows_become_one_car_and_moves_nothing(
         assert _try_0007(owner) is None, "the same two on days that do not overlap"
         assert _identities(owner, tenant_id)["vehicle_registrations.vehicle_identity"] == [
             "G041T", "G041T"]
+
+
+#: The five tables 0007 reads and writes, every one of them FORCEing row-level
+#: security since the migration that made it.
+_0007_TABLES = ("enrolments", "garages", "passes", "vehicle_registrations", "visits")
+
+
+def _row_security(owner) -> dict:
+    """(ENABLE, FORCE) of every table in the schema, by name."""
+    with owner.cursor() as cursor:
+        cursor.execute(
+            "SELECT relname, relrowsecurity, relforcerowsecurity FROM pg_class "
+            "WHERE relnamespace = 'public'::regnamespace AND relkind = 'r' ORDER BY 1")
+        return {name: (enabled, forced) for name, enabled, forced in cursor.fetchall()}
+
+
+@pytest.mark.guarantee("G31")
+def test_0007_applies_as_the_tables_plain_owner_and_puts_force_back(at_0006, tenant_id):
+    """The install step applies every migration as the database OWNER, and
+    that owner need not be a superuser or have BYPASSRLS. Every table 0007
+    reads and writes FORCEs row-level security, which binds the owner too, so
+    0007 lifts FORCE for its own transaction and puts it back before COMMIT.
+    Applied here by the tables' own owner -- a plain role, neither superuser
+    nor BYPASSRLS -- it re-keys the rows, and afterwards row-level security on
+    every table is exactly as it was. Measured before this: that owner was
+    stopped at the first read, "query would be affected by row-level security
+    policy for table vehicle_registrations", on any rows or none. The suite
+    applies migrations as a superuser, which RLS never binds, so nothing else
+    here could see it."""
+    from uuid import uuid4
+
+    from psycopg import sql
+
+    from store_harness import new_tenant
+
+    owner = at_0006
+    tenant_id = new_tenant(owner)
+    _rows_at_0006(owner, tenant_id, registrations=[("p-1", "GO4IT", date(2026, 6, 1), None)],
+                  visits=[("p-1", "GO4IT")], plates=["GO4IT"])
+    before = _row_security(owner)
+    assert all(before[table] == (True, True) for table in _0007_TABLES), before
+    role = sql.Identifier(f"garage_pass_plain_owner_{uuid4().hex[:8]}")
+    with owner.cursor() as cursor:
+        cursor.execute(sql.SQL("CREATE ROLE {} NOLOGIN NOSUPERUSER NOBYPASSRLS").format(role))
+        cursor.execute(sql.SQL("GRANT USAGE ON SCHEMA public TO {}").format(role))
+        for table in before:
+            cursor.execute(sql.SQL("ALTER TABLE {} OWNER TO {}").format(
+                sql.Identifier(table), role))
+    try:
+        with owner.cursor() as cursor:
+            cursor.execute(sql.SQL("SET ROLE {}").format(role))
+            cursor.execute("SELECT rolsuper OR rolbypassrls FROM pg_roles "
+                           "WHERE rolname = current_user")
+            assert cursor.fetchone() == (False,), "the premise: a role RLS can bind"
+        failure = _try_0007(owner)
+    finally:
+        with owner.cursor() as cursor:
+            cursor.execute("RESET ROLE")
+            cursor.execute(sql.SQL("REASSIGN OWNED BY {} TO CURRENT_USER").format(role))
+            cursor.execute(sql.SQL("DROP OWNED BY {}").format(role))
+            cursor.execute(sql.SQL("DROP ROLE {}").format(role))
+    assert failure is None, f"0007 refused the tables' own owner: {failure}"
+    assert _identities(owner, tenant_id) == {
+        "vehicle_registrations.vehicle_identity": ["G041T"],
+        "visits.vehicle_identity": ["G041T"],
+        "enrolments.plate": ["G041T"],
+        "enrolments.plate_typed": ["GO4IT"],
+    }, "the owner's run re-keyed nothing"
+    assert _row_security(owner) == before, "0007 left row-level security changed"

@@ -29,10 +29,25 @@
 -- `row_security` is off for this transaction: every table here FORCEs row-level
 -- security, and a re-key that RLS filtered down to no rows would report success
 -- and change nothing. With it off, a role RLS applies to fails loudly instead.
+--
+-- FORCE binds the tables' OWNER too, and the owner this is run as need not be a
+-- superuser or BYPASSRLS: with FORCE on, such an owner is a role RLS applies to,
+-- and the first read below would stop it. So for this transaction only, FORCE
+-- is lifted on the five tables it reads and writes, and put back on all five
+-- before COMMIT. ALTER TABLE holds each table's ACCESS EXCLUSIVE lock to the end
+-- of the transaction, so no other session ever sees FORCE lifted, and a failure
+-- anywhere rolls the lift back with everything else. ENABLE and the tenant
+-- policies are not touched.
 
 BEGIN;
 
 SET LOCAL row_security = off;
+
+ALTER TABLE vehicle_registrations NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE visits NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE enrolments NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE garages NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE passes NO FORCE ROW LEVEL SECURITY;
 
 DO $$
 DECLARE
@@ -107,5 +122,11 @@ ALTER TABLE enrolments
     plate IS NULL OR (length(plate) > 0 AND plate = upper(plate)
                       AND plate !~ '[[:space:].OI-]')
   );
+
+ALTER TABLE vehicle_registrations FORCE ROW LEVEL SECURITY;
+ALTER TABLE visits FORCE ROW LEVEL SECURITY;
+ALTER TABLE enrolments FORCE ROW LEVEL SECURITY;
+ALTER TABLE garages FORCE ROW LEVEL SECURITY;
+ALTER TABLE passes FORCE ROW LEVEL SECURITY;
 
 COMMIT;

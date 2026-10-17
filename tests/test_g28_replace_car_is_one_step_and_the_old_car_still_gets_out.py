@@ -243,9 +243,10 @@ def test_after_replace_car_an_expired_qr_of_the_same_car_does_not_let_it_in(app,
     """The car held two QRs on the pass, one stay after the other (June 1 to 3,
     then June 4 to 6), and the desk replaced it from the second on June 5. The
     first QR's own days are over: it keeps the car entering neither by its
-    plate nor by itself, and the car still leaves on the pass. Measured before
-    this: the expired QR still counted as live, so the plate was covered at
-    the entry, and the QR itself was recognised there -- two cars on one
+    plate nor by itself -- shown at the entry it is answered not covered,
+    EXIT_ONLY, as the plate is -- and the car still leaves on the pass.
+    Measured before this: the expired QR still counted as live, so the plate
+    was covered at the entry, and so was the QR itself -- two cars on one
     pass."""
     from enrolment_harness import issue_plate
     from garage_pass.passes import State
@@ -264,12 +265,46 @@ def test_after_replace_car_an_expired_qr_of_the_same_car_does_not_let_it_in(app,
         by_plate.detail)
     shown = redeem(app, tenant_id, TRANSIENT_ENTRY, first, "CAR-OLD", direction=Direction.ENTRY,
                    at=when)
-    assert not shown.recognised and shown.refusal is not None, "the expired QR opened the entry"
-    assert shown.refusal.code == f.REFUSAL_CREDENTIAL_STAY_ENDED, shown.refusal
-    assert shown.answer.outcome is not Outcome.COVERED
+    assert shown.answer.outcome is Outcome.NOT_COVERED, "the expired QR covered the entry"
+    assert shown.answer.reason == f.EXIT_ONLY, shown.answer.detail
     leaving = access_from_store(app, tenant_id, TRANSIENT_ENTRY.id, "CAR-OLD", "L1",
                                 Direction.EXIT, when)
     assert leaving.outcome is Outcome.COVERED, leaving.detail
+
+
+@pytest.mark.guarantee("G28")
+def test_after_replace_car_a_later_qr_of_the_same_car_does_not_let_it_in_before_its_stay(
+    app, tenant_id
+):
+    """Consecutive QRs for one plate, then replace-car on the EARLIER one: the
+    car holds qr-1 (June 1 to 5) and qr-later (June 10 to 12) on the pass, and
+    the desk replaces it from qr-1 on June 3. On June 4 the car is exit only:
+    its plate is not covered at the entry, EXIT_ONLY, and it still leaves on
+    the pass. qr-later is the car's own later stay: from June 10 the plate is
+    covered on it. Measured before this: an issued QR counted as live before
+    its first day, so on June 4 the replaced car was still covered at the
+    entry by its plate -- two cars on one pass."""
+    from enrolment_harness import issue_plate
+    from garage_pass.passes import State
+
+    pass_ = seeded(app, tenant_id, TRANSIENT_ENTRY, state=State.ACTIVE)
+    issue_plate(app, tenant_id, TRANSIENT_ENTRY, pass_, "CAR-OLD", "qr-1",
+                starts_on=date(2026, 6, 1), days_valid=5)
+    issue_plate(app, tenant_id, TRANSIENT_ENTRY, pass_, "CAR-OLD", "qr-later",
+                starts_on=date(2026, 6, 10), days_valid=3)
+    replaced(app, tenant_id, TRANSIENT_ENTRY, old="qr-1", new="qr-2",
+             at_=at(date(2026, 6, 3), 9))
+    when = at(date(2026, 6, 4), 12)
+    by_plate = access_from_store(app, tenant_id, TRANSIENT_ENTRY.id, "CAR-OLD", "L1",
+                                 Direction.ENTRY, when)
+    assert by_plate.outcome is Outcome.NOT_COVERED and by_plate.reason == f.EXIT_ONLY, (
+        "the replaced car entered on a QR whose stay had not begun: " + by_plate.detail)
+    leaving = access_from_store(app, tenant_id, TRANSIENT_ENTRY.id, "CAR-OLD", "L1",
+                                Direction.EXIT, when)
+    assert leaving.outcome is Outcome.COVERED, leaving.detail
+    later = access_from_store(app, tenant_id, TRANSIENT_ENTRY.id, "CAR-OLD", "L1",
+                              Direction.ENTRY, at(date(2026, 6, 10), 9))
+    assert later.outcome is Outcome.COVERED and later.pass_id == pass_.id, later.detail
 
 
 @pytest.mark.guarantee("G28")

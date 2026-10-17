@@ -186,9 +186,9 @@ who and why) ends every car of the pass on that day, at every garage. On the
 day a stay ended early or turned over, its QR is refused
 `REFUSAL_CREDENTIAL_EXIT_ONLY` at an entry and lets the car out at an exit, on
 its own pass — and on the day a stay ended early, the car read by its plate at
-an exit is let out on that pass the same way; after that day, and after the
-QR's own last day, it is refused `REFUSAL_CREDENTIAL_STAY_ENDED` at either end,
-and before its stay begins `REFUSAL_CREDENTIAL_NOT_STARTED`.
+an exit is let out on that pass the same way; after that day the QR is refused
+`REFUSAL_CREDENTIAL_STAY_ENDED` at either end, and before its stay begins
+`REFUSAL_CREDENTIAL_NOT_STARTED`.
 **Nothing carries over**: a plate read, a QR and a picture match for the next
 stay answer on the next stay's pass, never the earlier one. A shorter stay is
 `end-registration` (to an earlier day) or `end-stay`.
@@ -203,9 +203,10 @@ identity alone is answered the same way (not covered for an entry, reason
 at the replacement: `--entered-at` states when the stay that is leaving entered,
 and a stay that entered after the replacement is not covered (`EXIT_ONLY`);
 with no entry instant the exit is covered and the replacement is named in
-`unmeasured`. A QR of the car whose own last day has passed no longer keeps the
-replaced car entering. A QR that never bound has no car inside and
-is cancelled instead. All of it or none of it. **Cancelling one QR**
+`unmeasured`. A QR of the car whose own last day has passed, or whose first day
+has not come, no longer keeps the replaced car entering. A QR that never bound
+has no car inside and is cancelled instead. All of it or none of it.
+**Cancelling one QR**
 (`cancel-code`) cancels that QR alone, bound or not — the pass, its other QRs
 and its registrations stay as they were (a car the QR had bound stays on the
 pass; ending the car is `end-registration`) — and a fresh QR is issued with

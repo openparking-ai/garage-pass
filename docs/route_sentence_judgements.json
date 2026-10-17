@@ -582,10 +582,10 @@
   "why": "records.vehicle_key (plate_key) on register_vehicle, end_registration, record_entry/exit; registrations_of looks up plate_key(identity); access() and _open_visit compare plate_key both sides; migration 0006 CHECKs. G31 test_a_plate_read_with_no_qr_meets_the_registration_in_the_one_normal_form."
  },
  {
-  "sentence": "On the day a stay ended early or turned over, its QR is refused EXIT ONLY at an entry and lets the car out at an exit, answered on its own pass -- and on the day a stay ended early, the car read by its plate at an exit is let out on that pass the same way, where no other stay holds it that day; after that day, and after the QR's own last day whatever later QR of the car the pass holds, it is refused STAY ENDED at either end, and before its stay begins NOT STARTED.",
+  "sentence": "On the day a stay ended early or turned over, its QR is refused EXIT ONLY at an entry and lets the car out at an exit, answered on its own pass -- and on the day a stay ended early, the car read by its plate at an exit is let out on that pass the same way, where no other stay holds it that day; after that day the QR is refused STAY ENDED at either end, and before its stay begins NOT STARTED.",
   "file": "tests/_guarantees.py",
   "verdict": "TRUE",
-  "why": "_stay_of + _refuse_outside_the_stay: STAY_LAST_DAY entry -> EXIT_ONLY, exit -> answer_on_the_stays_last_day on the QR's pass; STAY_ENDED -> REFUSAL_CREDENTIAL_STAY_ENDED; STAY_NOT_STARTED -> NOT_STARTED. G32 checks 1, 3, 4; the plate on an early-checkout day and the QR's own last day: measured in G32's tests"
+  "why": "_stay_of + _refuse_outside_the_stay: STAY_LAST_DAY entry -> EXIT_ONLY, exit -> answer_on_the_stays_last_day on the QR's pass; STAY_ENDED -> REFUSAL_CREDENTIAL_STAY_ENDED; STAY_NOT_STARTED -> NOT_STARTED. G32 checks 1, 3, 4; the plate on an early-checkout day: store/access.answer_in_transaction + stays_checked_out_on, measured in G32's test_on_the_day_a_stay_ended_early_the_plate_lets_the_car_out_as_its_qr_does"
  },
  {
   "sentence": "Registrations and visits are stored in that form (migrations 0006 and 0007 make the database refuse any other).",
