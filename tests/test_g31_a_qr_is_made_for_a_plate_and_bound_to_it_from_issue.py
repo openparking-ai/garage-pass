@@ -790,18 +790,21 @@ def _row_security(owner) -> dict:
 
 
 @pytest.mark.guarantee("G31")
-def test_0007_applies_as_the_tables_plain_owner_and_puts_force_back(at_0006, tenant_id):
+@pytest.mark.parametrize("unforced", [None, "passes"], ids=["all forced", "passes not forced"])
+def test_0007_applies_as_the_tables_plain_owner_and_puts_force_back(at_0006, tenant_id,
+                                                                     unforced):
     """The install step applies every migration as the database OWNER, and
     that owner need not be a superuser or have BYPASSRLS. Every table 0007
     reads and writes FORCEs row-level security, which binds the owner too, so
-    0007 lifts FORCE for its own transaction and puts it back before COMMIT.
-    Applied here by the tables' own owner -- a plain role, neither superuser
-    nor BYPASSRLS -- it re-keys the rows, and afterwards row-level security on
-    every table is exactly as it was. Measured before this: that owner was
-    stopped at the first read, "query would be affected by row-level security
-    policy for table vehicle_registrations", on any rows or none. The suite
-    applies migrations as a superuser, which RLS never binds, so nothing else
-    here could see it."""
+    0007 lifts FORCE for its own transaction and puts it back before COMMIT --
+    on exactly the tables that had it: a table found without FORCE is left
+    without it. Applied here by the tables' own owner -- a plain role, neither
+    superuser nor BYPASSRLS -- it re-keys the rows, and afterwards row-level
+    security on every table is exactly as it was. Measured before this: that
+    owner was stopped at the first read, "query would be affected by
+    row-level security policy for table vehicle_registrations", on any rows
+    or none. The suite applies migrations as a superuser, which RLS never
+    binds, so nothing else here could see it."""
     from uuid import uuid4
 
     from psycopg import sql
@@ -812,8 +815,11 @@ def test_0007_applies_as_the_tables_plain_owner_and_puts_force_back(at_0006, ten
     tenant_id = new_tenant(owner)
     _rows_at_0006(owner, tenant_id, registrations=[("p-1", "GO4IT", date(2026, 6, 1), None)],
                   visits=[("p-1", "GO4IT")], plates=["GO4IT"])
+    if unforced is not None:
+        with owner.cursor() as cursor:
+            cursor.execute(f"ALTER TABLE {unforced} NO FORCE ROW LEVEL SECURITY")
     before = _row_security(owner)
-    assert all(before[table] == (True, True) for table in _0007_TABLES), before
+    assert all(before[table] == (True, table != unforced) for table in _0007_TABLES), before
     role = sql.Identifier(f"garage_pass_plain_owner_{uuid4().hex[:8]}")
     with owner.cursor() as cursor:
         cursor.execute(sql.SQL("CREATE ROLE {} NOLOGIN NOSUPERUSER NOBYPASSRLS").format(role))

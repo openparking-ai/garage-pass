@@ -2809,25 +2809,26 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
     ),
     "G31/0007-owner-bound": (
         G31, "migrations/0007_plate_key_folds_o_and_i.sql",
-        "ALTER TABLE vehicle_registrations NO FORCE ROW LEVEL SECURITY;\n"
-        "ALTER TABLE visits NO FORCE ROW LEVEL SECURITY;\n"
-        "ALTER TABLE enrolments NO FORCE ROW LEVEL SECURITY;\n"
-        "ALTER TABLE garages NO FORCE ROW LEVEL SECURITY;\n"
-        "ALTER TABLE passes NO FORCE ROW LEVEL SECURITY;\n",
-        "-- PLANTED: FORCE is not lifted\n",
+        "    EXECUTE format('ALTER TABLE %I NO FORCE ROW LEVEL SECURITY', t);\n",
+        "    NULL;  -- PLANTED: FORCE is not lifted\n",
         "0007 applied by the tables' owner, as the install step applies it, is stopped by "
         "row-level security unless that owner is a superuser or BYPASSRLS",
     ),
     "G31/0007-force-left-off": (
         G31, "migrations/0007_plate_key_folds_o_and_i.sql",
-        "ALTER TABLE vehicle_registrations FORCE ROW LEVEL SECURITY;\n"
-        "ALTER TABLE visits FORCE ROW LEVEL SECURITY;\n"
-        "ALTER TABLE enrolments FORCE ROW LEVEL SECURITY;\n"
-        "ALTER TABLE garages FORCE ROW LEVEL SECURITY;\n"
-        "ALTER TABLE passes FORCE ROW LEVEL SECURITY;\n",
-        "-- PLANTED: FORCE is not put back\n",
-        "0007 leaves FORCE ROW LEVEL SECURITY off its five tables, so their owner reads "
-        "every tenant's rows",
+        "    EXECUTE format('ALTER TABLE %I FORCE ROW LEVEL SECURITY', t);\n",
+        "    NULL;  -- PLANTED: FORCE is not put back\n",
+        "0007 leaves FORCE ROW LEVEL SECURITY off the tables it lifted it from, so their owner "
+        "reads every tenant's rows",
+    ),
+    "G31/0007-forces-what-it-did-not-find": (
+        G31, "migrations/0007_plate_key_folds_o_and_i.sql",
+        "  FOREACH t IN ARRAY string_to_array(current_setting("
+        "'garage_pass.migration_0007_forced'), ',')\n",
+        "  FOREACH t IN ARRAY ARRAY['enrolments', 'garages', 'passes', 'vehicle_registrations', "
+        "'visits']  -- PLANTED: FORCE on all five\n",
+        "0007 puts FORCE on a table that did not have it, so the catalogue after it is not the "
+        "one it found (and 0001's own FORCE can no longer be seen missing)",
     ),
     "G10/password-sent": (
         G10, "scripts/ensure-app-role.py",

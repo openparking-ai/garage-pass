@@ -33,21 +33,33 @@
 -- FORCE binds the tables' OWNER too, and the owner this is run as need not be a
 -- superuser or BYPASSRLS: with FORCE on, such an owner is a role RLS applies to,
 -- and the first read below would stop it. So for this transaction only, FORCE
--- is lifted on the five tables it reads and writes, and put back on all five
--- before COMMIT. ALTER TABLE holds each table's ACCESS EXCLUSIVE lock to the end
--- of the transaction, so no other session ever sees FORCE lifted, and a failure
--- anywhere rolls the lift back with everything else. ENABLE and the tenant
--- policies are not touched.
+-- is lifted on each of the five tables it reads and writes that has it, and put
+-- back on exactly those before COMMIT -- the catalogue ends as it began. ALTER
+-- TABLE holds each table's ACCESS EXCLUSIVE lock to the end of the transaction,
+-- so no other session ever sees FORCE lifted, and a failure anywhere rolls the
+-- lift back with everything else. ENABLE and the tenant policies are not
+-- touched.
 
 BEGIN;
 
 SET LOCAL row_security = off;
 
-ALTER TABLE vehicle_registrations NO FORCE ROW LEVEL SECURITY;
-ALTER TABLE visits NO FORCE ROW LEVEL SECURITY;
-ALTER TABLE enrolments NO FORCE ROW LEVEL SECURITY;
-ALTER TABLE garages NO FORCE ROW LEVEL SECURITY;
-ALTER TABLE passes NO FORCE ROW LEVEL SECURITY;
+DO $$
+DECLARE
+  forced text[];
+  t text;
+BEGIN
+  SELECT coalesce(array_agg(name ORDER BY name), '{}') INTO forced
+    FROM unnest(ARRAY['enrolments', 'garages', 'passes', 'vehicle_registrations',
+                      'visits']) AS name
+    JOIN pg_class c ON c.oid = to_regclass(name)
+   WHERE c.relforcerowsecurity;
+  FOREACH t IN ARRAY forced LOOP
+    EXECUTE format('ALTER TABLE %I NO FORCE ROW LEVEL SECURITY', t);
+  END LOOP;
+  PERFORM set_config('garage_pass.migration_0007_forced', array_to_string(forced, ','), true);
+END
+$$;
 
 DO $$
 DECLARE
@@ -123,10 +135,15 @@ ALTER TABLE enrolments
                       AND plate !~ '[[:space:].OI-]')
   );
 
-ALTER TABLE vehicle_registrations FORCE ROW LEVEL SECURITY;
-ALTER TABLE visits FORCE ROW LEVEL SECURITY;
-ALTER TABLE enrolments FORCE ROW LEVEL SECURITY;
-ALTER TABLE garages FORCE ROW LEVEL SECURITY;
-ALTER TABLE passes FORCE ROW LEVEL SECURITY;
+DO $$
+DECLARE
+  t text;
+BEGIN
+  FOREACH t IN ARRAY string_to_array(current_setting('garage_pass.migration_0007_forced'), ',')
+  LOOP
+    EXECUTE format('ALTER TABLE %I FORCE ROW LEVEL SECURITY', t);
+  END LOOP;
+END
+$$;
 
 COMMIT;
