@@ -2566,7 +2566,7 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
         "        issued = issue_enrolment(\n"
         "            cursor, tenant_uuid, garage_external_id, code.pass_id, new_id, starts_on,\n",
         "        if _held_by_this_pass(cursor, tenant_uuid, code.pass_id, plate_key(plate), "
-        "starts_on):  # PLANTED\n"
+        "starts_on)[1]:  # PLANTED\n"
         "            raise Refused(REFUSAL_PASS_NOT_REGISTRABLE, \"plate\", \"PLANTED\")\n"
         "        issued = issue_enrolment(\n"
         "            cursor, tenant_uuid, garage_external_id, code.pass_id, new_id, starts_on,\n",
