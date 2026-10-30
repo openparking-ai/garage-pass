@@ -2668,9 +2668,18 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
     ),
     "G33/one-difference-refused": (
         G33, "enrolment.py",
-        "    if within_one_difference(seen, made_for):\n",
+        "    if len(made_for) >= ONE_DIFFERENCE_MIN_LENGTH and within_one_difference(seen, "
+        "made_for):\n",
         "    if False:  # PLANTED: one difference is a clearly different car\n",
         "a read one character from the QR's plate is a case for a person instead of a pass",
+    ),
+    "G33/short-plate-one-difference": (
+        G33, "enrolment.py",
+        "    if len(made_for) >= ONE_DIFFERENCE_MIN_LENGTH and within_one_difference(seen, "
+        "made_for):\n",
+        "    if within_one_difference(seen, made_for):  # PLANTED: any length\n",
+        "a four-character plate one character off opens the gate: on a short plate one "
+        "difference is a different car",
     ),
     "G33/two-differences-pass": (
         G33, "enrolment.py",

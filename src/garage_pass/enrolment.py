@@ -168,6 +168,12 @@ def _unseparated(text: str) -> str:
 LOOK_ALIKE_GROUPS = ("0OQD", "1IL", "8B", "5S", "2Z", "6G")
 _LOOK_ALIKE = str.maketrans({ch: group[0] for group in LOOK_ALIKE_GROUPS for ch in group[1:]})
 
+#: The shortest plate -- the QR's, folded -- that one difference may pass for
+#: (the owner's decision, 2026-10-30). On a shorter plate one character is too
+#: large a share of it: such a plate passes on the same plate, a look-alike or
+#: nothing read, and one difference is a clearly different car.
+ONE_DIFFERENCE_MIN_LENGTH = 5
+
 
 def look_alike_key(text: str) -> str:
     """A plate in ``plate_key`` form with every look-alike read as one
@@ -212,7 +218,8 @@ def similar_enough(read: str | None, plate: str) -> str | None:
       * the same plate in ``plate_key`` form: ``same_plate``;
       * the same once every look-alike is one character: ``look_alike``;
       * one character substituted, inserted or deleted after that:
-        ``one_difference``;
+        ``one_difference`` -- on a QR plate of ``ONE_DIFFERENCE_MIN_LENGTH``
+        characters or more, folded; a shorter plate is clearly different;
       * two differences or more: None -- the gate stays shut on this QR and
         the car is a case for a person (``match_required``).
 
@@ -225,7 +232,7 @@ def similar_enough(read: str | None, plate: str) -> str | None:
     seen, made_for = look_alike_key(read), look_alike_key(plate)
     if seen == made_for:
         return PASSED_LOOK_ALIKE
-    if within_one_difference(seen, made_for):
+    if len(made_for) >= ONE_DIFFERENCE_MIN_LENGTH and within_one_difference(seen, made_for):
         return PASSED_ONE_DIFFERENCE
     return None
 

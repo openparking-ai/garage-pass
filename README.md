@@ -151,9 +151,12 @@ for its car when the lane read the plate itself, the plate once look-alike
 characters are one (O, 0, Q and D; I, 1 and L; B and 8; S and 5; Z and 2; G
 and 6 — one table, `LOOK_ALIKE_GROUPS`, used for the QR and never for
 a plate kept in the store), a plate one character from it after that (one substituted, inserted
-or deleted), or nothing usable — the lane hands in nothing when it read no
-plate or one below its confidence. The answer says which (`passed_by`), and it
-carries the QR's plate (`qr_plate`) so the lane checks its owner's deny rule
+or deleted) where the QR's plate, folded, has five characters or more
+(`ONE_DIFFERENCE_MIN_LENGTH`; a shorter plate passes on the plate, a look-alike
+or nothing read, and one difference is clearly different), or nothing usable —
+the lane hands in nothing when it read no plate or one below its confidence.
+The answer says which (`passed_by`), beside the QR's own id (`enrolment`) so the
+stay can be tied to the QR, and it carries the QR's plate (`qr_plate`) so the lane checks its owner's deny rule
 against the car it lets in. A pass by one difference or by nothing read is
 kept on the QR's record with its time, lane, direction and what was read. A
 **clearly different** read — two characters or more — opens nothing on the QR:

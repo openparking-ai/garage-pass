@@ -7,7 +7,8 @@ read is:
       Z/2, G/6 -- ``enrolment.LOOK_ALIKE_GROUPS``, the one table, extending
       ``plate_key``'s O and I);
   (b) one character from it after that (a substitution, an insertion or a
-      deletion);
+      deletion), on a QR plate of five characters or more, folded
+      (``ONE_DIFFERENCE_MIN_LENGTH``); a shorter plate is clearly different;
   (c) nothing usable (the lane hands in nothing for no plate, or a plate below
       its confidence).
 
@@ -20,7 +21,8 @@ cancelled, outside its stay and exit-only are refused first. The stored form
 (``plate_key``) is unchanged, and a QR stored before plates were required keeps
 its exact first-use binding.
 
-Controls: the look-alikes not folded; one difference refused; two differences
+Controls: the look-alikes not folded; one difference refused; one difference
+passed on a short plate; two differences
 passed; an insertion or deletion not one difference; nothing read kept shut;
 a pass not kept; the QR's plate left off the answer; the stored form widened;
 a QR with no plate widened too.
@@ -44,8 +46,10 @@ from enrolment_harness import (
 from fixtures import at
 from garage_pass import findings as f
 from garage_pass.access import Outcome
+from garage_pass.cli import _redemption
 from garage_pass.enrolment import (
     LOOK_ALIKE_GROUPS,
+    ONE_DIFFERENCE_MIN_LENGTH,
     PASSED_LOOK_ALIKE,
     PASSED_NOTHING_READ,
     PASSED_ONE_DIFFERENCE,
@@ -104,6 +108,19 @@ def made_for_a_plate(app, tenant_id, garage=TRANSIENT_ENTRY, plate=PLATE) -> str
 ], ids=repr)
 def test_the_one_decision_names_the_rule_that_passed_or_none(read, passed):
     assert similar_enough(read, PLATE) == passed
+
+
+@pytest.mark.guarantee("G33")
+@pytest.mark.parametrize(("plate", "read", "passed"), [
+    ("AB12", "AB13", None), ("AB12", "AB1", None), ("AB12", "AB123", None),
+    ("AB-12", "A8L2", PASSED_LOOK_ALIKE), ("AB12", "AB12", PASSED_SAME_PLATE),
+    ("AB12", None, PASSED_NOTHING_READ),
+    ("AB123", "AB124", PASSED_ONE_DIFFERENCE), ("AB123", "AB12", PASSED_ONE_DIFFERENCE),
+    ("AB-123", "AB1234", PASSED_ONE_DIFFERENCE),
+], ids=repr)
+def test_one_difference_needs_a_plate_of_five_characters_or_more(plate, read, passed):
+    assert ONE_DIFFERENCE_MIN_LENGTH == 5
+    assert similar_enough(read, plate) == passed
 
 
 @pytest.mark.guarantee("G33")
@@ -168,6 +185,35 @@ def test_one_difference_opens_and_is_kept_with_the_read(app, tenant_id, read):
     assert (kept["lane"], kept["direction"], kept["at"]) == ("L1", "entry", LATER.isoformat())
     [(row_plate,)] = query(app, tenant_id, "SELECT plate FROM enrolments")
     assert row_plate == "ABC123", "the QR's plate is on the same row as the read"
+
+
+@pytest.mark.guarantee("G33")
+def test_a_four_character_plate_one_character_off_is_a_case_for_a_person(app, tenant_id):
+    token = made_for_a_plate(app, tenant_id, plate="AB-12")
+    out = redeem(app, tenant_id, TRANSIENT_ENTRY, token, "AB13", direction=Direction.ENTRY,
+                 at=LATER)
+    assert out.match_required and not out.recognised and out.passed_by is None
+    assert out.answer.outcome is not Outcome.COVERED and matches(app, tenant_id) == []
+    same = redeem(app, tenant_id, TRANSIENT_ENTRY, token, "A8-L2", direction=Direction.ENTRY,
+                  at=LATER)
+    assert same.recognised and same.passed_by == PASSED_LOOK_ALIKE, "the control: a look-alike"
+
+
+@pytest.mark.guarantee("G33")
+def test_a_five_character_plate_one_character_off_passes_and_names_the_qr(app, tenant_id):
+    token = made_for_a_plate(app, tenant_id, plate="AB-123")
+    out = redeem(app, tenant_id, TRANSIENT_ENTRY, token, "AB124", direction=Direction.ENTRY,
+                 at=LATER)
+    assert out.recognised and out.passed_by == PASSED_ONE_DIFFERENCE
+    assert out.answer.outcome is Outcome.COVERED
+    # THE LANE IS TOLD WHICH QR, BESIDE HOW IT PASSED: the enrolment's id is on
+    # the same half of the answer the platform relays, so a stay can be tied
+    # to the QR (the platform's exit work)
+    told = _redemption(out)["enrolment"]
+    assert (told["enrolment"], told["passed_by"], told["qr_plate"]) == (
+        "qr-1", PASSED_ONE_DIFFERENCE, "AB123")
+    [kept] = matches(app, tenant_id)
+    assert kept["identity_read"] == "AB124"
 
 
 @pytest.mark.guarantee("G33")
@@ -261,10 +307,12 @@ def test_a_qr_after_its_stay_is_refused_whatever_was_read(app, tenant_id):
 def test_a_qr_with_no_plate_keeps_its_exact_first_use_binding(app, tenant_id):
     pass_ = seeded(app, tenant_id, TRANSIENT_ENTRY)
     token = issue(app, tenant_id, TRANSIENT_ENTRY, pass_)["token"]
-    assert redeem(app, tenant_id, TRANSIENT_ENTRY, token, "CAR-1", at=LATER).redeemed
-    same = redeem(app, tenant_id, TRANSIENT_ENTRY, token, "CAR-1", at=LATER)
-    assert same.recognised and same.passed_by == PASSED_SAME_PLATE and same.qr_plate == "CAR1"
-    near = redeem(app, tenant_id, TRANSIENT_ENTRY, token, "CAR-2", at=LATER)
+    # long enough that one difference WOULD pass on a QR made for a plate
+    assert redeem(app, tenant_id, TRANSIENT_ENTRY, token, "CARX-10", at=LATER).redeemed
+    same = redeem(app, tenant_id, TRANSIENT_ENTRY, token, "CARX-10", at=LATER)
+    assert same.recognised and same.passed_by == PASSED_SAME_PLATE and same.qr_plate == "CARX10"
+    assert similar_enough("CARX-11", "CARX-10") == PASSED_ONE_DIFFERENCE
+    near = redeem(app, tenant_id, TRANSIENT_ENTRY, token, "CARX-11", at=LATER)
     assert near.refusal is not None and near.refusal.code == f.REFUSAL_CREDENTIAL_WRONG_CAR
     unread = redeem(app, tenant_id, TRANSIENT_ENTRY, token, "", at=LATER)
     assert unread.match_required and not unread.recognised
