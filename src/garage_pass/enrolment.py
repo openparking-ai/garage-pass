@@ -37,10 +37,14 @@ day"); it is documented, never defaulted: ``days_valid`` is STATED, and
 **ONE QR PER CAR, AND IT KEEPS WORKING FOR THAT CAR.** A redeemed enrolment
 is BOUND to exactly one vehicle identity, the one the lane measured at its
 first use. Shown again by that car it answers for that car, in and out, for as
-long as the pass covers it. Shown where the lane read no identity at all it
-opens nothing on its own: a picture match decides (``confirm_match``). Shown
-by a different car it is refused by name
-(wrong car), never "already used". Several outstanding enrolments on one pass
+long as the pass covers it. **SIMILAR ENOUGH GETS A PASS** (the owner's rule,
+2026-10-30, ``similar_enough``): the lane's read is that car when it is the
+plate once look-alike characters are one (``LOOK_ALIKE_GROUPS``), when it
+differs by one character after that, or when nothing usable was read. A
+clearly different read -- two differences or more -- opens nothing on its
+own: a picture match or a person decides (``confirm_match``); on a QR stored
+before plates were required it is refused by name (wrong car), never
+"already used". Several outstanding enrolments on one pass
 are allowed and intended -- a pass may carry several vehicles -- and each binds
 one car. Nobody should build a one-outstanding-per-pass rule: his pooling
 forbids it. A bound QR whose car was replaced on the pass is EXIT ONLY: it
@@ -151,6 +155,86 @@ def plate_key(text: str) -> str:
 
 def _unseparated(text: str) -> str:
     return "".join(ch for ch in text.upper() if not _not_part_of_a_plate(ch))
+
+
+#: THE LOOK-ALIKES, ONE TABLE: the characters a plate reader confuses, each
+#: group read as its first character when a lane's read is compared with the
+#: plate a QR was made for. The first two groups EXTEND ``_READ_AS_DIGITS`` (O
+#: as 0, I as 1, which ``plate_key`` already does); Q and D join O, L joins I,
+#: and B/8, S/5, Z/2 and G/6 are new. ``plate_key`` -- the form every plate is
+#: STORED and registered in -- keeps only O and I: widening it would make
+#: ABC5 and ABCS one car for one-car-one-pass and for every register a lane
+#: holds. Read only by ``look_alike_key``, for the QR at the lane.
+LOOK_ALIKE_GROUPS = ("0OQD", "1IL", "8B", "5S", "2Z", "6G")
+_LOOK_ALIKE = str.maketrans({ch: group[0] for group in LOOK_ALIKE_GROUPS for ch in group[1:]})
+
+#: The shortest plate -- the QR's, folded -- that one difference may pass for
+#: (the owner's decision, 2026-10-30). On a shorter plate one character is too
+#: large a share of it: such a plate passes on the same plate, a look-alike or
+#: nothing read, and one difference is a clearly different car.
+ONE_DIFFERENCE_MIN_LENGTH = 5
+
+
+def look_alike_key(text: str) -> str:
+    """A plate in ``plate_key`` form with every look-alike read as one
+    character (``LOOK_ALIKE_GROUPS``): 'A8C-123', 'ABC 123' and 'A8CI23' are
+    one key. For comparing a lane's read with a QR's plate, never for
+    storing."""
+    return plate_key(text).translate(_LOOK_ALIKE)
+
+
+def within_one_difference(a: str, b: str) -> bool:
+    """Whether ``b`` is ``a`` with at most one character substituted, inserted
+    or deleted (an edit distance of one or none)."""
+    if abs(len(a) - len(b)) > 1:
+        return False
+    if len(a) == len(b):
+        return sum(x != y for x, y in zip(a, b, strict=True)) <= 1
+    shorter, longer = (a, b) if len(a) < len(b) else (b, a)
+    for i in range(len(shorter)):
+        if shorter[i] != longer[i]:
+            return shorter[i:] == longer[i + 1:]
+    return True
+
+
+#: How a lane's read passes for the plate a QR was made for -- the owner's rule
+#: of 2026-10-30, "similar enough gets a pass" (``similar_enough``).
+PASSED_SAME_PLATE = "same_plate"
+PASSED_LOOK_ALIKE = "look_alike"
+PASSED_ONE_DIFFERENCE = "one_difference"
+PASSED_NOTHING_READ = "nothing_read"
+#: The passes that are RECORDED on the QR's own row: the read was not the
+#: plate, and the QR opened anyway.
+RECORDED_PASSES = frozenset({PASSED_ONE_DIFFERENCE, PASSED_NOTHING_READ})
+
+
+def similar_enough(read: str | None, plate: str) -> str | None:
+    """THE ONE DECISION on whether the car at the lane is the QR's car, from
+    what the lane read and the plate the QR was made for. Which rule passed,
+    or None for a CLEARLY DIFFERENT plate:
+
+      * nothing usable read -- no plate, or one below the lane's confidence,
+        which the lane hands in as nothing -- ``nothing_read``;
+      * the same plate in ``plate_key`` form: ``same_plate``;
+      * the same once every look-alike is one character: ``look_alike``;
+      * one character substituted, inserted or deleted after that:
+        ``one_difference`` -- on a QR plate of ``ONE_DIFFERENCE_MIN_LENGTH``
+        characters or more, folded; a shorter plate is clearly different;
+      * two differences or more: None -- the gate stays shut on this QR and
+        the car is a case for a person (``match_required``).
+
+    The owner's own deny rule for a plate is the lane's, and the lane checks
+    it before it opens on any of these."""
+    if read is None or not plate_key(read):
+        return PASSED_NOTHING_READ
+    if plate_key(read) == plate_key(plate):
+        return PASSED_SAME_PLATE
+    seen, made_for = look_alike_key(read), look_alike_key(plate)
+    if seen == made_for:
+        return PASSED_LOOK_ALIKE
+    if len(made_for) >= ONE_DIFFERENCE_MIN_LENGTH and within_one_difference(seen, made_for):
+        return PASSED_ONE_DIFFERENCE
+    return None
 
 
 def register_hash(token_sha256: str) -> str:
