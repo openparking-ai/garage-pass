@@ -5,9 +5,11 @@ replace-car, the holder's own link): without it, refused by name and nothing
 minted. Plates are compared in ONE normal form on both sides -- capitals, no
 space, dash or dot -- so "abc-123" typed and "ABC 123" read are one car. Against
 the plate -- which SUPPORTS the picture match and never refuses on its own: the
-same plate is RECOGNISED; anything else -- nothing read, part of it, a misread,
-another plate -- is a PICTURE MATCH carrying the registered plate and what was
-read, and only the match's own "no" is WRONG CAR. A new QR is bound from issue --
+same plate is RECOGNISED; a read similar enough to it, or nothing usable read,
+passes too (G33 proves that rule whole); a CLEARLY DIFFERENT read -- two
+characters or more from the plate after look-alikes, part of it, another plate
+-- is a PICTURE MATCH carrying the registered plate and what was read, and only
+the match's own "no" is WRONG CAR. A new QR is bound from issue --
 its plate is
 registered on the pass when it is made, its first use binds nothing new, and the
 register shows the plate before any use. A QR stored before plates were required
@@ -112,11 +114,13 @@ def test_typed_one_way_and_read_another_is_the_same_car_recognised_at_either_end
 
 
 @pytest.mark.guarantee("G31")
-@pytest.mark.parametrize("read", ["ABC1Z3", "A8C123", "XYZ789", "ABC12", "AB", "", "   "])
-def test_any_read_but_the_plate_asks_for_a_match_and_never_refuses(app, tenant_id, read):
-    """CHECK 1. A misread, part of the plate, another plate or nothing at all:
-    each a picture match against the registered plate, carrying what was read,
-    never wrong car; nothing opens and nothing is written."""
+@pytest.mark.parametrize("read", ["AXC1Y3", "XYZ789", "ABC", "AB"])
+def test_a_clearly_different_read_asks_for_a_match_and_never_refuses(app, tenant_id, read):
+    """CHECK 1, under the owner's rule of 2026-10-30. A read two characters or
+    more from the plate after look-alikes -- a misread of two, part of the
+    plate, another plate: each a picture match against the registered plate,
+    carrying what was read, never wrong car; nothing opens and nothing is
+    written. (A look-alike, one difference and nothing read pass: G33.)"""
     pass_ = seeded(app, tenant_id, TRANSIENT_ENTRY)
     token = issue_plate(app, tenant_id, TRANSIENT_ENTRY, pass_, "ABC123")["token"]
     before = written(app, tenant_id)
@@ -124,13 +128,14 @@ def test_any_read_but_the_plate_asks_for_a_match_and_never_refuses(app, tenant_i
         out = redeem(app, tenant_id, TRANSIENT_ENTRY, token, read, direction=direction, at=LATER)
         assert out.match_required and out.refusal is None, out.refusal
         assert not out.recognised and not out.redeemed
-        assert out.match_for == "ABC123" and out.match_read == (read.strip() or None)
+        assert out.match_for == "ABC123" and out.match_read == read
+        assert out.qr_plate == "ABC123" and out.passed_by is None
         assert out.answer.outcome is not Outcome.COVERED
     assert written(app, tenant_id) == before
 
 
 @pytest.mark.guarantee("G31")
-@pytest.mark.parametrize("read", ["XYZ789", "ABC1Z3"])
+@pytest.mark.parametrize("read", ["XYZ789", "AXC1Y3"])
 def test_the_match_decides_no_is_wrong_car_and_yes_is_a_recognised_use(app, tenant_id, read):
     """CHECK 2. Only the picture match's own answer turns a different read into
     wrong car; a yes, whatever was read, is a recognised use, and both are kept."""
@@ -386,9 +391,9 @@ def test_another_plate_read_is_answered_on_its_own_pass_never_on_the_qr(app, ten
                  direction=Direction.ENTRY, at=LATER)
     assert out.match_required and not out.recognised and out.refusal is None
     assert out.answer.outcome is Outcome.COVERED and out.answer.pass_id == "pass-other"
-    unread = redeem(app, tenant_id, TRANSIENT_ENTRY, token, "", direction=Direction.ENTRY,
+    nobody = redeem(app, tenant_id, TRANSIENT_ENTRY, token, "QRS456", direction=Direction.ENTRY,
                     at=LATER)
-    assert unread.match_required and unread.answer.outcome is not Outcome.COVERED
+    assert nobody.match_required and nobody.answer.outcome is not Outcome.COVERED
 
 
 @pytest.mark.guarantee("G31")
@@ -475,7 +480,7 @@ def test_a_qr_for_a_car_the_pass_holds_on_a_longer_registration_answers_on_that_
     (register-vehicle), and then a QR is made for it from June 1 for three
     days. The pass keeps the ONE registration it holds, untouched, and the QR
     is answered on it while it is in force -- on June 10 it is recognised and
-    covered, and with the plate not read it asks for a picture match -- as it
+    covered, and with another plate read it asks for a picture match -- as it
     was before the run-on. The run-on lengthens a registration that ends
     sooner than the new QR; it never shortens what a QR answers for."""
     from garage_pass.passes import State
@@ -494,9 +499,9 @@ def test_a_qr_for_a_car_the_pass_holds_on_a_longer_registration_answers_on_that_
                    at=at(date(2026, 6, 10), 9))
     assert shown.recognised and shown.refusal is None, shown.refusal
     assert shown.answer.outcome is Outcome.COVERED, shown.answer.detail
-    unread = redeem(app, tenant_id, TRANSIENT_ENTRY, token, "", direction=Direction.EXIT,
-                    at=at(date(2026, 6, 10), 18))
-    assert unread.match_required and unread.refusal is None, unread.refusal
+    other = redeem(app, tenant_id, TRANSIENT_ENTRY, token, "XYZ789", direction=Direction.EXIT,
+                   at=at(date(2026, 6, 10), 18))
+    assert other.match_required and other.refusal is None, other.refusal
 
 
 def _turned_over_at_one_of_two_garages(app, tenant_id):

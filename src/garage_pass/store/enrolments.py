@@ -118,6 +118,8 @@ from zoneinfo import ZoneInfo
 from garage_pass.access import Answer
 from garage_pass.enrolment import (
     EXPIRED_CREDENTIAL,
+    PASSED_SAME_PLATE,
+    RECORDED_PASSES,
     Credential,
     CredentialState,
     MintedToken,
@@ -126,6 +128,7 @@ from garage_pass.enrolment import (
     mint,
     plate_key,
     require_days_valid,
+    similar_enough,
     token_of,
     where_enrolment_happens,
 )
@@ -203,25 +206,39 @@ class Redemption:
     #: The access answer for this same movement, from the module's own access
     #: path -- on the rows as written, or as they stood when refused.
     answer: Answer
-    #: True when an ALREADY-BOUND QR was shown by its own car -- read by the
-    #: lane, or confirmed by a picture match (``confirm_match``). The answer is
-    #: the access answer for that car. ``redeemed`` is False: nothing was bound
+    #: True when an ALREADY-BOUND QR was shown by its own car -- a read that is
+    #: similar enough to its plate, nothing usable read (``passed_by``), or a
+    #: car a picture match confirmed (``confirm_match``). The answer is the
+    #: access answer for that car. ``redeemed`` is False: nothing was bound
     #: now.
     recognised: bool = False
-    #: True when a BOUND QR was shown where the lane measured NO identity, or --
-    #: on a QR made for a plate -- read anything but that plate: the module
-    #: neither opens nor refuses ON THIS QR. The lane matches the car's
-    #: picture to the bound car's earlier ones and answers with
-    #: ``confirm_match``; until then nothing opens on this QR. The answer is
-    #: the access answer for what the lane read: nothing read opens nothing;
-    #: another plate read is that car's own answer -- a car with its own valid
-    #: pass is let through on that pass, never on this QR. Nothing written.
+    #: True when a BOUND QR was shown by a CLEARLY DIFFERENT car -- on a QR
+    #: made for a plate, the lane read a plate two characters or more from the
+    #: QR's, after look-alikes (``enrolment.similar_enough``); on a QR stored
+    #: before plates were required, the lane read nothing: the module neither
+    #: opens nor refuses ON THIS QR, and the car is a case for a person. The lane matches the car's
+    #: picture to the bound car's earlier ones, or a person looks, and answers
+    #: with ``confirm_match``; until then nothing opens on this QR. The answer
+    #: is the access answer for what the lane read: that car's own answer -- a
+    #: car with its own valid pass is let through on that pass, never on this
+    #: QR; nothing read opens nothing. Nothing written.
     match_required: bool = False
     #: The identity the QR is bound to, when a match is required: the car whose
     #: earlier pictures the lane matches against. None otherwise.
     match_for: str | None = None
     #: What the lane read, when a match is required: None when it read nothing.
     match_read: str | None = None
+    #: How the lane's read passed for the QR's plate, on a recognised use of a
+    #: bound QR (``enrolment.PASSED_*``): the same plate, a look-alike, one
+    #: difference, or nothing usable read. None on every other answer. A pass
+    #: by one difference or by nothing read is kept on the QR's own row
+    #: (``enrolments.matches``) with what was read, beside the QR's plate.
+    passed_by: str | None = None
+    #: The plate the QR answers for, in ``plate_key`` form, on every answer
+    #: about a bound QR: a car let in on the QR is that car, so the lane
+    #: checks its owner's deny rule against it before it opens. None before
+    #: a QR binds.
+    qr_plate: str | None = None
 
 
 def _require_day(value: object, field: str) -> date:
@@ -798,15 +815,21 @@ def _is_bound(cursor: Any, tenant_uuid: UUID, presented: str) -> bool:
 
 def _present_bound(
     enrolment: Credential, vehicle_identity: str, direction: Direction, tz: ZoneInfo,
-) -> bool:
+) -> str | None:
     """A BOUND QR shown again, judged on the row re-read under the locks. In
-    this order: cancelled; then, where the lane measured NO identity, an entry
-    on a replaced car is refused EXIT ONLY and anything else needs a PICTURE
-    MATCH -- the module neither opens nor refuses blind, it returns True and
-    the lane matches the car to the bound car's earlier pictures and answers
-    with ``confirm_match``; where it measured one, the identity must be the
-    one the QR is bound to, exact text, or it is refused WRONG CAR, and then
-    an entry on a replaced car is refused EXIT ONLY. It writes nothing."""
+    this order: cancelled; then the lane's read against the car; then an
+    entry on a replaced car is refused EXIT ONLY. Returns how the read passed
+    (``enrolment.PASSED_*``), or None when the module neither opens nor
+    refuses on this QR and the caller answers ``match_required``.
+
+    A QR MADE FOR A PLATE: ``similar_enough`` against that plate -- the same
+    plate, a look-alike, one difference, or nothing usable read (the lane
+    hands in nothing, or nothing but spaces) passes; a CLEARLY DIFFERENT
+    plate is None, a case for a person. A QR STORED BEFORE PLATES WERE
+    REQUIRED keeps its first-use binding exactly as it was: the identity it
+    bound, exact text, passes as the same plate; nothing read is None (a
+    picture match); any other identity is refused WRONG CAR. It writes
+    nothing."""
     assert enrolment.bound is not None
     if enrolment.state is CredentialState.CANCELLED:
         raise Refused(
@@ -815,28 +838,51 @@ def _present_bound(
             f"{local(enrolment.cancelled_at, tz).isoformat()}: {enrolment.cancelled_reason}.",
         )
     unread = isinstance(vehicle_identity, str) and not vehicle_identity.strip()
-    if not unread:
-        identity = require_text(vehicle_identity, "vehicle_identity")
-        if enrolment.plate is not None:
-            # A QR MADE FOR A PLATE: the plate SUPPORTS the match and never
-            # refuses on its own. The same plate, in the one normal form, is
-            # recognised; any other read -- part of it, a misread, another
-            # plate -- is a picture match against the registered plate, and
-            # only the match's own "no" (confirm_match) is wrong car
-            unread = plate_key(identity) != enrolment.plate
-        elif identity != enrolment.bound_identity:
-            raise Refused(
-                REFUSAL_CREDENTIAL_WRONG_CAR, "vehicle_identity",
-                f"{ENROLMENT} {enrolment.id!r} is bound to another car since "
-                f"{local(enrolment.redeemed_at, tz).isoformat()}.",
-            )
+    read = None if unread else require_text(vehicle_identity, "vehicle_identity")
+    if enrolment.plate is not None:
+        # THE OWNER'S RULE, 2026-10-30: similar enough gets a pass
+        passed_by = similar_enough(read, enrolment.plate)
+    elif read is None:
+        passed_by = None  # a QR stored without a plate, nothing read: a picture match
+    elif read != enrolment.bound_identity:
+        raise Refused(
+            REFUSAL_CREDENTIAL_WRONG_CAR, "vehicle_identity",
+            f"{ENROLMENT} {enrolment.id!r} is bound to another car since "
+            f"{local(enrolment.redeemed_at, tz).isoformat()}.",
+        )
+    else:
+        passed_by = PASSED_SAME_PLATE
     if direction is Direction.ENTRY and enrolment.exit_only_at is not None:
         raise Refused(
             REFUSAL_CREDENTIAL_EXIT_ONLY, "direction",
             f"{ENROLMENT} {enrolment.id!r}'s car was replaced on pass {enrolment.pass_id!r} "
             f"at {local(enrolment.exit_only_at, tz).isoformat()}; it answers at an exit only.",
         )
-    return unread  # unread, or a plate read that is not the plate: a picture match decides
+    return passed_by  # None: a picture match, or a person, decides
+
+
+def _keep_the_pass(
+    cursor: Any, tenant_uuid: UUID, uuid: UUID, enrolment: Credential, passed_by: str,
+    vehicle_identity: str, lane: str, direction: Direction, at: datetime,
+) -> None:
+    """A QR that opened on a read that was NOT its plate -- one difference, or
+    nothing usable read -- kept on the QR's own row (``enrolments.matches``,
+    where every picture match is kept), in order, with its instant, what was
+    read and how it passed, beside the plate the QR was made for: a car that
+    keeps passing this way is visible. No log line carries any of it."""
+    import json
+
+    read = vehicle_identity.strip() if isinstance(vehicle_identity, str) else ""
+    record = {
+        "at": at.isoformat(), "matched": True, "identity_read": read or None,
+        "decided_by": "similar_enough", "passed_by": passed_by, "lane": lane,
+        "direction": direction.value, "outcome": "recognised",
+    }
+    cursor.execute(
+        "UPDATE enrolments SET matches = matches || %s::jsonb WHERE tenant_id = %s AND id = %s",
+        (json.dumps([record]), tenant_uuid, uuid),
+    )
+    _one_row(cursor, "a similar-enough pass", enrolment)
 
 
 def redeem_enrolment(
@@ -848,15 +894,19 @@ def redeem_enrolment(
     garage that does not exist is the one refusal raised rather than carried:
     there is no lane to answer.
 
-    A QR that is ALREADY BOUND is not bound again: shown by its own car it is
-    ``recognised`` and answered for that car, at either end; shown by another
-    car it is refused WRONG CAR; at an entry after its car was replaced, EXIT
-    ONLY. Shown where the lane measured no identity -- or, on a QR made for a
-    plate, read anything but that plate -- it is ``match_required``: nothing
-    opens on THIS QR until the lane's picture match is confirmed
-    (``confirm_match``); the answer is the access answer for what was read, so
-    another plate with its own valid pass is let through on that pass. Nothing
-    is written on any of those paths."""
+    A QR that is ALREADY BOUND is not bound again. A QR MADE FOR A PLATE
+    shown by its own car -- a read similar enough to its plate, or nothing
+    usable read (``enrolment.similar_enough``) -- is ``recognised`` and
+    answered for that car, at either end, with ``passed_by`` saying how; at an
+    entry after its car was replaced, EXIT ONLY. Shown by a CLEARLY DIFFERENT
+    car it is ``match_required``: nothing opens on THIS QR until a picture
+    match or a person confirms it (``confirm_match``); the answer is the
+    access answer for what was read, so another plate with its own valid pass
+    is let through on that pass. A QR stored without a plate keeps its
+    first-use binding: its own identity, exact, is recognised; nothing read is
+    ``match_required``; another identity is refused WRONG CAR. A pass by one
+    difference or by nothing read is kept on the QR's row; nothing else is
+    written on those paths but a first use's move to active."""
     tenant_uuid = as_uuid(tenant_id)
     require_aware(at, "at")
     if not isinstance(direction, Direction):
@@ -911,7 +961,8 @@ def redeem_enrolment(
             # lane bound an instant ago is answered here, by name
             # (wrong car, recognised, or a picture match required), never bound
             # a second time
-            match_required = _present_bound(enrolment, vehicle_identity, direction, tz)
+            passed_by = _present_bound(enrolment, vehicle_identity, direction, tz)
+            match_required = passed_by is None
             # ITS OWN STAY, never the car's next one: not begun, over, or -- on
             # the day it ended early -- an entry, refused by name before any
             # match or recognition (nothing carries over)
@@ -920,11 +971,10 @@ def redeem_enrolment(
             _refuse_outside_the_stay(stay, stay_row, enrolment, direction)
             cursor.execute(f"RELEASE SAVEPOINT {SAVEPOINT}")
             if match_required:
-                # NOTHING OPENS ON THIS QR: the answer is for the identity the
-                # lane measured, never the QR's car. Nothing read: an entry is
-                # refused an answer and an exit is not covered (and still never
-                # refused). Another plate read: that car's own answer -- a car
-                # with its own valid pass is let through on THAT pass
+                # A CLEARLY DIFFERENT CAR -- NOTHING OPENS ON THIS QR: the
+                # answer is for the identity the lane measured, never the QR's
+                # car -- that car's own answer, so a car with its own valid
+                # pass is let through on THAT pass. A person decides the rest
                 return Redemption(
                     enrolment=enrolment_id, redeemed=False, refusal=None, registration=None,
                     pass_state_change=None, answer=answer_in_transaction(
@@ -932,9 +982,8 @@ def redeem_enrolment(
                         direction, at,
                     ),
                     match_required=True, match_for=enrolment.bound,
-                    match_read=(vehicle_identity.strip() or None
-                                if isinstance(vehicle_identity, str)
-                                and plate_key(vehicle_identity) else None),
+                    match_read=vehicle_identity.strip() or None,
+                    qr_plate=plate_key(enrolment.bound),
                 )
             # RECOGNISED. A QR bound from issue (its plate) on a pass still
             # waiting for its first car moves the pass to active here, at its
@@ -947,6 +996,12 @@ def redeem_enrolment(
                     cursor, tenant_uuid, garage_external_id, enrolment.pass_id, State.ACTIVE,
                     by=enrolment.id, at=at, reason=f"first use at lane {lane!r}",
                 ), "first_use")
+            if passed_by in RECORDED_PASSES:
+                # IT OPENED ON A READ THAT WAS NOT ITS PLATE: kept on its row
+                _under_savepoint(cursor, lambda: _keep_the_pass(
+                    cursor, tenant_uuid, uuid, enrolment, passed_by, vehicle_identity,
+                    require_text(lane, "lane"), direction, at,
+                ), "passed")
             answer = (
                 answer_on_the_stays_last_day(
                     cursor, tenant_uuid, garage_external_id, plate_key(enrolment.bound),
@@ -959,6 +1014,7 @@ def redeem_enrolment(
             return Redemption(
                 enrolment=enrolment_id, redeemed=False, refusal=None, registration=None,
                 pass_state_change=change, answer=answer, recognised=True,
+                passed_by=passed_by, qr_plate=plate_key(enrolment.bound),
             )
         _refuse_unless_redeemable(ENROLMENT, enrolment, today, tz)
         _pass_uuid, pass_ = load_pass(cursor, tenant_uuid, garage_uuid, enrolment.pass_id)
@@ -1102,7 +1158,7 @@ def redeem_holder_link(
 #: (measured: a refused new QR left the old QR marked exit only).
 SAVEPOINTS = {"issue": "garage_pass_issue", "replace": "garage_pass_replace",
               "cancel": "garage_pass_cancel", "match": "garage_pass_match",
-              "first_use": "garage_pass_first_use"}
+              "first_use": "garage_pass_first_use", "passed": "garage_pass_passed"}
 
 
 def _locked_code(

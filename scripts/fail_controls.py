@@ -112,6 +112,7 @@ G29 = "tests/test_g29_one_qr_can_be_cancelled_and_nothing_else_moves.py"
 G30 = "tests/test_g30_an_unread_car_with_a_bound_qr_needs_a_picture_match.py"
 G31 = "tests/test_g31_a_qr_is_made_for_a_plate_and_bound_to_it_from_issue.py"
 G32 = "tests/test_g32_a_stay_ends_at_checkout.py"
+G33 = "tests/test_g33_similar_enough_gets_a_pass.py"
 MIGRATION = "migrations/0001_garages_passes_registrations_and_rls.sql"
 MIGRATION_0002 = "migrations/0002_garage_changes_are_recorded.sql"
 MIGRATION_0003 = "migrations/0003_enrolments_holder_links_and_where_a_garage_enrols.sql"
@@ -2408,10 +2409,10 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
     ),
     "G19/wrong-car-reads-already-used": (
         G19, "store/enrolments.py",
-        '                REFUSAL_CREDENTIAL_WRONG_CAR, "vehicle_identity",\n'
-        '                f"{ENROLMENT} {enrolment.id!r} is bound to another car since "\n',
-        '                REFUSAL_CREDENTIAL_ALREADY_USED, "vehicle_identity",  # PLANTED\n'
-        '                f"{ENROLMENT} {enrolment.id!r} is bound to another car since "\n',
+        '            REFUSAL_CREDENTIAL_WRONG_CAR, "vehicle_identity",\n'
+        '            f"{ENROLMENT} {enrolment.id!r} is bound to another car since "\n',
+        '            REFUSAL_CREDENTIAL_ALREADY_USED, "vehicle_identity",  # PLANTED\n'
+        '            f"{ENROLMENT} {enrolment.id!r} is bound to another car since "\n',
         "a bound QR on a different car is refused 'already used' instead of 'wrong car' "
         "(the brief's check 2)",
     ),
@@ -2462,9 +2463,9 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
     ),
     "G30/unread-recognised": (
         G30, "store/enrolments.py",
-        "    return unread  # unread, or a plate read that is not the plate: a picture match "
-        "decides\n",
-        "    return False  # PLANTED: an unread identity is recognised blind\n",
+        "        passed_by = None  # a QR stored without a plate, nothing read: a picture match\n",
+        "        passed_by = PASSED_SAME_PLATE  # PLANTED: an unread identity is recognised "
+        "blind\n",
         "a bound QR shown with no identity read is recognised and opens the barrier with no "
         "picture match (the fix brief's check 1)",
     ),
@@ -2492,18 +2493,19 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
     ),
     "G31/raw-text-compare": (
         G31, "store/enrolments.py",
-        "            unread = plate_key(identity) != enrolment.plate\n",
-        "            unread = identity != enrolment.plate  # PLANTED: raw text\n",
+        "        passed_by = similar_enough(read, enrolment.plate)\n",
+        "        passed_by = PASSED_SAME_PLATE if read == enrolment.plate else None  # PLANTED: "
+        "raw text\n",
         "the lane's read is compared as typed, not in the one normal form: 'ABC 123' is not "
         "'abc-123' (the brief's check 2)",
     ),
     "G31/a-different-read-is-wrong-car": (
         G31, "store/enrolments.py",
-        "            unread = plate_key(identity) != enrolment.plate\n",
-        "            if plate_key(identity) != enrolment.plate:  # PLANTED: the plate refuses\n"
-        "                raise Refused(REFUSAL_CREDENTIAL_WRONG_CAR, \"vehicle_identity\", "
-        "\"PLANTED\")\n"
-        "            unread = False\n",
+        "        passed_by = similar_enough(read, enrolment.plate)\n",
+        "        passed_by = similar_enough(read, enrolment.plate)\n"
+        "        if passed_by is None:  # PLANTED: the plate refuses\n"
+        "            raise Refused(REFUSAL_CREDENTIAL_WRONG_CAR, \"vehicle_identity\", "
+        "\"PLANTED\")\n",
         "a plate read that is not the plate is refused wrong car on its own, with no picture "
         "match (this brief's check 1)",
     ),
@@ -2517,8 +2519,8 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
     ),
     "G31/exact-read-asks-a-match": (
         G31, "store/enrolments.py",
-        "            unread = plate_key(identity) != enrolment.plate\n",
-        "            unread = True  # PLANTED: even the exact plate asks for a picture match\n",
+        "        passed_by = similar_enough(read, enrolment.plate)\n",
+        "        passed_by = None  # PLANTED: even the exact plate asks for a picture match\n",
         "the exact plate read is answered with a picture match instead of recognised (this "
         "brief's check 3)",
     ),
@@ -2655,6 +2657,70 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
         "    for first, stop, is_held in _days_held(garages, held, starts_on, end):\n",
         "a QR for a car the pass already holds reuses a shorter registration and stops "
         "working before its own last day",
+    ),
+    # --- similar enough gets a pass (the owner's rule, 2026-10-30) ---
+    "G33/look-alikes-not-folded": (
+        G33, "enrolment.py",
+        "    return plate_key(text).translate(_LOOK_ALIKE)\n",
+        "    return plate_key(text)  # PLANTED: no look-alike is read as one character\n",
+        "A8C123 read for a QR made for ABC123 is two characters off, not the plate: a car "
+        "the reader misread B for 8 waits for a person",
+    ),
+    "G33/one-difference-refused": (
+        G33, "enrolment.py",
+        "    if within_one_difference(seen, made_for):\n",
+        "    if False:  # PLANTED: one difference is a clearly different car\n",
+        "a read one character from the QR's plate is a case for a person instead of a pass",
+    ),
+    "G33/two-differences-pass": (
+        G33, "enrolment.py",
+        "        return sum(x != y for x, y in zip(a, b, strict=True)) <= 1\n",
+        "        return sum(x != y for x, y in zip(a, b, strict=True)) <= 2  # PLANTED\n",
+        "a plate two characters from the QR's opens the gate: a clearly different car is let "
+        "in on someone else's QR",
+    ),
+    "G33/insertion-not-one": (
+        G33, "enrolment.py",
+        "            return shorter[i:] == longer[i + 1:]\n",
+        "            return False  # PLANTED: a character inserted or deleted is two differences\n",
+        "a character the reader dropped or added inside the plate is taken for a clearly "
+        "different car",
+    ),
+    "G33/nothing-read-shut": (
+        G33, "enrolment.py",
+        "        return PASSED_NOTHING_READ\n",
+        "        return None  # PLANTED: nothing read keeps the gate shut on a valid QR\n",
+        "a valid QR with no plate read, or one below the lane's confidence, keeps the gate shut",
+    ),
+    "G33/pass-not-kept": (
+        G33, "store/enrolments.py",
+        "            if passed_by in RECORDED_PASSES:\n",
+        "            if False:  # PLANTED: an opening on a read that was not the plate is not "
+        "kept\n",
+        "a QR that opened on one difference or on nothing read leaves no record of what was read",
+    ),
+    "G33/qr-plate-off-the-answer": (
+        G33, "store/enrolments.py",
+        "                passed_by=passed_by, qr_plate=plate_key(enrolment.bound),\n",
+        "                passed_by=passed_by,  # PLANTED: the QR's plate is not on the answer\n",
+        "the lane is not told the plate of the car it lets in on the QR, so it cannot check the "
+        "owner's deny rule against it",
+    ),
+    "G33/stored-form-widened": (
+        G33, "enrolment.py",
+        '_READ_AS_DIGITS = str.maketrans("OI", "01")\n',
+        '_READ_AS_DIGITS = str.maketrans("OIQDLBSZG", "010018526")  # PLANTED: every '
+        'look-alike in the stored form\n',
+        "the stored form folds every look-alike: ABC5 and ABCS become one car for one car, one "
+        "pass and for every register a lane holds",
+    ),
+    "G33/no-plate-widened": (
+        G33, "store/enrolments.py",
+        "    elif read != enrolment.bound_identity:\n",
+        "    elif similar_enough(read, enrolment.bound_identity) is None:  # PLANTED: a QR with "
+        "no plate passes a near read\n",
+        "a QR stored before plates were required is shown by CAR-2 and lets it in on CAR-1's "
+        "first-use binding",
     ),
     "G31/o-and-i-are-letters": (
         G31, "enrolment.py",

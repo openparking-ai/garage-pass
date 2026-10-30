@@ -145,28 +145,38 @@ never refused as another pass, and that registration runs on to the new QR's
 last day where it ended sooner), the garage's register shows it before
 any use, and the QR's first use binds nothing new — it is recognised, and moves
 a pass still waiting for its first car to active. A car whose plate is asked
-about without a QR is asked about in that normal form. At the lane **the plate
-supports the picture match and never refuses on its own**: the exact plate is
-recognised; anything else — nothing read, part of it, a misread, another plate —
-is a picture match against the registered plate, carrying what was read, and
-only the match's own "no" (`confirm-match`) is wrong car. Nothing opens on the
-QR while a match is pending; the answer beside it is the answer for what was
-read, so another plate with its own valid pass is let through on that pass,
-never on this QR. A QR stored before
-plates were required has no plate and binds whatever car first uses it, exactly
-as before.
+about without a QR is asked about in that normal form. At the lane **similar
+enough gets a pass** (the owner's rule, 2026-10-30): a valid QR is recognised
+for its car when the lane read the plate itself, the plate once look-alike
+characters are one (O, 0, Q and D; I, 1 and L; B and 8; S and 5; Z and 2; G
+and 6 — one table, `LOOK_ALIKE_GROUPS`, used for the QR and never for
+a plate kept in the store), a plate one character from it after that (one substituted, inserted
+or deleted), or nothing usable — the lane hands in nothing when it read no
+plate or one below its confidence. The answer says which (`passed_by`), and it
+carries the QR's plate (`qr_plate`) so the lane checks its owner's deny rule
+against the car it lets in. A pass by one difference or by nothing read is
+kept on the QR's record with its time, lane, direction and what was read. A
+**clearly different** read — two characters or more — opens nothing on the QR:
+**the plate supports the picture match and never refuses on its own**, so it
+is a picture match against the registered plate, carrying what was read, a
+case for a person, and only the match's own "no" (`confirm-match`) is wrong
+car. The answer beside it is the answer for what was read, so another plate
+with its own valid pass is let through on that pass, never on this QR. A QR
+stored before plates were required has no plate and binds whatever car first
+uses it, exactly as before, and keeps its exact binding.
 
 **One QR per car, and it keeps working for that car.** Once bound, the QR is
 the car's: shown again by that car it is *recognised* — answered for that car,
 at either end, in and out as often as needed, for its stay — and nothing is
-written. **A car whose identity the lane did not read is never let in
-blind**: the bound QR answers `match_required`, with the QR's id and the car it
+written. **A car the QR cannot vouch for is never let in on it blind** — a
+clearly different plate on a QR made for a plate, or nothing read on a QR stored
+without one: the bound QR answers `match_required`, with the QR's id and the car it
 is bound to, and nothing opens on that QR; the lane matches the car's picture against that
 car's earlier ones (its OPA ID, or an outside picture check when that is
 unclear) and answers with `confirm-match` — matched is a recognised use, not
 matched is wrong car — and every answer is kept on the QR's record with its
-time, so a car that keeps needing a match is visible. Shown by a **different**
-car, the QR is refused
+time, so a car that keeps needing a match is visible. A QR stored without a
+plate, shown by a **different** car, is refused
 `REFUSAL_CREDENTIAL_WRONG_CAR` — never "already used", with no exception — and
 the driver is sent to whoever issued it; the refusal names the QR and when it
 was bound, never the other car. A car whose identity the lane cannot read at
