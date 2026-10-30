@@ -412,7 +412,8 @@ def test_another_tenants_pass_with_the_same_id_is_not_shown_with_rls_on_and_with
                 if "registrations" in got else got["refused"]
         return out
 
-    expected = {tenant_id: ["CARMINE"], other: ["CARTHEIRS"], third: f.REFUSAL_GARAGE_NOT_FOUND}
+    expected = {tenant_id: ["CARM1NE"], other: ["CARTHE1RS"],  # I read as 1
+                third: f.REFUSAL_GARAGE_NOT_FOUND}
     assert reading() == expected, "with row-level security ON"
     def both_visible_to_the_app() -> bool:
         """A bare query as the application role, no tenant set: the two
@@ -453,7 +454,7 @@ def test_a_registration_outside_the_set_is_refused_by_the_constraint_and_shown_i
     ids = dict(query(app, tenant_id, "SELECT external_id, id FROM garages"))
     (pass_uuid,) = query(app, tenant_id, "SELECT id FROM passes")[0]
     insert = ("INSERT INTO vehicle_registrations (tenant_id, garage_id, pass_id, "
-              "vehicle_identity, effective_day) VALUES (%s, %s, %s, 'CAROUT', '2026-01-01')")
+              "vehicle_identity, effective_day) VALUES (%s, %s, %s, 'CAR0UT', '2026-01-01')")
     # 1. the constraint, by name: a raw insert as the OWNER at a garage the
     #    pass does not name is refused
     with owner.cursor() as cursor, pytest.raises(psycopg.errors.ForeignKeyViolation) as raised:
@@ -466,7 +467,7 @@ def test_a_registration_outside_the_set_is_refused_by_the_constraint_and_shown_i
     assert raised.value.diag.constraint_name == OUTSIDE
     # the control for both: the same insert INSIDE the set is accepted
     with owner.cursor() as cursor:
-        cursor.execute(insert.replace("CAROUT", "CARIN"), (tenant_id, ids[DENVER.id], pass_uuid))
+        cursor.execute(insert.replace("CAR0UT", "CAR1N"), (tenant_id, ids[DENVER.id], pass_uuid))
     assert len(shown(app, tenant_id, DENVER.id, pass_.id)["registrations"]) == 9
     # 3. planted PAST the constraint -- its triggers disabled, which only a
     #    superuser may do -- the read shows the row and names the garage
@@ -481,7 +482,7 @@ def test_a_registration_outside_the_set_is_refused_by_the_constraint_and_shown_i
     out = shown(app, tenant_id, DENVER.id, pass_.id)
     outside = [r for r in out["registrations"] if r["garage"] == ELSEWHERE.id]
     assert len(out["registrations"]) == 10 and len(outside) == 1, "the row was dropped"
-    assert outside[0]["vehicle_identity"] == "CAROUT"
+    assert outside[0]["vehicle_identity"] == "CAR0UT"
     assert out["garages"] == ["Garage-tokyo", "garage-denver"]
     assert out["garages_not_named"] == [ELSEWHERE.id]
 
@@ -509,17 +510,20 @@ def register_writers() -> list[tuple[str, str]]:
 @pytest.mark.guarantee("G26")
 @store_test
 def test_every_writer_of_the_register_is_reflected_by_the_read(app, tenant_id):
-    """The census: seven write sites -- the set's INSERT (create_pass), the
+    """The census: eight write sites -- the set's INSERT (create_pass), the
     register's INSERT (register_vehicle, which redeem_enrolment goes through),
-    and its five UPDATEs (the revocation's, the checkout-day turnover's, the
-    expiry release's, end_registration's and end_stay's). Each is exercised
-    and its effect read back: ``ended_reason`` tells the five UPDATEs apart."""
+    and its six UPDATEs (a stay's registration running on to a reissued QR's
+    last day, the revocation's, the checkout-day turnover's, the expiry
+    release's, end_registration's and end_stay's). Each is exercised and its
+    effect read back: ``ended_reason`` and the days tell the UPDATEs apart."""
     from fixtures import BOTH, at
     from garage_pass.passes import State
+    from garage_pass.store.enrolments import cancel_code, issue_enrolment
     from garage_pass.store.records import change_state, end_registration, end_stay
     from garage_pass.terms import Terms
 
     assert register_writers() == [
+        ("UPDATE", "vehicle_registrations"),  # issue_enrolment: a stay's registration runs on
         ("INSERT INTO", "pass_garages"),
         ("UPDATE", "vehicle_registrations"),  # change_state -> revoked
         ("UPDATE", "vehicle_registrations"),  # register_vehicle: the checkout-day turnover
@@ -560,7 +564,24 @@ def test_every_writer_of_the_register_is_reflected_by_the_read(app, tenant_id):
         # end_stay's UPDATE: the next guest checks out early, on Oct 14
         end_stay(cursor, tenant_id, TOKYO.id, stay_b.id, date(2026, 10, 14), by="desk",
                  reason="left early")
+        # the stay running on: CAR-W's QR from Oct 20 for two days, cancelled
+        # and issued again for four -- its one registration runs on to Oct 23
+        stay_c = a_pass(id="stay-c", garage_ids={DENVER.id, TOKYO.id})
+        create_pass(cursor, tenant_id, DENVER.id, stay_c, by="seed", at=CREATED_AT)
+        issue_enrolment(cursor, tenant_id, DENVER.id, stay_c.id, "qr-w1", date(2026, 10, 20), 2,
+                        by="desk", at=CREATED_AT, plate="CAR-W")
+        cancel_code(cursor, tenant_id, DENVER.id, "qr-w1", by="desk", at=CREATED_AT,
+                    reason="reissued")
+        issue_enrolment(cursor, tenant_id, DENVER.id, stay_c.id, "qr-w2", date(2026, 10, 20), 4,
+                        by="desk", at=CREATED_AT, plate="CAR-W")
     app.commit()
+    ran_on = [(r["vehicle_identity"], r["garage"], r["effective_day"], r["end_day"],
+               r["ended_reason"])
+              for r in shown(app, tenant_id, TOKYO.id, stay_c.id)["registrations"]]
+    assert ran_on == [
+        ("CARW", "Garage-tokyo", date(2026, 10, 20), date(2026, 10, 24), "the stay's last day"),
+        ("CARW", "garage-denver", date(2026, 10, 20), date(2026, 10, 24), "the stay's last day"),
+    ]
     turned = [(r["garage"], r["end_day"], r["ended_reason"])
               for r in shown(app, tenant_id, DENVER.id, stay_a.id)["registrations"]]
     assert turned == [("Garage-tokyo", date(2026, 10, 12), "the car's next stay began"),
