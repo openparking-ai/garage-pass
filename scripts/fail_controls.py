@@ -1800,6 +1800,13 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
         "the enrolment a link issues records the owner as its issuer, not the link: the row "
         "that issued it no longer records the human",
     ),
+    "G24/holder-chooses-the-days": (
+        G24, "store/enrolments.py",
+        "    _refuse_outside_the_links_days(link, starts_on, days_valid)\n",
+        "    pass  # PLANTED: the holder chooses any starts_on and days_valid\n",
+        "a three-day holder link mints a QR registered on the pass for as long as the holder "
+        "asks",
+    ),
     "G24/spend": (
         G24, "store/enrolments.py",
         '    _spend(cursor, HOLDER_LINK, tenant_uuid, uuid, "redeemed_at = %s", (at,))',

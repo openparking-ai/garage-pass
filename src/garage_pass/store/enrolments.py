@@ -151,6 +151,7 @@ from garage_pass.findings import (
     REFUSAL_GARAGE_MISMATCH,
     REFUSAL_LANE_OUTSIDE_THE_PASS_TERMS,
     REFUSAL_MATCH_DECIDED_BY_UNKNOWN,
+    REFUSAL_OUTSIDE_THE_HOLDER_LINK_WINDOW,
     REFUSAL_PASS_NOT_REGISTRABLE,
     REFUSAL_PLATE_NOT_STATED,
     REFUSAL_VISIT_ALREADY_OPEN,
@@ -1119,6 +1120,27 @@ def redeem_enrolment(
     )
 
 
+def _refuse_outside_the_links_days(link: Credential, starts_on: object, days_valid: object) -> None:
+    """THE OWNER'S DAYS BOUND THE HOLDER'S QR: the QR a holder asks for lies
+    inside the days the owner issued the link for, ``link.starts_on`` to its
+    last day -- or a refusal by name, nothing written. The holder chooses
+    within them; a link is never a way to choose a longer stay."""
+    _require_day(starts_on, "starts_on")
+    days = require_days_valid(days_valid)
+    window = f"link {link.id!r} was issued for {link.starts_on} to {link.last_day}"
+    if starts_on < link.starts_on:
+        raise Refused(
+            REFUSAL_OUTSIDE_THE_HOLDER_LINK_WINDOW, "starts_on",
+            f"starts_on {starts_on} is before the owner's days: {window}.",
+        )
+    if last_day(starts_on, days) > link.last_day:
+        raise Refused(
+            REFUSAL_OUTSIDE_THE_HOLDER_LINK_WINDOW, "days_valid",
+            f"{days} day(s) from {starts_on} run to {last_day(starts_on, days)}, past the "
+            f"owner's days: {window}.",
+        )
+
+
 #: The two columns a holder link may write on the pass, and no other.
 HOLDER_WRITES = ("holder_name", "holder_phone")
 
@@ -1158,6 +1180,7 @@ def redeem_holder_link(
     _refuse_unless_redeemable(HOLDER_LINK, link, today, tz)
     _pass_uuid, pass_ = load_pass(cursor, tenant_uuid, garage_uuid, link.pass_id)
     _refuse_unless_registrable(pass_, link.pass_id, today, "a holder link")
+    _refuse_outside_the_links_days(link, starts_on, days_valid)
     # THE NARROW WRITE: the holder's name and phone, on the pass, nothing else.
     cursor.execute(
         f"UPDATE passes SET {HOLDER_WRITES[0]} = %s, {HOLDER_WRITES[1]} = %s "

@@ -236,7 +236,10 @@ pass; ending the car is `end-registration`) — and a fresh QR is issued with
 The holder's own details: a one-time link (`issue-holder-link`), the same
 primitive scoped to the pass, lets the holder write their name and phone onto
 the pass — those two columns and nothing else — describe the car they will
-bring (which decides nothing), and get their QR (`redeem-holder-link`). The
+bring (which decides nothing), and get their QR (`redeem-holder-link`) — a QR
+inside the days the owner issued the link for (its `--starts-on` to its last
+day); a QR that starts before them or runs past them is refused by name
+(`REFUSAL_OUTSIDE_THE_HOLDER_LINK_WINDOW`) and nothing is written. The
 owner-only path stands: no link is needed to enrol. Text anywhere — a name, a
 phone, an id, a lane, a label — may be in any script; a control character in
 it (a NUL, a line break inside it) is refused by name, never handed to the
