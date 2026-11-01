@@ -1046,7 +1046,9 @@ def end_stay(
     at every garage the pass names -- ends on ``day``, recorded as a checkout
     with who ended it and why (``ENDED_BY_CHECKOUT``). From that day the cars
     are free for their next stay; the stay's QRs let a car out on that day and
-    open nothing after (``redeem_enrolment``). The pass's state is not touched
+    open nothing after (``redeem_enrolment``). A holder link not yet used and
+    a QR that has bound no car, whose last day is ``day`` or later, are
+    cancelled in the same transaction. The pass's state is not touched
     -- revoked means something else in this module -- and nothing already
     ended moves. A pass with nothing in force on or after ``day`` is refused by
     name and nothing is written."""
@@ -1073,6 +1075,24 @@ def end_stay(
             f"pass {pass_external_id!r} holds no registration in force on {day} or later.",
         )
     why = f"{ENDED_BY_CHECKOUT} ({by}): {reason}"
+    # LOCK_ORDER, second: the credentials. A checkout leaves nothing on the
+    # pass that could open the stay again -- a holder link not yet used, or a
+    # QR that has bound no car, whose last day is the checkout day or later,
+    # would mint or bind a working QR after the guest left. Cancelled here, in
+    # the same transaction, by whoever ended the stay; a QR bound to a car is
+    # judged by its own stay and lets the car out on the day, as before.
+    cancelled = {}
+    for table, unbound in (("holder_links", ""),
+                           ("enrolments", " AND plate IS NULL AND redeemed_vehicle_identity "
+                                          "IS NULL")):
+        cursor.execute(
+            f"UPDATE {table} SET state = %s, cancelled_by = %s, cancelled_at = now(), "
+            "cancelled_reason = %s WHERE tenant_id = %s AND pass_id = %s AND state = %s "
+            f"AND starts_on + days_valid - 1 >= %s{unbound}",
+            (CredentialState.CANCELLED.value, by, why, tenant_uuid, pass_uuid,
+             CredentialState.ISSUED.value, day),
+        )
+        cancelled[table] = cursor.rowcount
     cursor.execute(
         "UPDATE vehicle_registrations SET end_day = GREATEST(%s, effective_day), "
         "ended_reason = %s WHERE tenant_id = %s AND id = ANY(%s)",
@@ -1080,7 +1100,9 @@ def end_stay(
     )
     ended = sorted({(identity, garage_ext) for _rid, identity, garage_ext, *_r in rows})
     return {"pass": pass_external_id, "day": day, "by": by, "reason": reason,
-            "ended": [{"vehicle_identity": i, "garage": g} for i, g in ended]}
+            "ended": [{"vehicle_identity": i, "garage": g} for i, g in ended],
+            "holder_links_cancelled": cancelled["holder_links"],
+            "enrolments_cancelled": cancelled["enrolments"]}
 
 
 def registrations_of(

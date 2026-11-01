@@ -2640,6 +2640,13 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
         "# PLANTED\n",
         "end-stay ends nothing, so the next stay from the checkout day is refused (check 3)",
     ),
+    "G32/end-stay-leaves-links-live": (
+        G32, "store/records.py",
+        '            f"AND starts_on + days_valid - 1 >= %s{unbound}",\n',
+        '            f"AND false AND starts_on + days_valid - 1 >= %s{unbound}",  # PLANTED\n',
+        "a guest who checked out redeems the unused holder link and gets a working QR on the "
+        "pass again",
+    ),
     "G32/old-stay-answers-on-its-pass": (
         G32, "store/enrolments.py",
         "    return STAY_ENDED, (rows[-1] if rows else None)\n",

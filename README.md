@@ -201,7 +201,9 @@ one starts. Before that day the plate on another pass is still refused by name,
 naming the earlier pass and its last day. A registration the owner ended, or a
 revocation ended, is not a stay's last day: the car is free from its end day,
 as before. **A stay ended early** (`end-stay`: the guest checked out — the day,
-who and why) ends every car of the pass on that day, at every garage. On the
+who and why) ends every car of the pass on that day, at every garage, and
+cancels every holder link not yet used and every QR that has bound no car whose
+last day is that day or later, so nothing on the pass opens the stay again. On the
 day a stay ended early or turned over, its QR is refused
 `REFUSAL_CREDENTIAL_EXIT_ONLY` at an entry and lets the car out at an exit, on
 its own pass — and on the day a stay ended early, the car read by its plate at
