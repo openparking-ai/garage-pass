@@ -344,7 +344,8 @@ def test_every_refusal_door_is_rendered_through_the_command_line_and_the_collect
         tenant_id = new_tenant(owner)  # fresh rows per door: each seeds its own garage
         token, identity, lane, when, code = situation(app, owner, tenant_id, garage)
         status = main(["redeem-enrolment", "--tenant", str(tenant_id), "--garage", garage.id,
-                       "--token", token, "--vehicle", identity, "--lane", lane, "--direction",
+                       "--token-in-argv",
+                           "--token", token, "--vehicle", identity, "--lane", lane, "--direction",
                        "entry", "--at", when.isoformat()])
         printed = capsys.readouterr().out
         assert status in (0, 1, 2), (situation.__name__, status, printed)

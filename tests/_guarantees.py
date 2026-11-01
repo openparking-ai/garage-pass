@@ -369,7 +369,10 @@ GUARANTEES: dict[str, str] = {
         "detail the module rendered, for tokens it issued -- with the digest as the "
         "positive control that the scan reads the column that holds it, and a planted "
         "sentence as the positive control that the rendered scan can see one, because a "
-        "zero from an unproven scan is UNMEASURED, not clean. secrets and hashlib from "
+        "zero from an unproven scan is UNMEASURED, not clean. A TOKEN IS NOT AN "
+        "ARGUMENT: the command line reads a presented token from standard input, and "
+        "--token is refused by name (REFUSAL_TOKEN_ON_THE_COMMAND_LINE), the token not "
+        "echoed, unless --token-in-argv stands beside it. secrets and hashlib from "
         "the standard library; no dependency; no QR image."
     ),
     "G24": (

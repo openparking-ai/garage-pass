@@ -218,7 +218,8 @@ def test_every_refusal_of_the_two_writes_is_rendered_through_the_command_line(
     T = ["--tenant", str(tenant_id), "--garage", TRANSIENT_ENTRY.id]
     seen = {}
     for argv, code in (
-        (["redeem-enrolment", *T, "--token", token, "--vehicle", "CAR-1", "--lane", "L1",
+        (["redeem-enrolment", *T, "--token-in-argv",
+          "--token", token, "--vehicle", "CAR-1", "--lane", "L1",
           "--direction", "entry", "--at", "2026-06-03T09:00:00-06:00"],
          f.REFUSAL_CREDENTIAL_EXIT_ONLY),
         (["replace-car", *T, "--enrolment-id", "qr-1", "--new-enrolment-id", "qr-3",

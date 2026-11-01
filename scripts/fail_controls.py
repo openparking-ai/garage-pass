@@ -1783,6 +1783,13 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
         ),
         "the description decides, by its length -- the spelling the G13 scan could not see",
     ),
+    "G23/token-in-argv-accepted": (
+        G23, "cli.py",
+        "        if not args.token_in_argv:\n",
+        "        if False:  # PLANTED: a token on the command line is taken as it always was\n",
+        "a lane's QR token is accepted as an argument, where ps shows it to every user on the "
+        "machine",
+    ),
     "G23/stored-plaintext": (
         G23, "store/enrolments.py",
         "        values += [vehicle_description, *(plate or (None, None))]",

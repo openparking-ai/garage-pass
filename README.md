@@ -245,7 +245,13 @@ bring (which decides nothing), and get their QR (`redeem-holder-link`) — a QR
 inside the days the owner issued the link for (its `--starts-on` to its last
 day); a QR that starts before them or runs past them is refused by name
 (`REFUSAL_OUTSIDE_THE_HOLDER_LINK_WINDOW`) and nothing is written. The
-owner-only path stands: no link is needed to enrol. Text anywhere — a name, a
+owner-only path stands: no link is needed to enrol. **A token is not an
+argument**: `redeem-enrolment` and `redeem-holder-link` read the token from
+standard input, because every user on the machine can read a command's
+arguments in `ps`; `--token` is refused by name
+(`REFUSAL_TOKEN_ON_THE_COMMAND_LINE`, the token not echoed) unless
+`--token-in-argv` stands beside it, the old form kept for an integrator that has
+not moved yet. Text anywhere — a name, a
 phone, an id, a lane, a label — may be in any script; a control character in
 it (a NUL, a line break inside it) is refused by name, never handed to the
 database driver.
@@ -256,8 +262,9 @@ $ garage-pass set-garage-enrols-at --tenant T --garage garage-downtown --enrols-
 $ garage-pass issue-enrolment --tenant T --garage garage-downtown --pass-id pass-1 \
       --enrolment-id qr-1 --plate "ABC-123" --starts-on 2026-06-01 --days-valid 3 \
       --by owner --at ...
-$ garage-pass redeem-enrolment --tenant T --garage garage-downtown --token <what the QR carried> \
-      --vehicle CAR-1 --lane L1 --direction entry --at 2026-06-01T09:00:00-06:00
+$ printf '%s\n' "$WHAT_THE_QR_CARRIED" | garage-pass redeem-enrolment --tenant T \
+      --garage garage-downtown --vehicle CAR-1 --lane L1 --direction entry \
+      --at 2026-06-01T09:00:00-06:00
 $ garage-pass replace-car --tenant T --garage garage-downtown --enrolment-id qr-1 \
       --new-enrolment-id qr-2 --plate "XYZ 789" --starts-on 2026-06-02 --days-valid 3 --by desk \
       --reason "rental car swapped" --at ...

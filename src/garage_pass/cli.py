@@ -54,7 +54,9 @@ vehicle identity it measured: the bind, and the access answer for that same
 movement -- always, refused or not; exit status follows the answer's outcome,
 and the enrolment half is in the JSON), ``issue-holder-link`` and
 ``redeem-holder-link`` (the holder writes their own name and phone onto the
-pass and gets their QR). ``--days-valid`` is stated, never defaulted: the
+pass and gets their QR). Both redemptions read the token from standard input,
+and take ``--token`` only beside ``--token-in-argv``. ``--days-valid`` is stated,
+never defaulted: the
 monthly-parker product uses 3 -- that is its number, not this module's. A
 store command with no ``GARAGE_PASS_DSN``, or one the database refuses to
 connect, prints a sentence to stderr and exits 2.
@@ -116,6 +118,7 @@ from garage_pass.documents import (
 from garage_pass.findings import (
     REFUSAL_DOCUMENT_UNREADABLE,
     REFUSAL_FIELD_BLANK,
+    REFUSAL_TOKEN_ON_THE_COMMAND_LINE,
     Refused,
     Unreadable,
 )
@@ -261,7 +264,7 @@ def _parser() -> argparse.ArgumentParser:
     s = store("redeem-enrolment", "the lane presents the QR with the identity it measured: "
               "the bind on first use, the car it is bound to after that, and the access answer "
               "for the movement")
-    s.add_argument("--token", required=True, help="what the QR carried, or the bare token")
+    _token(s, "what the QR carried, or the bare token")
     _movement(s)
     s = store("replace-car", "replace the car on a pass in one step: the named QR's car stops "
               "entering and keeps leaving (a QR that never bound is cancelled), and a new QR for "
@@ -296,7 +299,7 @@ def _parser() -> argparse.ArgumentParser:
                "printed once, here", "--link-id")
     s = store("redeem-holder-link", "the holder writes their own name and phone onto the pass "
               "and gets their QR")
-    s.add_argument("--token", required=True, help="what the link carried, or the bare token")
+    _token(s, "what the link carried, or the bare token")
     s.add_argument("--name", required=True, help="the holder's name")
     s.add_argument("--phone", required=True, help="the holder's phone")
     s.add_argument("--enrolment-id", required=True, help="the id of the QR to issue")
@@ -307,6 +310,32 @@ def _parser() -> argparse.ArgumentParser:
                    "nothing")
     s.add_argument("--at", required=True, help="when, as an ISO instant with an offset")
     return p
+
+
+def _token(s: argparse.ArgumentParser, what: str) -> None:
+    """THE TOKEN IS READ FROM STANDARD INPUT, never required as an argument:
+    arguments are visible in ``ps`` to every user on the machine, and a token
+    is a working credential. ``--token`` stays for an integrator that has not
+    moved yet, and only with ``--token-in-argv`` beside it (``_presented``)."""
+    s.add_argument("--token", help=f"{what}; read from standard input when absent, and "
+                   "accepted here only with --token-in-argv")
+    s.add_argument("--token-in-argv", action="store_true",
+                   help="accept --token on the command line, where ps shows it")
+
+
+def _presented(args: argparse.Namespace) -> str:
+    """The token a redemption presents: standard input, or ``--token`` when
+    the caller asked for it by ``--token-in-argv``. A ``--token`` without the
+    flag is refused by name, and the refusal never carries the token."""
+    if args.token is not None:
+        if not args.token_in_argv:
+            raise Refused(
+                REFUSAL_TOKEN_ON_THE_COMMAND_LINE, "token",
+                "--token was given without --token-in-argv; write the token to standard "
+                "input instead.",
+            )
+        return args.token
+    return sys.stdin.read()
 
 
 def _days_valid(s: argparse.ArgumentParser) -> None:
@@ -733,7 +762,7 @@ def _run(args: argparse.Namespace) -> int:
                 )
             elif args.command == "redeem-enrolment":
                 redemption = enrolments.redeem_enrolment(
-                    cursor, args.tenant, args.garage, args.token, args.vehicle, args.lane,
+                    cursor, args.tenant, args.garage, _presented(args), args.vehicle, args.lane,
                     Direction(args.direction), _at(args.at),
                 )
                 connection.commit()
@@ -771,7 +800,7 @@ def _run(args: argparse.Namespace) -> int:
                 )
             elif args.command == "redeem-holder-link":
                 out = enrolments.redeem_holder_link(
-                    cursor, args.tenant, args.garage, args.token, name=args.name,
+                    cursor, args.tenant, args.garage, _presented(args), name=args.name,
                     phone=args.phone, enrolment_external_id=args.enrolment_id,
                     starts_on=_day(args.starts_on, "--starts-on"),
                     days_valid=_whole_number(args.days_valid, "--days-valid"),

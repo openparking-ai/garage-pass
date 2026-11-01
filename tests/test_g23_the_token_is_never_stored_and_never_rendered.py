@@ -143,31 +143,37 @@ def test_the_plaintext_is_rendered_by_the_issue_calls_and_by_nothing_else(
     assert unknown_here.refusal.code == f.REFUSAL_CREDENTIAL_UNKNOWN
     assert token not in unknown_here.refusal.detail, "the refusal echoed the token presented"
     unknown_cli = run(["redeem-enrolment", "--tenant", str(other), "--garage", TRANSIENT_ENTRY.id,
-                       "--token", token, "--vehicle", "CAR-1", "--lane", "L1", "--direction",
+                       "--token-in-argv",
+                           "--token", token, "--vehicle", "CAR-1", "--lane", "L1", "--direction",
                        "entry", "--at", "2026-06-01T12:00:00-06:00"])
     assert '"REFUSAL_CREDENTIAL_UNKNOWN"' in unknown_cli["printed"]
     # bound to its plate from issue: recognised at either end (its first use moves
     # the draft pass to active), and a far-off plate is wrong car
-    redeemed = run(["redeem-enrolment", *T, "--token", token, "--vehicle", "CAR-1", "--lane",
+    redeemed = run(["redeem-enrolment", *T, "--token-in-argv",
+                    "--token", token, "--vehicle", "CAR-1", "--lane",
                     "L1", "--direction", "entry", "--at", "2026-06-01T12:00:00-06:00"])
     assert redeemed["status"] == 0 and '"recognised": true' in redeemed["printed"]
-    other_end = run(["redeem-enrolment", *T, "--token", token, "--vehicle", "CAR-1", "--lane",
+    other_end = run(["redeem-enrolment", *T, "--token-in-argv",
+                     "--token", token, "--vehicle", "CAR-1", "--lane",
                      "L1", "--direction", "exit", "--at", "2026-06-01T12:00:00-06:00"])
     assert '"recognised": true' in other_end["printed"]
-    used = run(["redeem-enrolment", *T, "--token", token, "--vehicle", "VAN-99", "--lane", "L1",
+    used = run(["redeem-enrolment", *T, "--token-in-argv",
+                "--token", token, "--vehicle", "VAN-99", "--lane", "L1",
                 "--direction", "entry", "--at", "2026-06-02T12:00:00-06:00"])
     assert '"match_required": true' in used["printed"]
     used = run(["confirm-match", *T, "--enrolment-id", "qr-cli", "--matched", "no",
                 "--vehicle", "VAN-99", "--decided-by", "api", "--lane", "L1", "--direction",
                 "entry", "--at", "2026-06-02T12:00:00-06:00"])
     assert '"REFUSAL_CREDENTIAL_WRONG_CAR"' in used["printed"]
-    from_link = run(["redeem-holder-link", *T, "--token", link_token, "--name", "A Holder",
+    from_link = run(["redeem-holder-link", *T, "--token-in-argv",
+                     "--token", link_token, "--name", "A Holder",
                      "--phone", "+1 555 0100", "--enrolment-id", "qr-from-link", "--plate",
                      "HOLDER-1", "--starts-on",
                      "2026-06-01", "--days-valid", "3", "--at", "2026-06-01T12:00:00-06:00"])
     assert from_link["status"] == 0
     second_token = json.loads(from_link["printed"])["enrolment"]["token"]
-    used_link = run(["redeem-holder-link", *T, "--token", link_token, "--name", "A", "--phone",
+    used_link = run(["redeem-holder-link", *T, "--token-in-argv",
+                     "--token", link_token, "--name", "A", "--phone",
                      "1", "--enrolment-id", "qr-2", "--plate", "HOLDER-2", "--starts-on",
                      "2026-06-01", "--days-valid",
                      "3", "--at", "2026-06-01T12:00:00-06:00"])
@@ -228,3 +234,60 @@ def test_the_plaintext_is_rendered_by_the_issue_calls_and_by_nothing_else(
     assert len(rendered_so_far()) - started >= 6, "the collector saw the answers and refusals"
     # and the refusal that names a credential names its ID, never its token
     assert "'qr-cli'" in used["printed"] and token not in used["printed"]
+
+
+@pytest.mark.guarantee("G23")
+def test_the_command_line_reads_a_token_from_stdin_and_refuses_one_in_argv_unless_told(
+    app, tenant_id, capsys, monkeypatch
+):
+    """A TOKEN IS NOT AN ARGUMENT: arguments are visible in ``ps`` to every
+    user on the machine. ``redeem-enrolment`` and ``redeem-holder-link`` read
+    the token from standard input; ``--token`` is refused by name
+    (REFUSAL_TOKEN_ON_THE_COMMAND_LINE, exit 3, nothing written) unless the
+    caller also says ``--token-in-argv`` -- the old form, kept behind a flag
+    for an integrator that has not moved yet -- and the refusal never echoes
+    the token. Measured before this: the token was a required argument."""
+    import io
+
+    from garage_pass.cli import main
+
+    _dsn_for_the_app(monkeypatch)
+    pass_ = seeded(app, tenant_id, TRANSIENT_ENTRY)
+    qr = issue_plate_for(app, tenant_id, pass_)
+    link = issue_link(app, tenant_id, TRANSIENT_ENTRY, pass_)["token"]
+    T = ["--tenant", str(tenant_id), "--garage", TRANSIENT_ENTRY.id]
+    MOVE = ["--vehicle", "CAR-1", "--lane", "L1", "--direction", "entry",
+            "--at", "2026-06-01T12:00:00-06:00"]
+    HOLDER = ["--name", "A Holder", "--phone", "+1 555 0100", "--enrolment-id", "qr-l",
+              "--plate", "HOLDER-1", "--starts-on", "2026-06-01", "--days-valid", "3",
+              "--at", "2026-06-01T12:00:00-06:00"]
+
+    def run(argv: list[str], stdin: str = "") -> tuple[int, str]:
+        monkeypatch.setattr("sys.stdin", io.StringIO(stdin))
+        status = main(argv)
+        out = capsys.readouterr()
+        return status, out.out + out.err
+
+    for command, rest, token in (("redeem-enrolment", MOVE, qr),
+                                 ("redeem-holder-link", HOLDER, link)):
+        status, printed = run([command, *T, "--token", token, *rest])
+        assert status == 3 and '"REFUSAL_TOKEN_ON_THE_COMMAND_LINE"' in printed, printed
+        assert '"field": "token"' in printed and token not in printed
+    assert credential(app, tenant_id, "link-1", HOLDER_LINK).state.value == "issued"
+    status, printed = run(["redeem-enrolment", *T, *MOVE], stdin=f"{qr}\n")
+    assert status == 0 and '"recognised": true' in printed and qr not in printed
+    status, printed = run(["redeem-holder-link", *T, *HOLDER], stdin=f"  {link}\n")
+    assert status == 0 and link not in printed, printed
+    assert credential(app, tenant_id, "link-1", HOLDER_LINK).state.value == "redeemed"
+    status, printed = run(["redeem-enrolment", *T, *MOVE], stdin="")
+    assert '"REFUSAL_FIELD_BLANK"' in printed and '"field": "token"' in printed, (
+        "nothing on stdin is a blank token, refused as a blank --token always was")
+    # the old form, behind its flag
+    status, printed = run(["redeem-enrolment", *T, "--token-in-argv", "--token", qr, *MOVE])
+    assert status == 0 and '"recognised": true' in printed
+
+
+def issue_plate_for(app, tenant_id, pass_) -> str:
+    from enrolment_harness import issue_plate
+
+    return issue_plate(app, tenant_id, TRANSIENT_ENTRY, pass_, "CAR-1")["token"]
