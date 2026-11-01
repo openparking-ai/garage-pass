@@ -154,7 +154,11 @@ GUARANTEES: dict[str, str] = {
         "arrived with. A maximum stay with no open recorded entry AT THIS GARAGE to "
         "measure from is UNMEASURED and the "
         "answer says so by name while answering on the terms that can be evaluated -- "
-        "never silently treated as satisfied, and never a refusal."
+        "never silently treated as satisfied, and never a refusal. THE ALLOWANCE IS HELD "
+        "AT THE WRITE TOO: record-entry takes the pass's lock, asks the module's own access "
+        "path about the entry on the rows as they stand, and refuses by name "
+        "(REFUSAL_OUT_OF_VISITS), writing nothing, when the pass is out of visits -- so two "
+        "lanes recording the last visit at once record it once."
     ),
     "G10": (
         "Row-level security on every table from migration 0001: a tenant column, "

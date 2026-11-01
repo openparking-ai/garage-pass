@@ -331,6 +331,19 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
         "    if False:  # PLANTED: a blank identity is looked up\n        if is_exit:",
         "a blank identity is looked up as if it were a vehicle and answered NO_PASS",
     ),
+    "G9/entry-written-past-the-allowance": (
+        G9, "store/records.py",
+        "    _refuse_an_entry_the_allowance_does_not_cover(\n",
+        "    (lambda *_args: None)(  # PLANTED: the allowance is read at the answer only\n",
+        "record-entry writes a third entry on a two-visit pass",
+    ),
+    "G9/entry-unlocked": (
+        G9, "store/records.py",
+        "    lock_pass_row(cursor, tenant_uuid, pass_uuid)\n"
+        "    _refuse_an_entry_the_allowance_does_not_cover(\n",
+        "    _refuse_an_entry_the_allowance_does_not_cover(  # PLANTED: no pass lock\n",
+        "two lanes recording a pass's last visit at once both record it",
+    ),
     "G9/per-window": (
         G9, "access.py",
         "            day_of(v.entered_at, clock) == today",

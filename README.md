@@ -362,7 +362,11 @@ instant is stated.
 holds no session state. It answers; the lane acts. What it holds is a ledger of
 the visits the lane told it about, because a visit allowance and a maximum stay
 are computed from those rows and from nothing else — and the answer says what
-it counted, on which pass, over what. **The ledger is per garage**: a pass may
+it counted, on which pass, over what. **The allowance is held at the write
+too**: `record-entry` locks the pass, asks the same access path about the entry
+on the rows as they stand, and refuses by name (`REFUSAL_OUT_OF_VISITS`) when
+the pass is out of visits, so two lanes recording the last visit at once record
+it once. **The ledger is per garage**: a pass may
 name several, and one open visit per vehicle per pass is the rule *at each* —
 an entry at one garage of the set is never refused for a visit still open at
 another, and an exit never closes another garage's visit — while the allowance

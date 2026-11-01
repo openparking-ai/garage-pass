@@ -486,3 +486,71 @@ def test_the_store_renders_the_recorded_entry_in_the_garages_zone_not_the_sessio
         with app.cursor() as cursor:
             cursor.execute("SET TIME ZONE DEFAULT")
         app.commit()
+
+
+@pytest.mark.guarantee("G9")
+@store_test
+def test_the_ledger_refuses_an_entry_the_allowance_does_not_cover(app, tenant_id):
+    """THE ALLOWANCE IS HELD AT THE WRITE, not only at the answer: an entry
+    recorded on a pass whose allowance is spent is refused by name
+    (REFUSAL_OUT_OF_VISITS) and nothing is written -- the answer a lane was
+    given a moment ago may have been on a count another lane has since
+    spent. Measured before this: record-entry wrote a third entry on a
+    two-visit pass."""
+    pass_ = _store_pass(app, tenant_id, simple_terms(
+        visit_allowance=VisitAllowance(2, AllowancePeriod.LIFE)))
+    _entry(app, tenant_id, pass_, "CAR-1", 7)
+    _exit(app, tenant_id, pass_, "CAR-1", 8)
+    _entry(app, tenant_id, pass_, "CAR-2", 9)
+    with pytest.raises(f.Refused) as refused:
+        _entry(app, tenant_id, pass_, "CAR-1", 10)
+    app.rollback()
+    assert refused.value.code == f.REFUSAL_OUT_OF_VISITS
+    assert "2 of 2 visit(s) used" in refused.value.detail
+    assert len(query(app, tenant_id, "SELECT 1 FROM visits")) == 2
+
+
+@pytest.mark.guarantee("G9")
+@store_test
+def test_two_lanes_recording_the_last_visit_at_once_record_it_once(owner, app, tenant_id):
+    """ONE VISIT LEFT, TWO LANES AT ONCE: each lane was answered covered, and
+    each records its entry. Lane A writes and holds its transaction open; lane
+    B writes on its own connection meanwhile, then A commits. The pass row is
+    locked before the count is read, so B waits for A, reads the spent
+    allowance and is refused by name; the ledger holds one entry, never two."""
+    import threading
+
+    from store_harness import DSN, app_connection
+
+    pass_ = _store_pass(app, tenant_id, simple_terms(
+        visit_allowance=VisitAllowance(1, AllowancePeriod.LIFE)))
+    a, b = app_connection(DSN), app_connection(DSN)
+    got: dict = {}
+
+    def lane_b():
+        try:
+            with tenant(b, tenant_id) as cursor:
+                got["B"] = record_entry(cursor, tenant_id, GARAGE.id, pass_.id, "CAR-2", "L2",
+                                        at(MONDAY, 9))
+            b.commit()
+        except BaseException as exc:  # noqa: BLE001 -- judged below
+            got["B"] = exc
+            b.rollback()
+
+    thread = threading.Thread(target=lane_b)
+    try:
+        with tenant(a, tenant_id) as cursor:
+            got["A"] = record_entry(cursor, tenant_id, GARAGE.id, pass_.id, "CAR-1", "L1",
+                                    at(MONDAY, 9))
+            thread.start()
+            thread.join(timeout=2)  # B either waits on A's lock or has already written
+        a.commit()
+        thread.join(timeout=15)
+        assert not thread.is_alive(), "lane B never came back"
+    finally:
+        a.close()
+        b.close()
+    assert len(query(app, tenant_id, "SELECT 1 FROM visits")) == 1, (
+        "two lanes recorded the last visit of a one-visit pass")
+    assert isinstance(got["A"], dict), got["A"]
+    assert isinstance(got["B"], f.Refused) and got["B"].code == f.REFUSAL_OUT_OF_VISITS, got["B"]

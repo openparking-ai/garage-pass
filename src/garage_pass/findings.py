@@ -158,6 +158,7 @@ REFUSAL_CREDENTIAL_NOT_BOUND = "REFUSAL_CREDENTIAL_NOT_BOUND"
 REFUSAL_PLATE_NOT_STATED = "REFUSAL_PLATE_NOT_STATED"
 REFUSAL_MATCH_DECIDED_BY_UNKNOWN = "REFUSAL_MATCH_DECIDED_BY_UNKNOWN"
 REFUSAL_OUTSIDE_THE_HOLDER_LINK_WINDOW = "REFUSAL_OUTSIDE_THE_HOLDER_LINK_WINDOW"
+REFUSAL_OUT_OF_VISITS = "REFUSAL_OUT_OF_VISITS"
 
 REFUSALS: dict[str, str] = {
     REFUSAL_VALID_TO_BEFORE_VALID_FROM: (
@@ -316,6 +317,13 @@ REFUSALS: dict[str, str] = {
         "Record its exit before recording another entry here, or the visit ledger "
         "would hold a car inside this garage twice. A visit still open at another "
         "garage of the pass does not refuse an entry here."
+    ),
+    REFUSAL_OUT_OF_VISITS: (
+        "The pass's visit allowance is spent, so this entry is not recorded on it: the "
+        "entries already recorded on the pass, counted the way the access answer counts "
+        "them, use every visit it allows. Judged under the pass's lock when the entry is "
+        "written, so two lanes recording the last visit at once record it once. The "
+        "detail carries the count. Nothing is written."
     ),
     REFUSAL_EXIT_BEFORE_ENTRY: (
         "The exit instant is earlier than the entry it would close."

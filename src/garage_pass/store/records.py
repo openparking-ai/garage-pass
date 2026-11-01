@@ -69,6 +69,7 @@ from garage_pass.findings import (
     REFUSAL_GARAGE_MISMATCH,
     REFUSAL_GARAGE_NOT_FOUND,
     REFUSAL_NO_OPEN_VISIT,
+    REFUSAL_OUT_OF_VISITS,
     REFUSAL_PASS_ALREADY_EXISTS,
     REFUSAL_PASS_NOT_FOUND,
     REFUSAL_PASS_NOT_REGISTRABLE,
@@ -1437,6 +1438,30 @@ def _open_visit(
     return cursor.fetchone()
 
 
+def _refuse_an_entry_the_allowance_does_not_cover(
+    cursor: Any, tenant_uuid: UUID, garage_external_id: str, pass_external_id: str,
+    identity: str, lane: str, at: datetime,
+) -> None:
+    """THE ALLOWANCE IS HELD AT THE WRITE as well as at the answer: a lane's
+    answer may rest on a count another lane has since spent. The entry is
+    asked about through the module's own access path, on the rows as they
+    stand under the pass's lock, and an answer that this pass is OUT OF
+    VISITS refuses the write by name. Every other answer is
+    the lane's to act on, and the entry is recorded as before."""
+    from garage_pass.findings import OUT_OF_VISITS
+    from garage_pass.store.access import answer_in_transaction
+    from garage_pass.terms import Direction
+
+    answer = answer_in_transaction(cursor, tenant_uuid, garage_external_id, identity, lane,
+                                   Direction.ENTRY, at)
+    if answer.reason == OUT_OF_VISITS and answer.pass_id == pass_external_id:
+        raise Refused(
+            REFUSAL_OUT_OF_VISITS, "vehicle_identity",
+            f"{identity!r} on pass {pass_external_id!r} at garage {garage_external_id!r}: "
+            f"{answer.detail}",
+        )
+
+
 def record_entry(
     cursor: Any, tenant_id: Any, garage_external_id: str, pass_external_id: str,
     vehicle_identity: str, lane: str, at: datetime,
@@ -1446,6 +1471,12 @@ def record_entry(
     require_aware(at, "at")
     garage_uuid, _garage = load_readable_garage(cursor, tenant_uuid, garage_external_id)
     pass_uuid, _pass = load_pass(cursor, tenant_uuid, garage_uuid, pass_external_id)
+    # LOCK_ORDER, first: the pass row, so the count below is read after every
+    # other entry on this pass has landed -- two lanes recording the last
+    # visit at once record it once
+    lock_pass_row(cursor, tenant_uuid, pass_uuid)
+    _refuse_an_entry_the_allowance_does_not_cover(
+        cursor, tenant_uuid, garage_external_id, pass_external_id, identity, lane, at)
     open_ = _open_visit(cursor, tenant_uuid, garage_uuid, pass_uuid, identity)
     if open_ is not None:
         raise Refused(
