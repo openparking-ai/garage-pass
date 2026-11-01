@@ -225,7 +225,9 @@ at the replacement: `--entered-at` states when the stay that is leaving entered,
 and a stay that entered after the replacement is not covered (`EXIT_ONLY`);
 with no entry instant the exit is covered and the replacement is named in
 `unmeasured`. A QR of the car whose own last day has passed, or whose first day
-has not come, no longer keeps the replaced car entering. A QR that never bound
+has not come, no longer keeps the replaced car entering; every other QR of the
+car live on the replacement's day becomes exit only with it, so a second QR the
+car holds does not keep it entering either. A QR that never bound
 has no car inside and is cancelled instead. All of it or none of it.
 **Cancelling one QR**
 (`cancel-code`) cancels that QR alone, bound or not — the pass, its other QRs

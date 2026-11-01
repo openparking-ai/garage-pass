@@ -2429,6 +2429,12 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
         "    if False:  # PLANTED: a replaced car's QR still opens the entry\n",
         "the old QR still enters after its car was replaced (the brief's check 3, first plant)",
     ),
+    "G28/only-the-named-qr-exit-only": (
+        G28, "store/enrolments.py",
+        "        if live and plate_key(bound) == plate_key(code.bound):\n",
+        "        if False:  # PLANTED: only the QR named is made exit only\n",
+        "a replaced car keeps entering on a second QR it holds on the pass, and by its plate",
+    ),
     "G28/old-qr-refused-at-exit": (
         G28, "store/enrolments.py",
         "    if direction is Direction.ENTRY and enrolment.exit_only_at is not None:\n",

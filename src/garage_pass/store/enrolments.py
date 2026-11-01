@@ -123,6 +123,7 @@ from garage_pass.enrolment import (
     Credential,
     CredentialState,
     MintedToken,
+    credential_state,
     digest,
     last_day,
     mint,
@@ -1264,6 +1265,45 @@ def _under_savepoint(cursor: Any, write: Any, which: str) -> Any:
     return result
 
 
+def _every_other_qr_of_the_car_exit_only(
+    cursor: Any, tenant_uuid: UUID, pass_uuid: UUID, named: UUID, code: Credential, by: str,
+    at: datetime, why: str, today: date,
+) -> list[str]:
+    """THE REPLACED CAR STOPS ENTERING BY EVERY QR IT HOLDS ON THE PASS TODAY,
+    not only the one the replacement was made from: a car may hold a second
+    QR (one reissued for it while the first still ran), and a live QR of the
+    car keeps it entering by its plate too (``registrations_of``). Every other
+    QR of the same car on the pass that is live on the replacement's day --
+    redeemed, or issued and within its own days, the rule ``registrations_of``
+    reads -- and not already replaced, is marked exit only with the same who,
+    when and why, under the pass lock, locked in LOCK_ORDER's second place. A
+    QR whose stay has not begun is the car's own later stay and is left as it
+    is. Their ids, in order."""
+    cursor.execute(
+        "SELECT id, external_id, COALESCE(plate, redeemed_vehicle_identity), state, starts_on, "
+        "days_valid FROM enrolments "
+        "WHERE tenant_id = %s AND pass_id = %s AND id <> %s AND state <> %s "
+        "AND exit_only_at IS NULL AND COALESCE(plate, redeemed_vehicle_identity) IS NOT NULL "
+        f"ORDER BY external_id {lock_clause()}",
+        (tenant_uuid, pass_uuid, named, CredentialState.CANCELLED.value),
+    )
+    same_car = []
+    for uuid, ext, bound, state, starts_on, days in cursor.fetchall():
+        read = credential_state(starts_on, days, CredentialState(state), today)
+        live = read == CredentialState.REDEEMED.value or (
+            read == CredentialState.ISSUED.value and starts_on <= today)
+        if live and plate_key(bound) == plate_key(code.bound):
+            same_car.append((uuid, ext))
+    for uuid, _ext in same_car:
+        cursor.execute(
+            "UPDATE enrolments SET exit_only_at = %s, exit_only_by = %s, exit_only_reason = %s "
+            "WHERE tenant_id = %s AND id = %s AND exit_only_at IS NULL",
+            (at, by, why, tenant_uuid, uuid),
+        )
+        _one_row(cursor, "a replacement", code)
+    return [ext for _uuid, ext in same_car]
+
+
 def replace_car(
     cursor: Any, tenant_id: Any, garage_external_id: str, enrolment_external_id: str,
     new_enrolment_external_id: str, starts_on: date, days_valid: object, *, by: str,
@@ -1309,7 +1349,10 @@ def replace_car(
             )
             _one_row(cursor, "a replacement", code)
             old = {"enrolment": code.id, "vehicle_identity": code.bound,
-                   "now": "exit_only", "at": at}
+                   "now": "exit_only", "at": at,
+                   "also_exit_only": _every_other_qr_of_the_car_exit_only(
+                       cursor, tenant_uuid, _pass_uuid, _uuid, code, by, at, why,
+                       day_of(at, tz))}
         else:
             cursor.execute(
                 "UPDATE enrolments SET state = %s, cancelled_by = %s, cancelled_at = %s, "
