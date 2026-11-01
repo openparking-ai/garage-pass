@@ -171,7 +171,8 @@ GUARANTEES: dict[str, str] = {
         "row cannot name another tenant's garage or pass even by a raw insert. The install "
         "step sets the application role's password as the SCRAM-SHA-256 verifier it "
         "computes, so no statement it sends -- and no server log of statements -- carries "
-        "the password."
+        "the password. It reads the owner's DSN from the environment, and refuses a DSN on "
+        "the command line that carries a password, so ps shows neither password."
     ),
     "G11": (
         "Nothing real in the tree: no email address that is not obviously invented, "

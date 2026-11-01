@@ -486,8 +486,16 @@ and the application role given a login:
 
 ```
 for m in migrations/*.sql; do psql "$DSN" -v ON_ERROR_STOP=1 -f "$m"; done   # 0001, 0002, 0003
-GARAGE_PASS_APP_PASSWORD=... python scripts/ensure-app-role.py "$DSN"
+GARAGE_PASS_OWNER_DSN="$DSN" GARAGE_PASS_APP_PASSWORD=... python scripts/ensure-app-role.py
 ```
+
+The owner's DSN, like the application role's password, is read from the
+environment, never from an argument, because every user on the machine can
+read a command's arguments in `ps`. A DSN on the command line is still taken
+when it carries no password — libpq then reads the password from `PGPASSFILE`
+(or `~/.pgpass`) — and one that carries a password is refused, unprinted, before
+anything connects. The `psql` loop above reads the password the same way: keep
+it out of `$DSN` and in `PGPASSFILE`, or export `PGPASSWORD` for the two steps.
 
 Both steps are run by the suite, not only described here: a test applies the
 migration and runs `ensure-app-role.py` against the test cluster, logs in as the

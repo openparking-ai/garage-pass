@@ -2965,6 +2965,13 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
         "0007 puts FORCE on a table that did not have it, so the catalogue after it is not the "
         "one it found (and 0001's own FORCE can no longer be seen missing)",
     ),
+    "G10/owner-password-in-argv": (
+        G10, "scripts/ensure-app-role.py",
+        "        if carries_password:\n",
+        "        if False:  # PLANTED: the owner's password is taken from the command line\n",
+        "the install step runs on an owner DSN whose password ps shows to every user on the "
+        "machine",
+    ),
     "G10/password-sent": (
         G10, "scripts/ensure-app-role.py",
         "        verifier = scram_verifier(connection, password)\n",
