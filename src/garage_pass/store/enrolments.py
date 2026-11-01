@@ -413,7 +413,17 @@ def _stay_of(
     """A BOUND QR IS JUDGED BY ITS OWN STAY, never by the car's next one: the
     registrations of the QR's car ON THE QR'S PASS at this garage, read on
     ``today``. Nothing carries over -- a plate the next stay holds is that
-    stay's, and this QR does not answer for it."""
+    stay's, and this QR does not answer for it.
+
+    A QR MADE FOR A PLATE reads only the registrations that OVERLAP ITS OWN
+    DAYS, ``starts_on`` to its last day -- the one it was made on, however
+    long that runs. A registration of the same car on the same pass that
+    begins after its last day, or ends before its first, is a later or an
+    earlier stay, another QR's, and never makes this one work: measured before
+    this, a QR over for days was recognised again when the car came back on
+    the pass on a QR of its own, and that QR opened before its first day. A QR
+    stored before plates were required is judged by every registration of its
+    car on the pass, as before."""
     cursor.execute(
         "SELECT effective_day, end_day, ended_reason FROM vehicle_registrations "
         "WHERE tenant_id = %s AND garage_id = %s AND pass_id = %s AND vehicle_identity = %s "
@@ -421,6 +431,9 @@ def _stay_of(
         (tenant_uuid, garage_uuid, pass_uuid, plate_key(code.bound)),
     )
     rows = cursor.fetchall()
+    if code.plate is not None:
+        rows = [row for row in rows
+                if row[0] <= code.last_day and (row[1] is None or row[1] > code.starts_on)]
     for row in rows:
         effective, end, _why = row
         if effective <= today and (end is None or today < end):

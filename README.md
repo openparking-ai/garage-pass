@@ -209,7 +209,10 @@ day a stay ended early or turned over, its QR is refused
 its own pass — and on the day a stay ended early, the car read by its plate at
 an exit is let out on that pass the same way; after that day the QR is refused
 `REFUSAL_CREDENTIAL_STAY_ENDED` at either end, and before its stay begins
-`REFUSAL_CREDENTIAL_NOT_STARTED`.
+`REFUSAL_CREDENTIAL_NOT_STARTED` — judged only on the registrations that
+overlap the QR's own days (the one it was made on, however long that runs), so
+the same car back on the same pass on a later QR does not make an earlier QR
+work again, nor the later one open early.
 **Nothing carries over**: a plate read, a QR and a picture match for the next
 stay answer on the next stay's pass, never the earlier one. A shorter stay is
 `end-registration` (to an earlier day) or `end-stay`.

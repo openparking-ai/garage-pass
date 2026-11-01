@@ -287,3 +287,34 @@ def test_a_stay_ended_early_cancels_the_links_and_unbound_qrs_that_reach_past_it
     assert all(r[3] is not None and r[3] <= OCT[10] for r in registrations(app, tenant_id)), (
         "nothing registered the stay again")
     assert (out["holder_links_cancelled"], out["enrolments_cancelled"]) == (1, 1), out
+
+
+@pytest.mark.guarantee("G32")
+def test_a_qr_answers_on_its_own_days_never_on_a_later_stay_of_the_same_car_on_the_pass(
+    app, tenant_id
+):
+    """A QR made for a plate is its own stay's days. The car comes back on the
+    SAME pass for a later stay, on a QR of its own: the earlier QR, long over,
+    does not work again on the later stay's registration -- refused STAY
+    ENDED, the exit still answered -- and the later QR does not open before
+    its own first day on the earlier stay's registration -- refused NOT
+    STARTED. Measured before this: both were recognised, because each was
+    judged by whatever registration the plate held on the pass that day."""
+    a = seeded(app, tenant_id, TRANSIENT_ENTRY)
+    early = issue_plate(app, tenant_id, TRANSIENT_ENTRY, a, "ABC123", "qr-early",
+                        starts_on=OCT[8], days_valid=3, at=DESK)["token"]
+    late = issue_plate(app, tenant_id, TRANSIENT_ENTRY, a, "ABC123", "qr-late",
+                       starts_on=OCT[12], days_valid=3, at=DESK)["token"]
+    early_in = shown(app, tenant_id, early, 13, Direction.ENTRY)
+    assert early_in.refusal is not None, "a QR over since Oct 10 let the car in on Oct 13"
+    assert early_in.refusal.code == f.REFUSAL_CREDENTIAL_STAY_ENDED
+    assert "2026-10-11" in early_in.refusal.detail and not early_in.recognised
+    early_out = shown(app, tenant_id, early, 13, Direction.EXIT)
+    assert early_out.refusal.code == f.REFUSAL_CREDENTIAL_STAY_ENDED
+    assert early_out.answer.exit_note is not None, "the exit is answered, never refused"
+    late_in = shown(app, tenant_id, late, 9, Direction.ENTRY)
+    assert late_in.refusal is not None, "a QR from Oct 12 let the car in on Oct 9"
+    assert late_in.refusal.code == f.REFUSAL_CREDENTIAL_NOT_STARTED
+    # the controls: each QR on its own days
+    assert shown(app, tenant_id, early, 9, Direction.ENTRY).recognised
+    assert shown(app, tenant_id, late, 13, Direction.ENTRY).recognised

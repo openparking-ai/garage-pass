@@ -2653,6 +2653,14 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
         "# PLANTED\n",
         "end-stay ends nothing, so the next stay from the checkout day is refused (check 3)",
     ),
+    "G32/qr-judged-by-the-plates-stay": (
+        G32, "store/enrolments.py",
+        "    if code.plate is not None:\n        rows = [row for row in rows\n",
+        "    if False:  # PLANTED: judged by whatever the plate holds on the pass\n"
+        "        rows = [row for row in rows\n",
+        "a QR over for days opens again when the same car comes back on the pass on a QR of "
+        "its own",
+    ),
     "G32/end-stay-leaves-links-live": (
         G32, "store/records.py",
         '            f"AND starts_on + days_valid - 1 >= %s{unbound}",\n',
