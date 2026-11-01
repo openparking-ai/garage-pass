@@ -155,6 +155,12 @@ or deleted) where the QR's plate, folded, has five characters or more
 (`ONE_DIFFERENCE_MIN_LENGTH`; a shorter plate passes on the plate, a look-alike
 or nothing read, and one difference is clearly different), or nothing usable —
 the lane hands in nothing when it read no plate or one below its confidence.
+**At an entry, one difference and nothing read open nothing on their own**:
+a QR is a picture anyone can be sent, so the car there is a picture match
+(`match_required`), and those two pass at an exit only. **One car in at a
+time**: while the QR's car has an entry recorded on its pass at that garage and
+no exit, the QR is refused at an entry (`REFUSAL_VISIT_ALREADY_OPEN`), whatever
+was read, and a picture match does not open it either; the exit still answers.
 The answer says which (`passed_by`), beside the QR's own id (`enrolment`) so the
 stay can be tied to the QR, and it carries the QR's plate (`qr_plate`) so the lane checks its owner's deny rule
 against the car it lets in. A pass by one difference or by nothing read is

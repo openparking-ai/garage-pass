@@ -2731,6 +2731,18 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
         "a QR stored before plates were required is shown by CAR-2 and lets it in on CAR-1's "
         "first-use binding",
     ),
+    "G33/entry-opens-on-a-near-read": (
+        G33, "store/enrolments.py",
+        "    if direction is Direction.ENTRY and passed_by in RECORDED_PASSES:\n",
+        "    if False:  # PLANTED: one difference and nothing read open at an entry\n",
+        "a screenshot of the QR lets a car with nothing read, or one character off, in on it",
+    ),
+    "G33/second-car-in": (
+        G33, "store/enrolments.py",
+        "    if inside is not None:\n",
+        "    if False:  # PLANTED: the QR lets a car in while its own car is inside\n",
+        "a screenshot of the QR lets a second car in while the QR's own car is still inside",
+    ),
     "G31/o-and-i-are-letters": (
         G31, "enrolment.py",
         "    return _unseparated(text).translate(_READ_AS_DIGITS)\n",

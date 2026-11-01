@@ -153,6 +153,7 @@ from garage_pass.findings import (
     REFUSAL_MATCH_DECIDED_BY_UNKNOWN,
     REFUSAL_PASS_NOT_REGISTRABLE,
     REFUSAL_PLATE_NOT_STATED,
+    REFUSAL_VISIT_ALREADY_OPEN,
     Refused,
 )
 from garage_pass.garage import require_text
@@ -164,6 +165,7 @@ from garage_pass.store.records import (
     ENDED_AFTER_LAST_DAY,
     ONE_PASS_PER_GARAGE,
     REGISTRABLE_STATES,
+    _open_visit,
     as_uuid,
     change_state,
     ends_a_stay_that_day,
@@ -825,7 +827,8 @@ def _present_bound(
     A QR MADE FOR A PLATE: ``similar_enough`` against that plate -- the same
     plate, a look-alike, one difference, or nothing usable read (the lane
     hands in nothing, or nothing but spaces) passes; a CLEARLY DIFFERENT
-    plate is None, a case for a person. A QR STORED BEFORE PLATES WERE
+    plate is None, a case for a person -- and AT AN ENTRY so are one
+    difference and nothing read, which pass at an exit only. A QR STORED BEFORE PLATES WERE
     REQUIRED keeps its first-use binding exactly as it was: the identity it
     bound, exact text, passes as the same plate; nothing read is None (a
     picture match); any other identity is refused WRONG CAR. It writes
@@ -852,6 +855,12 @@ def _present_bound(
         )
     else:
         passed_by = PASSED_SAME_PLATE
+    if direction is Direction.ENTRY and passed_by in RECORDED_PASSES:
+        # AT AN ENTRY, A READ THAT IS NOT THE PLATE OPENS NOTHING ON ITS OWN: a
+        # QR is a picture anyone can be sent, and the car with nothing read or
+        # one character off is a car this QR cannot vouch for -- a picture
+        # match decides. At an exit it still passes: nobody is kept inside.
+        passed_by = None
     if direction is Direction.ENTRY and enrolment.exit_only_at is not None:
         raise Refused(
             REFUSAL_CREDENTIAL_EXIT_ONLY, "direction",
@@ -859,6 +868,27 @@ def _present_bound(
             f"at {local(enrolment.exit_only_at, tz).isoformat()}; it answers at an exit only.",
         )
     return passed_by  # None: a picture match, or a person, decides
+
+
+def _refuse_a_second_car_in(
+    cursor: Any, tenant_uuid: UUID, garage_uuid: UUID, garage_external_id: str,
+    pass_uuid: UUID, code: Credential, direction: Direction, tz: ZoneInfo,
+) -> None:
+    """ONE QR LETS ONE CAR IN AT A TIME: at an entry, a bound QR whose car has
+    an entry recorded on the QR's pass at this garage and no exit is refused
+    by name, whatever was read -- the QR's car is inside, so the car at the
+    lane is not it, or the ledger is missing an exit the lane must record
+    first. The exit is never refused here."""
+    if direction is not Direction.ENTRY:
+        return
+    inside = _open_visit(cursor, tenant_uuid, garage_uuid, pass_uuid, plate_key(code.bound))
+    if inside is not None:
+        raise Refused(
+            REFUSAL_VISIT_ALREADY_OPEN, "vehicle_identity",
+            f"{ENROLMENT} {code.id!r}'s car entered garage {garage_external_id!r} on pass "
+            f"{code.pass_id!r} at {local(inside[1], tz).isoformat()} and has no recorded "
+            "exit; the QR lets one car in at a time.",
+        )
 
 
 def _keep_the_pass(
@@ -969,6 +999,8 @@ def redeem_enrolment(
             stay, stay_row = _stay_of(cursor, tenant_uuid, garage_uuid, pass_uuid, enrolment,
                                       today)
             _refuse_outside_the_stay(stay, stay_row, enrolment, direction)
+            _refuse_a_second_car_in(cursor, tenant_uuid, garage_uuid, garage_external_id,
+                                    pass_uuid, enrolment, direction, tz)
             cursor.execute(f"RELEASE SAVEPOINT {SAVEPOINT}")
             if match_required:
                 # A CLEARLY DIFFERENT CAR -- NOTHING OPENS ON THIS QR: the
@@ -1400,6 +1432,9 @@ def confirm_match(
                                       day_of(at, tz))
             try:
                 _refuse_outside_the_stay(stay, stay_row, code, direction)
+                # and a picture of the QR's car is not the car while it is inside
+                _refuse_a_second_car_in(cursor, tenant_uuid, garage_uuid_, garage_external_id,
+                                        pass_uuid, code, direction, tz)
             except Refused as outside:
                 refusal = outside
             if refusal is None and stay == STAY_LAST_DAY:
