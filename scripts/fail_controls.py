@@ -2693,6 +2693,13 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
         "a guest who checked out redeems the unused holder link and gets a working QR on the "
         "pass again",
     ),
+    "G32/end-stay-misses-the-checkout-day": (
+        G32, "store/records.py",
+        '            f"AND starts_on + days_valid - 1 >= %s{unbound}",\n',
+        '            f"AND starts_on + days_valid - 1 > %s{unbound}",  # PLANTED: off by one\n',
+        "a holder link whose last day is the checkout day stays live, and the guest redeems it "
+        "on the day they left",
+    ),
     "G32/old-stay-answers-on-its-pass": (
         G32, "store/enrolments.py",
         "    return STAY_ENDED, (rows[-1] if rows else None)\n",

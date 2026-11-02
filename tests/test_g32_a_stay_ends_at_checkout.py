@@ -318,3 +318,38 @@ def test_a_qr_answers_on_its_own_days_never_on_a_later_stay_of_the_same_car_on_t
     # the controls: each QR on its own days
     assert shown(app, tenant_id, early, 9, Direction.ENTRY).recognised
     assert shown(app, tenant_id, late, 13, Direction.ENTRY).recognised
+
+
+@pytest.mark.guarantee("G32")
+def test_a_link_and_an_unbound_qr_whose_last_day_is_the_checkout_day_are_cancelled(
+    app, tenant_id
+):
+    """THE BOUNDARY: a holder link, and a QR that has bound no car, whose LAST
+    DAY IS THE CHECKOUT DAY still reach the stay -- the guest could redeem
+    them on the day they left -- so end-stay cancels them; one whose last day
+    was the day before is over and is left as it is."""
+    a = seeded(app, tenant_id, TRANSIENT_ENTRY)
+    issue_plate(app, tenant_id, TRANSIENT_ENTRY, a, "ABC123", "qr-a", starts_on=OCT[8],
+                days_valid=5, at=DESK)
+    link = issue_link(app, tenant_id, TRANSIENT_ENTRY, a, "link-to-checkout", starts_on=OCT[8],
+                      days_valid=3, at=DESK)  # Oct 8, 9, 10
+    issue_link(app, tenant_id, TRANSIENT_ENTRY, a, "link-to-the-day-before", starts_on=OCT[8],
+               days_valid=2, at=DESK)  # Oct 8, 9
+    unbound = issue(app, tenant_id, TRANSIENT_ENTRY, a, "qr-to-checkout", starts_on=OCT[8],
+                    days_valid=3, at=DESK)
+    with tenant(app, tenant_id) as cursor:
+        end_stay(cursor, tenant_id, TRANSIENT_ENTRY.id, a.id, OCT[10], by="desk",
+                 reason="guest checked out")
+    app.commit()
+    assert link_row(app, tenant_id, "link-to-checkout")[0] == "cancelled", (
+        "a link whose last day is the checkout day was left live")
+    assert enrolment_row(app, tenant_id, "qr-to-checkout")[0] == "cancelled"
+    assert link_row(app, tenant_id, "link-to-the-day-before")[0] == "issued"
+    with pytest.raises(f.Refused) as refused:
+        redeem_link(app, tenant_id, TRANSIENT_ENTRY, link["token"], plate="ABC123",
+                    starts_on=OCT[10], days_valid=1, at=at(OCT[10], 15))
+    app.rollback()
+    assert refused.value.code == f.REFUSAL_CREDENTIAL_CANCELLED
+    late = redeem(app, tenant_id, TRANSIENT_ENTRY, unbound["token"], "XYZ789",
+                  direction=Direction.ENTRY, at=at(OCT[10], 15))
+    assert late.refusal is not None and late.refusal.code == f.REFUSAL_CREDENTIAL_CANCELLED
