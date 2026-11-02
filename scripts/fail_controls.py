@@ -1783,12 +1783,17 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
         ),
         "the description decides, by its length -- the spelling the G13 scan could not see",
     ),
-    "G23/token-in-argv-accepted": (
+    "G23/token-in-argv-silent": (
         G23, "cli.py",
         "        if not args.token_in_argv:\n",
-        "        if False:  # PLANTED: a token on the command line is taken as it always was\n",
-        "a lane's QR token is accepted as an argument, where ps shows it to every user on the "
-        "machine",
+        "        if False:  # PLANTED: a token on the command line is taken without a word\n",
+        "a caller still putting the QR token where ps shows it is never told to move it",
+    ),
+    "G23/stdin-not-read": (
+        G23, "cli.py",
+        "    return sys.stdin.read()\n",
+        "    return args.token or ''  # PLANTED: standard input is not read\n",
+        "a lane that writes the token to standard input, as told, redeems nothing",
     ),
     "G23/stored-plaintext": (
         G23, "store/enrolments.py",

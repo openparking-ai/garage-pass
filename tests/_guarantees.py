@@ -371,9 +371,9 @@ GUARANTEES: dict[str, str] = {
         "positive control that the scan reads the column that holds it, and a planted "
         "sentence as the positive control that the rendered scan can see one, because a "
         "zero from an unproven scan is UNMEASURED, not clean. A TOKEN IS NOT AN "
-        "ARGUMENT: the command line reads a presented token from standard input, and "
-        "--token is refused by name (REFUSAL_TOKEN_ON_THE_COMMAND_LINE), the token not "
-        "echoed, unless --token-in-argv stands beside it. secrets and hashlib from "
+        "ARGUMENT: the command line reads a presented token from standard input; --token "
+        "is still taken for one release, with a deprecation warning on stderr that never "
+        "carries the token, unless --token-in-argv stands beside it. secrets and hashlib from "
         "the standard library; no dependency; no QR image."
     ),
     "G24": (

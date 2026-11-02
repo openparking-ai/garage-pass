@@ -248,10 +248,11 @@ day); a QR that starts before them or runs past them is refused by name
 owner-only path stands: no link is needed to enrol. **A token is not an
 argument**: `redeem-enrolment` and `redeem-holder-link` read the token from
 standard input, because every user on the machine can read a command's
-arguments in `ps`; `--token` is refused by name
-(`REFUSAL_TOKEN_ON_THE_COMMAND_LINE`, the token not echoed) unless
-`--token-in-argv` stands beside it, the old form kept for an integrator that has
-not moved yet. Text anywhere — a name, a
+arguments in `ps`. `--token` is still taken for **one release**, so a caller
+of the version before this one keeps working while it moves to standard input;
+it prints a deprecation warning on stderr (never the token), and
+`--token-in-argv` beside it takes it without the warning. A later release
+refuses `--token` without `--token-in-argv`. Text anywhere — a name, a
 phone, an id, a lane, a label — may be in any script; a control character in
 it (a NUL, a line break inside it) is refused by name, never handed to the
 database driver.

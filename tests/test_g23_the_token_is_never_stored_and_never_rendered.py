@@ -237,19 +237,20 @@ def test_the_plaintext_is_rendered_by_the_issue_calls_and_by_nothing_else(
 
 
 @pytest.mark.guarantee("G23")
-def test_the_command_line_reads_a_token_from_stdin_and_refuses_one_in_argv_unless_told(
+def test_the_command_line_reads_a_token_from_stdin_and_warns_on_one_in_argv(
     app, tenant_id, capsys, monkeypatch
 ):
     """A TOKEN IS NOT AN ARGUMENT: arguments are visible in ``ps`` to every
     user on the machine. ``redeem-enrolment`` and ``redeem-holder-link`` read
-    the token from standard input; ``--token`` is refused by name
-    (REFUSAL_TOKEN_ON_THE_COMMAND_LINE, exit 3, nothing written) unless the
-    caller also says ``--token-in-argv`` -- the old form, kept behind a flag
-    for an integrator that has not moved yet -- and the refusal never echoes
-    the token. Measured before this: the token was a required argument."""
+    the token from standard input. THE BRIDGE: for one release ``--token`` is
+    still taken, exactly as the version before this one required it, so a
+    caller keeps redeeming while it moves -- and it is told so on stderr, a
+    warning that never carries the token; ``--token-in-argv`` beside it takes
+    it without the warning. Measured before this: the token was a required
+    argument, and nothing said it should not be."""
     import io
 
-    from garage_pass.cli import main
+    from garage_pass.cli import TOKEN_IN_ARGV_WARNING, main
 
     _dsn_for_the_app(monkeypatch)
     pass_ = seeded(app, tenant_id, TRANSIENT_ENTRY)
@@ -262,29 +263,30 @@ def test_the_command_line_reads_a_token_from_stdin_and_refuses_one_in_argv_unles
               "--plate", "HOLDER-1", "--starts-on", "2026-06-01", "--days-valid", "3",
               "--at", "2026-06-01T12:00:00-06:00"]
 
-    def run(argv: list[str], stdin: str = "") -> tuple[int, str]:
+    def run(argv: list[str], stdin: str = "") -> tuple[int, str, str]:
         monkeypatch.setattr("sys.stdin", io.StringIO(stdin))
         status = main(argv)
         out = capsys.readouterr()
-        return status, out.out + out.err
+        return status, out.out, out.err
 
-    for command, rest, token in (("redeem-enrolment", MOVE, qr),
-                                 ("redeem-holder-link", HOLDER, link)):
-        status, printed = run([command, *T, "--token", token, *rest])
-        assert status == 3 and '"REFUSAL_TOKEN_ON_THE_COMMAND_LINE"' in printed, printed
-        assert '"field": "token"' in printed and token not in printed
-    assert credential(app, tenant_id, "link-1", HOLDER_LINK).state.value == "issued"
-    status, printed = run(["redeem-enrolment", *T, *MOVE], stdin=f"{qr}\n")
-    assert status == 0 and '"recognised": true' in printed and qr not in printed
-    status, printed = run(["redeem-holder-link", *T, *HOLDER], stdin=f"  {link}\n")
-    assert status == 0 and link not in printed, printed
+    # the caller of the version before this one, unchanged: it still redeems,
+    # and is told to move -- never with the token in the warning
+    status, out, err = run(["redeem-enrolment", *T, "--token", qr, *MOVE])
+    assert status == 0 and '"recognised": true' in out, (out, err)
+    assert TOKEN_IN_ARGV_WARNING in err and qr not in out + err
+    # standard input, as told: no warning
+    status, out, err = run(["redeem-enrolment", *T, *MOVE], stdin=f"{qr}\n")
+    assert status == 0 and '"recognised": true' in out and qr not in out
+    assert TOKEN_IN_ARGV_WARNING not in err
+    status, out, err = run(["redeem-holder-link", *T, *HOLDER], stdin=f"  {link}\n")
+    assert status == 0 and link not in out + err and TOKEN_IN_ARGV_WARNING not in err
     assert credential(app, tenant_id, "link-1", HOLDER_LINK).state.value == "redeemed"
-    status, printed = run(["redeem-enrolment", *T, *MOVE], stdin="")
-    assert '"REFUSAL_FIELD_BLANK"' in printed and '"field": "token"' in printed, (
+    status, out, err = run(["redeem-enrolment", *T, *MOVE], stdin="")
+    assert '"REFUSAL_FIELD_BLANK"' in out and '"field": "token"' in out, (
         "nothing on stdin is a blank token, refused as a blank --token always was")
-    # the old form, behind its flag
-    status, printed = run(["redeem-enrolment", *T, "--token-in-argv", "--token", qr, *MOVE])
-    assert status == 0 and '"recognised": true' in printed
+    # the argv form on purpose, behind its flag: no warning
+    status, out, err = run(["redeem-enrolment", *T, "--token-in-argv", "--token", qr, *MOVE])
+    assert status == 0 and '"recognised": true' in out and TOKEN_IN_ARGV_WARNING not in err
 
 
 def issue_plate_for(app, tenant_id, pass_) -> str:

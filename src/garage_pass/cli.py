@@ -54,9 +54,9 @@ vehicle identity it measured: the bind, and the access answer for that same
 movement -- always, refused or not; exit status follows the answer's outcome,
 and the enrolment half is in the JSON), ``issue-holder-link`` and
 ``redeem-holder-link`` (the holder writes their own name and phone onto the
-pass and gets their QR). Both redemptions read the token from standard input,
-and take ``--token`` only beside ``--token-in-argv``. ``--days-valid`` is stated,
-never defaulted: the
+pass and gets their QR). Both redemptions read the token from standard input;
+``--token`` is still taken this release, with a deprecation warning on stderr.
+``--days-valid`` is stated, never defaulted: the
 monthly-parker product uses 3 -- that is its number, not this module's. A
 store command with no ``GARAGE_PASS_DSN``, or one the database refuses to
 connect, prints a sentence to stderr and exits 2.
@@ -118,7 +118,6 @@ from garage_pass.documents import (
 from garage_pass.findings import (
     REFUSAL_DOCUMENT_UNREADABLE,
     REFUSAL_FIELD_BLANK,
-    REFUSAL_TOKEN_ON_THE_COMMAND_LINE,
     Refused,
     Unreadable,
 )
@@ -313,27 +312,38 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _token(s: argparse.ArgumentParser, what: str) -> None:
-    """THE TOKEN IS READ FROM STANDARD INPUT, never required as an argument:
-    arguments are visible in ``ps`` to every user on the machine, and a token
-    is a working credential. ``--token`` stays for an integrator that has not
-    moved yet, and only with ``--token-in-argv`` beside it (``_presented``)."""
-    s.add_argument("--token", help=f"{what}; read from standard input when absent, and "
-                   "accepted here only with --token-in-argv")
+    """THE TOKEN IS READ FROM STANDARD INPUT: arguments are visible in ``ps``
+    to every user on the machine, and a token is a working credential.
+    ``--token`` is still taken for ONE RELEASE, with a warning on stderr, so a
+    caller written for the version before this one keeps working while it
+    moves to standard input (``_presented``); ``--token-in-argv`` takes it
+    without the warning, for a caller that has said so on purpose."""
+    s.add_argument("--token", help=f"{what}; read from standard input when absent. "
+                   "Deprecated here: ps shows it")
     s.add_argument("--token-in-argv", action="store_true",
-                   help="accept --token on the command line, where ps shows it")
+                   help="take --token on the command line, where ps shows it, without the "
+                   "deprecation warning")
+
+
+#: The warning a ``--token`` on the command line prints on stderr. It names
+#: the option, never the token.
+TOKEN_IN_ARGV_WARNING = (
+    "warning: --token on the command line is deprecated -- ps shows it to every user on "
+    "the machine. Write the token to standard input instead; a later release refuses "
+    "--token without --token-in-argv."
+)
 
 
 def _presented(args: argparse.Namespace) -> str:
-    """The token a redemption presents: standard input, or ``--token`` when
-    the caller asked for it by ``--token-in-argv``. A ``--token`` without the
-    flag is refused by name, and the refusal never carries the token."""
+    """The token a redemption presents: standard input, or ``--token``. A
+    ``--token`` without ``--token-in-argv`` is still taken this release -- the
+    BRIDGE: a caller of the version before this one, which required
+    ``--token`` and knows neither standard input nor the flag, keeps
+    redeeming -- and prints ``TOKEN_IN_ARGV_WARNING`` on stderr. The token is
+    never in what is printed."""
     if args.token is not None:
         if not args.token_in_argv:
-            raise Refused(
-                REFUSAL_TOKEN_ON_THE_COMMAND_LINE, "token",
-                "--token was given without --token-in-argv; write the token to standard "
-                "input instead.",
-            )
+            print(TOKEN_IN_ARGV_WARNING, file=sys.stderr)
         return args.token
     return sys.stdin.read()
 

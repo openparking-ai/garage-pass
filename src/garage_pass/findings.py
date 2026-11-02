@@ -159,7 +159,6 @@ REFUSAL_PLATE_NOT_STATED = "REFUSAL_PLATE_NOT_STATED"
 REFUSAL_MATCH_DECIDED_BY_UNKNOWN = "REFUSAL_MATCH_DECIDED_BY_UNKNOWN"
 REFUSAL_OUTSIDE_THE_HOLDER_LINK_WINDOW = "REFUSAL_OUTSIDE_THE_HOLDER_LINK_WINDOW"
 REFUSAL_OUT_OF_VISITS = "REFUSAL_OUT_OF_VISITS"
-REFUSAL_TOKEN_ON_THE_COMMAND_LINE = "REFUSAL_TOKEN_ON_THE_COMMAND_LINE"
 
 REFUSALS: dict[str, str] = {
     REFUSAL_VALID_TO_BEFORE_VALID_FROM: (
@@ -318,12 +317,6 @@ REFUSALS: dict[str, str] = {
         "Record its exit before recording another entry here, or the visit ledger "
         "would hold a car inside this garage twice. A visit still open at another "
         "garage of the pass does not refuse an entry here."
-    ),
-    REFUSAL_TOKEN_ON_THE_COMMAND_LINE: (
-        "A QR's or a holder link's token was given to the command line as an argument, "
-        "where every user on the machine can read it in the process list. Write it to "
-        "standard input instead; an integrator that cannot yet says --token-in-argv beside "
-        "--token. The token is not echoed. Nothing is written."
     ),
     REFUSAL_OUT_OF_VISITS: (
         "The pass's visit allowance is spent, so this entry is not recorded on it: the "
