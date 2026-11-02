@@ -353,3 +353,28 @@ def test_a_link_and_an_unbound_qr_whose_last_day_is_the_checkout_day_are_cancell
     late = redeem(app, tenant_id, TRANSIENT_ENTRY, unbound["token"], "XYZ789",
                   direction=Direction.ENTRY, at=at(OCT[10], 15))
     assert late.refusal is not None and late.refusal.code == f.REFUSAL_CREDENTIAL_CANCELLED
+
+
+@pytest.mark.guarantee("G32")
+def test_a_registration_that_ends_on_a_qrs_first_day_does_not_open_it_the_day_before(
+    app, tenant_id
+):
+    """THE BOUNDARY of a QR's own days: the car was registered on the pass from
+    Oct 8, and the owner ended that registration on Oct 10 (end-day
+    exclusive: its last day was Oct 9). A QR is then made for the car from
+    Oct 10. The earlier registration does not overlap the QR's days, so on
+    Oct 9 the QR is refused NOT STARTED, and on Oct 10 it is recognised."""
+    from garage_pass.passes import State
+    from garage_pass.store.records import end_registration, register_vehicle
+
+    a = seeded(app, tenant_id, TRANSIENT_ENTRY, state=State.ACTIVE)
+    with tenant(app, tenant_id) as cursor:
+        register_vehicle(cursor, tenant_id, TRANSIENT_ENTRY.id, a.id, "ABC123", OCT[8])
+        end_registration(cursor, tenant_id, TRANSIENT_ENTRY.id, a.id, "ABC123", OCT[10])
+    app.commit()
+    token = issue_plate(app, tenant_id, TRANSIENT_ENTRY, a, "ABC123", "qr-from-10",
+                        starts_on=OCT[10], days_valid=3, at=DESK)["token"]
+    early = shown(app, tenant_id, token, 9, Direction.ENTRY)
+    assert early.refusal is not None, "a registration ending on the QR's first day opened it"
+    assert early.refusal.code == f.REFUSAL_CREDENTIAL_NOT_STARTED and not early.recognised
+    assert shown(app, tenant_id, token, 10, Direction.ENTRY).recognised

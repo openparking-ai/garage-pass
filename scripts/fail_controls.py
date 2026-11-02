@@ -2686,6 +2686,14 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
         "a QR over for days opens again when the same car comes back on the pass on a QR of "
         "its own",
     ),
+    "G32/own-days-off-by-one": (
+        G32, "store/enrolments.py",
+        "                if row[0] <= code.last_day and (row[1] is None or row[1] > "
+        "code.starts_on)]\n",
+        "                if row[0] <= code.last_day and (row[1] is None or row[1] >= "
+        "code.starts_on)]  # PLANTED\n",
+        "a registration that ended on a QR's first day opens the QR the day before its stay",
+    ),
     "G32/end-stay-leaves-links-live": (
         G32, "store/records.py",
         '            f"AND starts_on + days_valid - 1 >= %s{unbound}",\n',
