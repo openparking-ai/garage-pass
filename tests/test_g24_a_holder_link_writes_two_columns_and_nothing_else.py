@@ -34,6 +34,7 @@ from enrolment_harness import (
     link_row,
     redeem,
     redeem_link,
+    registrations,
     seeded,
 )
 from fixtures import at, everything_terms
@@ -297,3 +298,47 @@ def test_the_one_validator_refuses_a_control_character_wherever_text_is_read():
             assert require_text(name, "holder.name") == name
         except f.Refused as refused:
             pytest.fail(f"a real person's name was refused: {refused}")
+
+
+@pytest.mark.guarantee("G24")
+@pytest.mark.parametrize(("starts_on", "days_valid", "field"), [
+    (date(2026, 5, 31), 3, "starts_on"),   # before the link's first day
+    (date(2026, 6, 1), 4, "days_valid"),   # one day past the link's last day
+    (date(2026, 6, 3), 2, "days_valid"),   # starts inside, runs past it
+    (date(2026, 6, 1), 400, "days_valid"),  # a year of parking from a three-day link
+])
+def test_the_holder_cannot_choose_days_outside_the_owners_window(
+    app, tenant_id, starts_on, days_valid, field
+):
+    """THE OWNER'S WINDOW BOUNDS THE HOLDER'S QR: the link is issued for
+    starts_on and days_valid (June 1st, three days), and the QR the holder
+    asks for must lie inside those days -- refused by name otherwise, naming
+    the field, with nothing written and the link still issued. Measured
+    before this: the holder chose any starts_on and any days_valid, and a
+    three-day link minted a QR registered on the pass for 400 days."""
+    pass_ = seeded(app, tenant_id, TRANSIENT_ENTRY)
+    link = issue_link(app, tenant_id, TRANSIENT_ENTRY, pass_)
+    before = registrations(app, tenant_id)
+    with pytest.raises(f.Refused) as refused:
+        redeem_link(app, tenant_id, TRANSIENT_ENTRY, link["token"], starts_on=starts_on,
+                    days_valid=days_valid)
+    app.rollback()
+    assert refused.value.code == f.REFUSAL_OUTSIDE_THE_HOLDER_LINK_WINDOW
+    assert refused.value.field == field
+    assert "2026-06-01" in refused.value.detail and "2026-06-03" in refused.value.detail
+    assert registrations(app, tenant_id) == before
+    assert link_row(app, tenant_id)[0] == "issued"
+
+
+@pytest.mark.guarantee("G24")
+@pytest.mark.parametrize(("starts_on", "days_valid"), [
+    (date(2026, 6, 1), 3), (date(2026, 6, 2), 2), (date(2026, 6, 3), 1), (date(2026, 6, 1), 1),
+])
+def test_a_qr_inside_the_owners_window_is_issued(app, tenant_id, starts_on, days_valid):
+    """The control for the test above: inside the link's days, the QR is made."""
+    pass_ = seeded(app, tenant_id, TRANSIENT_ENTRY)
+    link = issue_link(app, tenant_id, TRANSIENT_ENTRY, pass_)
+    out = redeem_link(app, tenant_id, TRANSIENT_ENTRY, link["token"], starts_on=starts_on,
+                      days_valid=days_valid)
+    assert out["enrolment"]["starts_on"] == starts_on
+    assert link_row(app, tenant_id)[0] == "redeemed"

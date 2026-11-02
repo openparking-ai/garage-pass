@@ -231,19 +231,27 @@ def test_every_table_isolates_one_tenant_from_another_read_and_write(app, owner)
 # ---------------------------------------------------------------------------
 
 
-def _ensure_app_role(dsn: str, password: str | None, env_extra: dict | None = None):
+def _ensure_app_role(dsn: str | None, password: str | None, env_extra: dict | None = None,
+                     argv: tuple[str, ...] = ()):
+    """The script as the README runs it: the owner's DSN in the environment
+    (``GARAGE_PASS_OWNER_DSN``), never on the command line, where ``ps``
+    shows it -- ``dsn`` None leaves it unset; ``argv`` is what the command
+    line carries."""
     import os
     import subprocess
     import sys
     from pathlib import Path
 
     script = Path(__file__).resolve().parent.parent / "scripts" / "ensure-app-role.py"
-    env = {k: v for k, v in os.environ.items() if k != "GARAGE_PASS_APP_PASSWORD"}
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("GARAGE_PASS_APP_PASSWORD", "GARAGE_PASS_OWNER_DSN")}
     if password is not None:
         env["GARAGE_PASS_APP_PASSWORD"] = password
+    if dsn is not None:
+        env["GARAGE_PASS_OWNER_DSN"] = dsn
     env.update(env_extra or {})
     return subprocess.run(
-        [sys.executable, str(script), dsn], capture_output=True, text=True, env=env,
+        [sys.executable, str(script), *argv], capture_output=True, text=True, env=env,
     )
 
 
@@ -345,7 +353,8 @@ def test_the_install_step_sends_a_scram_verifier_and_never_the_password(owner, m
         with monkeypatch.context() as patched:
             patched.setattr(psycopg.Cursor, "execute", recorded)
             patched.setenv("GARAGE_PASS_APP_PASSWORD", password)
-            assert script.main([DSN]) == 0
+            patched.setenv("GARAGE_PASS_OWNER_DSN", DSN)
+            assert script.main([]) == 0
         with owner.cursor() as cursor:
             cursor.execute("SELECT rolpassword FROM pg_authid WHERE rolname = %s",
                            (script.ROLE,))
@@ -380,3 +389,44 @@ def test_the_install_step_refuses_to_run_without_a_password_and_never_prints_one
     run = _ensure_app_role(nowhere, password)
     assert run.returncode != 0
     assert password not in run.stdout and password not in run.stderr, (run.stdout, run.stderr)
+
+
+@pytest.mark.guarantee("G10")
+def test_the_install_step_takes_the_owners_dsn_from_the_environment_never_a_password_in_argv(
+    owner, tmp_path
+):
+    """THE OWNER'S PASSWORD IS NOT AN ARGUMENT EITHER: arguments are visible in
+    ``ps`` to every user on the machine. The script reads the owner's DSN from
+    ``GARAGE_PASS_OWNER_DSN``; a DSN on the command line is taken only when it
+    carries no password -- the password then comes from libpq's own
+    ``PGPASSFILE`` (or ``~/.pgpass``) -- and one that carries a password is
+    refused, exit 2, with a sentence that does not print it, and nothing is
+    sent. Measured before this: the README's step put the owner's DSN, with its
+    password, on the command line."""
+    import os
+
+    from psycopg import conninfo
+
+    from store_harness import APP_PASSWORD, DSN
+
+    params = conninfo.conninfo_to_dict(DSN)
+    secret = params.get("password")
+    assert secret, "the premise: the test DSN carries the owner's password"
+    in_argv = _ensure_app_role(None, APP_PASSWORD, argv=(DSN,))
+    assert in_argv.returncode == 2, (in_argv.stdout, in_argv.stderr)
+    assert "GARAGE_PASS_OWNER_DSN" in in_argv.stdout
+    assert secret not in in_argv.stdout and secret not in in_argv.stderr
+    assert "can log in" not in in_argv.stdout, "the script ran on a DSN it was to refuse"
+    nothing = _ensure_app_role(None, APP_PASSWORD)
+    assert nothing.returncode == 2 and "GARAGE_PASS_OWNER_DSN" in nothing.stdout
+    # the password from libpq's own file, the DSN on the command line without it
+    passfile = tmp_path / "pgpass"
+    passfile.write_text(":".join(str(params.get(k, "*")) for k in (
+        "host", "port", "dbname", "user")) + f":{secret}\n")
+    os.chmod(passfile, 0o600)
+    bare = conninfo.make_conninfo(**{k: v for k, v in params.items() if k != "password"})
+    from_file = _ensure_app_role(None, APP_PASSWORD, {"PGPASSFILE": str(passfile)},
+                                 argv=(bare,))
+    assert from_file.returncode == 0, (from_file.stdout, from_file.stderr)
+    from_env = _ensure_app_role(DSN, APP_PASSWORD)
+    assert from_env.returncode == 0, (from_env.stdout, from_env.stderr)

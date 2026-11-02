@@ -69,6 +69,7 @@ from garage_pass.findings import (
     REFUSAL_GARAGE_MISMATCH,
     REFUSAL_GARAGE_NOT_FOUND,
     REFUSAL_NO_OPEN_VISIT,
+    REFUSAL_OUT_OF_VISITS,
     REFUSAL_PASS_ALREADY_EXISTS,
     REFUSAL_PASS_NOT_FOUND,
     REFUSAL_PASS_NOT_REGISTRABLE,
@@ -1046,7 +1047,9 @@ def end_stay(
     at every garage the pass names -- ends on ``day``, recorded as a checkout
     with who ended it and why (``ENDED_BY_CHECKOUT``). From that day the cars
     are free for their next stay; the stay's QRs let a car out on that day and
-    open nothing after (``redeem_enrolment``). The pass's state is not touched
+    open nothing after (``redeem_enrolment``). A holder link not yet used and
+    a QR that has bound no car, whose last day is ``day`` or later, are
+    cancelled in the same transaction. The pass's state is not touched
     -- revoked means something else in this module -- and nothing already
     ended moves. A pass with nothing in force on or after ``day`` is refused by
     name and nothing is written."""
@@ -1073,6 +1076,24 @@ def end_stay(
             f"pass {pass_external_id!r} holds no registration in force on {day} or later.",
         )
     why = f"{ENDED_BY_CHECKOUT} ({by}): {reason}"
+    # LOCK_ORDER, second: the credentials. A checkout leaves nothing on the
+    # pass that could open the stay again -- a holder link not yet used, or a
+    # QR that has bound no car, whose last day is the checkout day or later,
+    # would mint or bind a working QR after the guest left. Cancelled here, in
+    # the same transaction, by whoever ended the stay; a QR bound to a car is
+    # judged by its own stay and lets the car out on the day, as before.
+    cancelled = {}
+    for table, unbound in (("holder_links", ""),
+                           ("enrolments", " AND plate IS NULL AND redeemed_vehicle_identity "
+                                          "IS NULL")):
+        cursor.execute(
+            f"UPDATE {table} SET state = %s, cancelled_by = %s, cancelled_at = now(), "
+            "cancelled_reason = %s WHERE tenant_id = %s AND pass_id = %s AND state = %s "
+            f"AND starts_on + days_valid - 1 >= %s{unbound}",
+            (CredentialState.CANCELLED.value, by, why, tenant_uuid, pass_uuid,
+             CredentialState.ISSUED.value, day),
+        )
+        cancelled[table] = cursor.rowcount
     cursor.execute(
         "UPDATE vehicle_registrations SET end_day = GREATEST(%s, effective_day), "
         "ended_reason = %s WHERE tenant_id = %s AND id = ANY(%s)",
@@ -1080,7 +1101,9 @@ def end_stay(
     )
     ended = sorted({(identity, garage_ext) for _rid, identity, garage_ext, *_r in rows})
     return {"pass": pass_external_id, "day": day, "by": by, "reason": reason,
-            "ended": [{"vehicle_identity": i, "garage": g} for i, g in ended]}
+            "ended": [{"vehicle_identity": i, "garage": g} for i, g in ended],
+            "holder_links_cancelled": cancelled["holder_links"],
+            "enrolments_cancelled": cancelled["enrolments"]}
 
 
 def registrations_of(
@@ -1415,6 +1438,30 @@ def _open_visit(
     return cursor.fetchone()
 
 
+def _refuse_an_entry_the_allowance_does_not_cover(
+    cursor: Any, tenant_uuid: UUID, garage_external_id: str, pass_external_id: str,
+    identity: str, lane: str, at: datetime,
+) -> None:
+    """THE ALLOWANCE IS HELD AT THE WRITE as well as at the answer: a lane's
+    answer may rest on a count another lane has since spent. The entry is
+    asked about through the module's own access path, on the rows as they
+    stand under the pass's lock, and an answer that this pass is OUT OF
+    VISITS refuses the write by name. Every other answer is
+    the lane's to act on, and the entry is recorded as before."""
+    from garage_pass.findings import OUT_OF_VISITS
+    from garage_pass.store.access import answer_in_transaction
+    from garage_pass.terms import Direction
+
+    answer = answer_in_transaction(cursor, tenant_uuid, garage_external_id, identity, lane,
+                                   Direction.ENTRY, at)
+    if answer.reason == OUT_OF_VISITS and answer.pass_id == pass_external_id:
+        raise Refused(
+            REFUSAL_OUT_OF_VISITS, "vehicle_identity",
+            f"{identity!r} on pass {pass_external_id!r} at garage {garage_external_id!r}: "
+            f"{answer.detail}",
+        )
+
+
 def record_entry(
     cursor: Any, tenant_id: Any, garage_external_id: str, pass_external_id: str,
     vehicle_identity: str, lane: str, at: datetime,
@@ -1424,6 +1471,12 @@ def record_entry(
     require_aware(at, "at")
     garage_uuid, _garage = load_readable_garage(cursor, tenant_uuid, garage_external_id)
     pass_uuid, _pass = load_pass(cursor, tenant_uuid, garage_uuid, pass_external_id)
+    # LOCK_ORDER, first: the pass row, so the count below is read after every
+    # other entry on this pass has landed -- two lanes recording the last
+    # visit at once record it once
+    lock_pass_row(cursor, tenant_uuid, pass_uuid)
+    _refuse_an_entry_the_allowance_does_not_cover(
+        cursor, tenant_uuid, garage_external_id, pass_external_id, identity, lane, at)
     open_ = _open_visit(cursor, tenant_uuid, garage_uuid, pass_uuid, identity)
     if open_ is not None:
         raise Refused(

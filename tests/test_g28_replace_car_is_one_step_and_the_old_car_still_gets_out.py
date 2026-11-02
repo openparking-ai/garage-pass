@@ -27,6 +27,7 @@ from enrolment_harness import (
     TRANSIENT_ENTRY,
     enrolment_row,
     issue,
+    issue_plate,
     other_end,
     redeem,
     registrations,
@@ -217,7 +218,8 @@ def test_every_refusal_of_the_two_writes_is_rendered_through_the_command_line(
     T = ["--tenant", str(tenant_id), "--garage", TRANSIENT_ENTRY.id]
     seen = {}
     for argv, code in (
-        (["redeem-enrolment", *T, "--token", token, "--vehicle", "CAR-1", "--lane", "L1",
+        (["redeem-enrolment", *T, "--token-in-argv",
+          "--token", token, "--vehicle", "CAR-1", "--lane", "L1",
           "--direction", "entry", "--at", "2026-06-03T09:00:00-06:00"],
          f.REFUSAL_CREDENTIAL_EXIT_ONLY),
         (["replace-car", *T, "--enrolment-id", "qr-1", "--new-enrolment-id", "qr-3",
@@ -353,3 +355,36 @@ def test_at_an_exit_the_replaced_car_is_covered_for_the_stay_inside_at_the_repla
     assert (out["outcome"], out["reason"]) == ("not_covered", f.EXIT_ONLY), out
     assert main([*T, "--entered-at", "2026-06-02T08:00:00-06:00"]) == 0
     assert json.loads(capsys.readouterr().out)["outcome"] == "covered"
+
+
+@pytest.mark.guarantee("G28")
+def test_replacing_a_car_stops_every_live_qr_of_it_entering_not_only_the_one_named(
+    app, tenant_id
+):
+    """A car may hold more than one live QR on its pass -- a QR reissued for it
+    while the first still runs. Replacing the car from ONE of them makes EVERY
+    live QR of that car exit only, in the same transaction: the car stops
+    entering by any of its QRs and by its plate, and still leaves. Measured
+    before this: the second QR kept the replaced car entering, by the QR and
+    by its plate alike."""
+    pass_ = seeded(app, tenant_id, TRANSIENT_ENTRY)
+    first = issue_plate(app, tenant_id, TRANSIENT_ENTRY, pass_, "ABC-123", "qr-1",
+                        starts_on=date(2026, 6, 1), days_valid=5)["token"]
+    second = issue_plate(app, tenant_id, TRANSIENT_ENTRY, pass_, "abc 123", "qr-1b",
+                         starts_on=date(2026, 6, 1), days_valid=5)["token"]
+    out = replaced(app, tenant_id, TRANSIENT_ENTRY, plate="XYZ-789")
+    later = at(date(2026, 6, 3), 9)
+    for token in (first, second):
+        entering = redeem(app, tenant_id, TRANSIENT_ENTRY, token, "ABC123",
+                          direction=Direction.ENTRY, at=later)
+        assert entering.refusal is not None, "a QR of the replaced car still let it in"
+        assert entering.refusal.code == f.REFUSAL_CREDENTIAL_EXIT_ONLY
+        leaving = redeem(app, tenant_id, TRANSIENT_ENTRY, token, "ABC123",
+                         direction=Direction.EXIT, at=later)
+        assert leaving.recognised and leaving.answer.outcome is Outcome.COVERED
+    by_plate = access_from_store(app, tenant_id, TRANSIENT_ENTRY.id, "ABC123", "L1",
+                                 Direction.ENTRY, later)
+    assert by_plate.outcome is not Outcome.COVERED and by_plate.reason == "EXIT_ONLY"
+    state, when, by, why = exit_only_columns(app, tenant_id, "qr-1b")
+    assert when == SWAPPED and by == "desk" and "rental swapped" in why
+    assert out["replaced"]["also_exit_only"] == ["qr-1b"], out["replaced"]

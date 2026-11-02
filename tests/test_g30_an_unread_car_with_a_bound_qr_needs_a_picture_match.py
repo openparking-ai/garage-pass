@@ -199,7 +199,8 @@ def test_the_match_and_its_refusals_are_rendered_through_the_command_line(
     token = bound(app, tenant_id)
     T = ["--tenant", str(tenant_id), "--garage", TRANSIENT_ENTRY.id]
     MOVE = ["--lane", "L1", "--direction", "entry", "--at", LATER.isoformat()]
-    status = main(["redeem-enrolment", *T, "--token", token, "--vehicle", "", *MOVE])
+    status = main(["redeem-enrolment", *T, "--token-in-argv",
+                   "--token", token, "--vehicle", "", *MOVE])
     out = json.loads(capsys.readouterr().out)
     assert out["enrolment"]["match_required"] is True and out["enrolment"]["match_for"] == "CAR-1"
     assert status == 2, "an entry with no identity is refused an answer"

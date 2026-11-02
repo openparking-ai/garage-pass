@@ -157,6 +157,8 @@ REFUSAL_CREDENTIAL_ALREADY_REPLACED = "REFUSAL_CREDENTIAL_ALREADY_REPLACED"
 REFUSAL_CREDENTIAL_NOT_BOUND = "REFUSAL_CREDENTIAL_NOT_BOUND"
 REFUSAL_PLATE_NOT_STATED = "REFUSAL_PLATE_NOT_STATED"
 REFUSAL_MATCH_DECIDED_BY_UNKNOWN = "REFUSAL_MATCH_DECIDED_BY_UNKNOWN"
+REFUSAL_OUTSIDE_THE_HOLDER_LINK_WINDOW = "REFUSAL_OUTSIDE_THE_HOLDER_LINK_WINDOW"
+REFUSAL_OUT_OF_VISITS = "REFUSAL_OUT_OF_VISITS"
 
 REFUSALS: dict[str, str] = {
     REFUSAL_VALID_TO_BEFORE_VALID_FROM: (
@@ -316,6 +318,13 @@ REFUSALS: dict[str, str] = {
         "would hold a car inside this garage twice. A visit still open at another "
         "garage of the pass does not refuse an entry here."
     ),
+    REFUSAL_OUT_OF_VISITS: (
+        "The pass's visit allowance is spent, so this entry is not recorded on it: the "
+        "entries already recorded on the pass, counted the way the access answer counts "
+        "them, use every visit it allows. Judged under the pass's lock when the entry is "
+        "written, so two lanes recording the last visit at once record it once. The "
+        "detail carries the count. Nothing is written."
+    ),
     REFUSAL_EXIT_BEFORE_ENTRY: (
         "The exit instant is earlier than the entry it would close."
     ),
@@ -431,6 +440,13 @@ REFUSALS: dict[str, str] = {
         "not one of the two this module records: 'opa_id' (the car's own OPA ID "
         "against its earlier pictures) or 'api' (an outside picture check, when the "
         "OPA ID was unclear). Nothing is written."
+    ),
+    REFUSAL_OUTSIDE_THE_HOLDER_LINK_WINDOW: (
+        "The QR a holder asked for with their link does not lie inside the days the owner "
+        "issued the link for (its starts_on to its last day): it starts before them, or "
+        "runs past them. The owner's days bound the holder's QR; the holder chooses within "
+        "them. The detail names the link's first and last day. Nothing is written, and the "
+        "link stays issued."
     ),
     REFUSAL_CREDENTIAL_ALREADY_REPLACED: (
         "This QR's car was already replaced on its pass. A replacement is made once, from "

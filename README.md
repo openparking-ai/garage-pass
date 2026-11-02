@@ -155,6 +155,12 @@ or deleted) where the QR's plate, folded, has five characters or more
 (`ONE_DIFFERENCE_MIN_LENGTH`; a shorter plate passes on the plate, a look-alike
 or nothing read, and one difference is clearly different), or nothing usable —
 the lane hands in nothing when it read no plate or one below its confidence.
+**At an entry, one difference and nothing read open nothing on their own**:
+a QR is a picture anyone can be sent, so the car there is a picture match
+(`match_required`), and those two pass at an exit only. **One car in at a
+time**: while the QR's car has an entry recorded on its pass at that garage and
+no exit, the QR is refused at an entry (`REFUSAL_VISIT_ALREADY_OPEN`), whatever
+was read, and a picture match does not open it either; the exit still answers.
 The answer says which (`passed_by`), beside the QR's own id (`enrolment`) so the
 stay can be tied to the QR, and it carries the QR's plate (`qr_plate`) so the lane checks its owner's deny rule
 against the car it lets in. A pass by one difference or by nothing read is
@@ -195,13 +201,18 @@ one starts. Before that day the plate on another pass is still refused by name,
 naming the earlier pass and its last day. A registration the owner ended, or a
 revocation ended, is not a stay's last day: the car is free from its end day,
 as before. **A stay ended early** (`end-stay`: the guest checked out — the day,
-who and why) ends every car of the pass on that day, at every garage. On the
+who and why) ends every car of the pass on that day, at every garage, and
+cancels every holder link not yet used and every QR that has bound no car whose
+last day is that day or later, so nothing on the pass opens the stay again. On the
 day a stay ended early or turned over, its QR is refused
 `REFUSAL_CREDENTIAL_EXIT_ONLY` at an entry and lets the car out at an exit, on
 its own pass — and on the day a stay ended early, the car read by its plate at
 an exit is let out on that pass the same way; after that day the QR is refused
 `REFUSAL_CREDENTIAL_STAY_ENDED` at either end, and before its stay begins
-`REFUSAL_CREDENTIAL_NOT_STARTED`.
+`REFUSAL_CREDENTIAL_NOT_STARTED` — judged only on the registrations that
+overlap the QR's own days (the one it was made on, however long that runs), so
+the same car back on the same pass on a later QR does not make an earlier QR
+work again, nor the later one open early.
 **Nothing carries over**: a plate read, a QR and a picture match for the next
 stay answer on the next stay's pass, never the earlier one. A shorter stay is
 `end-registration` (to an earlier day) or `end-stay`.
@@ -217,7 +228,9 @@ at the replacement: `--entered-at` states when the stay that is leaving entered,
 and a stay that entered after the replacement is not covered (`EXIT_ONLY`);
 with no entry instant the exit is covered and the replacement is named in
 `unmeasured`. A QR of the car whose own last day has passed, or whose first day
-has not come, no longer keeps the replaced car entering. A QR that never bound
+has not come, no longer keeps the replaced car entering; every other QR of the
+car live on the replacement's day becomes exit only with it, so a second QR the
+car holds does not keep it entering either. A QR that never bound
 has no car inside and is cancelled instead. All of it or none of it.
 **Cancelling one QR**
 (`cancel-code`) cancels that QR alone, bound or not — the pass, its other QRs
@@ -228,8 +241,18 @@ pass; ending the car is `end-registration`) — and a fresh QR is issued with
 The holder's own details: a one-time link (`issue-holder-link`), the same
 primitive scoped to the pass, lets the holder write their name and phone onto
 the pass — those two columns and nothing else — describe the car they will
-bring (which decides nothing), and get their QR (`redeem-holder-link`). The
-owner-only path stands: no link is needed to enrol. Text anywhere — a name, a
+bring (which decides nothing), and get their QR (`redeem-holder-link`) — a QR
+inside the days the owner issued the link for (its `--starts-on` to its last
+day); a QR that starts before them or runs past them is refused by name
+(`REFUSAL_OUTSIDE_THE_HOLDER_LINK_WINDOW`) and nothing is written. The
+owner-only path stands: no link is needed to enrol. **A token is not an
+argument**: `redeem-enrolment` and `redeem-holder-link` read the token from
+standard input, because every user on the machine can read a command's
+arguments in `ps`. `--token` is still taken for **one release**, so a caller
+of the version before this one keeps working while it moves to standard input;
+it prints a deprecation warning on stderr (never the token), and
+`--token-in-argv` beside it takes it without the warning. A later release
+refuses `--token` without `--token-in-argv`. Text anywhere — a name, a
 phone, an id, a lane, a label — may be in any script; a control character in
 it (a NUL, a line break inside it) is refused by name, never handed to the
 database driver.
@@ -240,8 +263,9 @@ $ garage-pass set-garage-enrols-at --tenant T --garage garage-downtown --enrols-
 $ garage-pass issue-enrolment --tenant T --garage garage-downtown --pass-id pass-1 \
       --enrolment-id qr-1 --plate "ABC-123" --starts-on 2026-06-01 --days-valid 3 \
       --by owner --at ...
-$ garage-pass redeem-enrolment --tenant T --garage garage-downtown --token <what the QR carried> \
-      --vehicle CAR-1 --lane L1 --direction entry --at 2026-06-01T09:00:00-06:00
+$ printf '%s\n' "$WHAT_THE_QR_CARRIED" | garage-pass redeem-enrolment --tenant T \
+      --garage garage-downtown --vehicle CAR-1 --lane L1 --direction entry \
+      --at 2026-06-01T09:00:00-06:00
 $ garage-pass replace-car --tenant T --garage garage-downtown --enrolment-id qr-1 \
       --new-enrolment-id qr-2 --plate "XYZ 789" --starts-on 2026-06-02 --days-valid 3 --by desk \
       --reason "rental car swapped" --at ...
@@ -346,7 +370,11 @@ instant is stated.
 holds no session state. It answers; the lane acts. What it holds is a ledger of
 the visits the lane told it about, because a visit allowance and a maximum stay
 are computed from those rows and from nothing else — and the answer says what
-it counted, on which pass, over what. **The ledger is per garage**: a pass may
+it counted, on which pass, over what. **The allowance is held at the write
+too**: `record-entry` locks the pass, asks the same access path about the entry
+on the rows as they stand, and refuses by name (`REFUSAL_OUT_OF_VISITS`) when
+the pass is out of visits, so two lanes recording the last visit at once record
+it once. **The ledger is per garage**: a pass may
 name several, and one open visit per vehicle per pass is the rule *at each* —
 an entry at one garage of the set is never refused for a visit still open at
 another, and an exit never closes another garage's visit — while the allowance
@@ -459,8 +487,16 @@ and the application role given a login:
 
 ```
 for m in migrations/*.sql; do psql "$DSN" -v ON_ERROR_STOP=1 -f "$m"; done   # 0001, 0002, 0003
-GARAGE_PASS_APP_PASSWORD=... python scripts/ensure-app-role.py "$DSN"
+GARAGE_PASS_OWNER_DSN="$DSN" GARAGE_PASS_APP_PASSWORD=... python scripts/ensure-app-role.py
 ```
+
+The owner's DSN, like the application role's password, is read from the
+environment, never from an argument, because every user on the machine can
+read a command's arguments in `ps`. A DSN on the command line is still taken
+when it carries no password — libpq then reads the password from `PGPASSFILE`
+(or `~/.pgpass`) — and one that carries a password is refused, unprinted, before
+anything connects. The `psql` loop above reads the password the same way: keep
+it out of `$DSN` and in `PGPASSFILE`, or export `PGPASSWORD` for the two steps.
 
 Both steps are run by the suite, not only described here: a test applies the
 migration and runs `ensure-app-role.py` against the test cluster, logs in as the

@@ -23,7 +23,18 @@ from datetime import date
 
 import pytest
 
-from enrolment_harness import TRANSIENT_ENTRY, issue_plate, redeem, registrations, seeded
+from enrolment_harness import (
+    TRANSIENT_ENTRY,
+    enrolment_row,
+    issue,
+    issue_link,
+    issue_plate,
+    link_row,
+    redeem,
+    redeem_link,
+    registrations,
+    seeded,
+)
 from fixtures import a_pass, at
 from garage_pass import findings as f
 from garage_pass.access import Outcome
@@ -232,3 +243,138 @@ def test_on_the_day_a_stay_ended_early_the_plate_lets_the_car_out_as_its_qr_does
                                          starts_on=OCT[10], days_valid=3, at=at(OCT[10], 7)))
     assert shown(app, tenant_id, b_token["token"], 10, Direction.ENTRY).recognised
     assert plate_read(app, tenant_id, 10, Direction.EXIT).pass_id == b.id
+
+
+@pytest.mark.guarantee("G32")
+def test_a_stay_ended_early_cancels_the_links_and_unbound_qrs_that_reach_past_it(
+    app, tenant_id
+):
+    """A checkout leaves nothing on the pass that could open the stay again:
+    a holder link not yet used, and a QR that has not bound a car (one stored
+    before plates were required), whose last day is the checkout day or later
+    are cancelled by the end-stay, in its transaction. A link whose own days
+    were over before the checkout is not touched. Measured before this: the
+    guest redeemed the unused link after checking out and got a working QR,
+    registered on the pass again."""
+    a = seeded(app, tenant_id, TRANSIENT_ENTRY)
+    issue_plate(app, tenant_id, TRANSIENT_ENTRY, a, "ABC123", "qr-a", starts_on=OCT[8],
+                days_valid=5, at=DESK)
+    link = issue_link(app, tenant_id, TRANSIENT_ENTRY, a, "link-live", starts_on=OCT[8],
+                      days_valid=5, at=DESK)
+    issue_link(app, tenant_id, TRANSIENT_ENTRY, a, "link-over", starts_on=OCT[8], days_valid=1,
+               at=DESK)
+    unbound = issue(app, tenant_id, TRANSIENT_ENTRY, a, "qr-unbound", starts_on=OCT[8],
+                    days_valid=5, at=DESK)
+    with tenant(app, tenant_id) as cursor:
+        out = end_stay(cursor, tenant_id, TRANSIENT_ENTRY.id, a.id, OCT[10], by="desk",
+                       reason="guest checked out")
+    app.commit()
+    state, _redeemed, by, cancelled_at, reason = link_row(app, tenant_id, "link-live")
+    assert (state, by) == ("cancelled", "desk") and cancelled_at is not None
+    assert "checked out" in reason and "guest checked out" in reason
+    assert link_row(app, tenant_id, "link-over")[0] == "issued", "its own days were over"
+    assert enrolment_row(app, tenant_id, "qr-unbound")[0] == "cancelled"
+    assert enrolment_row(app, tenant_id, "qr-a")[0] == "issued", "a bound QR keeps its exit"
+    with pytest.raises(f.Refused) as refused:
+        redeem_link(app, tenant_id, TRANSIENT_ENTRY, link["token"], plate="ABC123",
+                    starts_on=OCT[11], days_valid=1, at=at(OCT[11], 9))
+    app.rollback()
+    assert refused.value.code == f.REFUSAL_CREDENTIAL_CANCELLED
+    late = redeem(app, tenant_id, TRANSIENT_ENTRY, unbound["token"], "XYZ789",
+                  direction=Direction.ENTRY, at=at(OCT[11], 9))
+    assert late.refusal is not None and late.refusal.code == f.REFUSAL_CREDENTIAL_CANCELLED
+    assert late.answer.outcome is not Outcome.COVERED
+    assert all(r[3] is not None and r[3] <= OCT[10] for r in registrations(app, tenant_id)), (
+        "nothing registered the stay again")
+    assert (out["holder_links_cancelled"], out["enrolments_cancelled"]) == (1, 1), out
+
+
+@pytest.mark.guarantee("G32")
+def test_a_qr_answers_on_its_own_days_never_on_a_later_stay_of_the_same_car_on_the_pass(
+    app, tenant_id
+):
+    """A QR made for a plate is its own stay's days. The car comes back on the
+    SAME pass for a later stay, on a QR of its own: the earlier QR, long over,
+    does not work again on the later stay's registration -- refused STAY
+    ENDED, the exit still answered -- and the later QR does not open before
+    its own first day on the earlier stay's registration -- refused NOT
+    STARTED. Measured before this: both were recognised, because each was
+    judged by whatever registration the plate held on the pass that day."""
+    a = seeded(app, tenant_id, TRANSIENT_ENTRY)
+    early = issue_plate(app, tenant_id, TRANSIENT_ENTRY, a, "ABC123", "qr-early",
+                        starts_on=OCT[8], days_valid=3, at=DESK)["token"]
+    late = issue_plate(app, tenant_id, TRANSIENT_ENTRY, a, "ABC123", "qr-late",
+                       starts_on=OCT[12], days_valid=3, at=DESK)["token"]
+    early_in = shown(app, tenant_id, early, 13, Direction.ENTRY)
+    assert early_in.refusal is not None, "a QR over since Oct 10 let the car in on Oct 13"
+    assert early_in.refusal.code == f.REFUSAL_CREDENTIAL_STAY_ENDED
+    assert "2026-10-11" in early_in.refusal.detail and not early_in.recognised
+    early_out = shown(app, tenant_id, early, 13, Direction.EXIT)
+    assert early_out.refusal.code == f.REFUSAL_CREDENTIAL_STAY_ENDED
+    assert early_out.answer.exit_note is not None, "the exit is answered, never refused"
+    late_in = shown(app, tenant_id, late, 9, Direction.ENTRY)
+    assert late_in.refusal is not None, "a QR from Oct 12 let the car in on Oct 9"
+    assert late_in.refusal.code == f.REFUSAL_CREDENTIAL_NOT_STARTED
+    # the controls: each QR on its own days
+    assert shown(app, tenant_id, early, 9, Direction.ENTRY).recognised
+    assert shown(app, tenant_id, late, 13, Direction.ENTRY).recognised
+
+
+@pytest.mark.guarantee("G32")
+def test_a_link_and_an_unbound_qr_whose_last_day_is_the_checkout_day_are_cancelled(
+    app, tenant_id
+):
+    """THE BOUNDARY: a holder link, and a QR that has bound no car, whose LAST
+    DAY IS THE CHECKOUT DAY still reach the stay -- the guest could redeem
+    them on the day they left -- so end-stay cancels them; one whose last day
+    was the day before is over and is left as it is."""
+    a = seeded(app, tenant_id, TRANSIENT_ENTRY)
+    issue_plate(app, tenant_id, TRANSIENT_ENTRY, a, "ABC123", "qr-a", starts_on=OCT[8],
+                days_valid=5, at=DESK)
+    link = issue_link(app, tenant_id, TRANSIENT_ENTRY, a, "link-to-checkout", starts_on=OCT[8],
+                      days_valid=3, at=DESK)  # Oct 8, 9, 10
+    issue_link(app, tenant_id, TRANSIENT_ENTRY, a, "link-to-the-day-before", starts_on=OCT[8],
+               days_valid=2, at=DESK)  # Oct 8, 9
+    unbound = issue(app, tenant_id, TRANSIENT_ENTRY, a, "qr-to-checkout", starts_on=OCT[8],
+                    days_valid=3, at=DESK)
+    with tenant(app, tenant_id) as cursor:
+        end_stay(cursor, tenant_id, TRANSIENT_ENTRY.id, a.id, OCT[10], by="desk",
+                 reason="guest checked out")
+    app.commit()
+    assert link_row(app, tenant_id, "link-to-checkout")[0] == "cancelled", (
+        "a link whose last day is the checkout day was left live")
+    assert enrolment_row(app, tenant_id, "qr-to-checkout")[0] == "cancelled"
+    assert link_row(app, tenant_id, "link-to-the-day-before")[0] == "issued"
+    with pytest.raises(f.Refused) as refused:
+        redeem_link(app, tenant_id, TRANSIENT_ENTRY, link["token"], plate="ABC123",
+                    starts_on=OCT[10], days_valid=1, at=at(OCT[10], 15))
+    app.rollback()
+    assert refused.value.code == f.REFUSAL_CREDENTIAL_CANCELLED
+    late = redeem(app, tenant_id, TRANSIENT_ENTRY, unbound["token"], "XYZ789",
+                  direction=Direction.ENTRY, at=at(OCT[10], 15))
+    assert late.refusal is not None and late.refusal.code == f.REFUSAL_CREDENTIAL_CANCELLED
+
+
+@pytest.mark.guarantee("G32")
+def test_a_registration_that_ends_on_a_qrs_first_day_does_not_open_it_the_day_before(
+    app, tenant_id
+):
+    """THE BOUNDARY of a QR's own days: the car was registered on the pass from
+    Oct 8, and the owner ended that registration on Oct 10 (end-day
+    exclusive: its last day was Oct 9). A QR is then made for the car from
+    Oct 10. The earlier registration does not overlap the QR's days, so on
+    Oct 9 the QR is refused NOT STARTED, and on Oct 10 it is recognised."""
+    from garage_pass.passes import State
+    from garage_pass.store.records import end_registration, register_vehicle
+
+    a = seeded(app, tenant_id, TRANSIENT_ENTRY, state=State.ACTIVE)
+    with tenant(app, tenant_id) as cursor:
+        register_vehicle(cursor, tenant_id, TRANSIENT_ENTRY.id, a.id, "ABC123", OCT[8])
+        end_registration(cursor, tenant_id, TRANSIENT_ENTRY.id, a.id, "ABC123", OCT[10])
+    app.commit()
+    token = issue_plate(app, tenant_id, TRANSIENT_ENTRY, a, "ABC123", "qr-from-10",
+                        starts_on=OCT[10], days_valid=3, at=DESK)["token"]
+    early = shown(app, tenant_id, token, 9, Direction.ENTRY)
+    assert early.refusal is not None, "a registration ending on the QR's first day opened it"
+    assert early.refusal.code == f.REFUSAL_CREDENTIAL_NOT_STARTED and not early.recognised
+    assert shown(app, tenant_id, token, 10, Direction.ENTRY).recognised

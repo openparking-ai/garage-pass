@@ -60,7 +60,8 @@ from garage_pass.enrolment import (
     where_enrolment_happens,
     within_one_difference,
 )
-from garage_pass.store.enrolments import cancel_code, replace_car
+from garage_pass.store import records
+from garage_pass.store.enrolments import cancel_code, confirm_match, replace_car
 from garage_pass.store.postgres import tenant
 from garage_pass.terms import Direction
 from store_harness import needs_postgres, query
@@ -171,9 +172,9 @@ def test_a_look_alike_read_is_the_qrs_car_at_either_end_and_keeps_nothing(
 
 @pytest.mark.guarantee("G33")
 @pytest.mark.parametrize("read", ONE_DIFFERENCE)
-def test_one_difference_opens_and_is_kept_with_the_read(app, tenant_id, read):
+def test_one_difference_opens_at_an_exit_and_is_kept_with_the_read(app, tenant_id, read):
     token = made_for_a_plate(app, tenant_id)
-    out = redeem(app, tenant_id, TRANSIENT_ENTRY, token, read, direction=Direction.ENTRY,
+    out = redeem(app, tenant_id, TRANSIENT_ENTRY, token, read, direction=Direction.EXIT,
                  at=LATER)
     assert out.recognised and not out.match_required and out.refusal is None
     assert out.passed_by == PASSED_ONE_DIFFERENCE and out.qr_plate == "ABC123"
@@ -182,7 +183,7 @@ def test_one_difference_opens_and_is_kept_with_the_read(app, tenant_id, read):
     assert kept["identity_read"] == read and kept["passed_by"] == PASSED_ONE_DIFFERENCE
     assert (kept["matched"], kept["outcome"], kept["decided_by"]) == (
         True, "recognised", "similar_enough")
-    assert (kept["lane"], kept["direction"], kept["at"]) == ("L1", "entry", LATER.isoformat())
+    assert (kept["lane"], kept["direction"], kept["at"]) == ("L1", "exit", LATER.isoformat())
     [(row_plate,)] = query(app, tenant_id, "SELECT plate FROM enrolments")
     assert row_plate == "ABC123", "the QR's plate is on the same row as the read"
 
@@ -202,7 +203,7 @@ def test_a_four_character_plate_one_character_off_is_a_case_for_a_person(app, te
 @pytest.mark.guarantee("G33")
 def test_a_five_character_plate_one_character_off_passes_and_names_the_qr(app, tenant_id):
     token = made_for_a_plate(app, tenant_id, plate="AB-123")
-    out = redeem(app, tenant_id, TRANSIENT_ENTRY, token, "AB124", direction=Direction.ENTRY,
+    out = redeem(app, tenant_id, TRANSIENT_ENTRY, token, "AB124", direction=Direction.EXIT,
                  at=LATER)
     assert out.recognised and out.passed_by == PASSED_ONE_DIFFERENCE
     assert out.answer.outcome is Outcome.COVERED
@@ -219,18 +220,19 @@ def test_a_five_character_plate_one_character_off_passes_and_names_the_qr(app, t
 @pytest.mark.guarantee("G33")
 @pytest.mark.parametrize("garage", GARAGES, ids=[g.id for g in GARAGES])
 @pytest.mark.parametrize("read", NOTHING, ids=["empty", "blank"])
-def test_nothing_read_opens_at_either_end_and_is_kept(app, tenant_id, garage, read):
+def test_nothing_read_opens_at_an_exit_and_is_kept(app, tenant_id, garage, read):
     token = made_for_a_plate(app, tenant_id, garage)
-    end = Direction(where_enrolment_happens(garage))
-    for direction in (end, other_end(end)):
-        out = redeem(app, tenant_id, garage, token, read, direction=direction, at=LATER)
+    for _ in range(2):
+        out = redeem(app, tenant_id, garage, token, read, direction=Direction.EXIT, at=LATER)
         assert out.recognised and not out.match_required and out.refusal is None
         assert out.passed_by == PASSED_NOTHING_READ and out.qr_plate == "ABC123"
         assert out.answer.outcome is Outcome.COVERED and out.answer.vehicle_identity == "ABC123"
+    entering = redeem(app, tenant_id, garage, token, read, direction=Direction.ENTRY, at=LATER)
+    assert entering.match_required and not entering.recognised, "an entry asks for a match"
     kept = matches(app, tenant_id)
     assert [(m["identity_read"], m["passed_by"], m["direction"]) for m in kept] == [
-        (None, PASSED_NOTHING_READ, end.value),
-        (None, PASSED_NOTHING_READ, other_end(end).value)], "one record per opening, in order"
+        (None, PASSED_NOTHING_READ, "exit"),
+        (None, PASSED_NOTHING_READ, "exit")], "one record per opening, in order"
 
 
 @pytest.mark.guarantee("G33")
@@ -317,6 +319,102 @@ def test_a_qr_with_no_plate_keeps_its_exact_first_use_binding(app, tenant_id):
     unread = redeem(app, tenant_id, TRANSIENT_ENTRY, token, "", at=LATER)
     assert unread.match_required and not unread.recognised
     assert matches(app, tenant_id) == []
+
+
+
+# ---------------------------------------------------------------------------
+# A QR is a picture anyone can be sent: at an ENTRY it opens only for its
+# plate (the plate or a look-alike), and lets one car in at a time
+# ---------------------------------------------------------------------------
+
+INSIDE = at(date(2026, 6, 2), 8)
+
+
+def made_for(app, tenant_id, plate="ABC-123"):
+    pass_ = seeded(app, tenant_id, TRANSIENT_ENTRY)
+    return pass_, issue_plate(app, tenant_id, TRANSIENT_ENTRY, pass_, plate)["token"]
+
+
+def entered(app, tenant_id, pass_, plate="ABC123", when=INSIDE):
+    with tenant(app, tenant_id) as cursor:
+        records.record_entry(cursor, tenant_id, TRANSIENT_ENTRY.id, pass_.id, plate, "L1", when)
+    app.commit()
+
+
+@pytest.mark.guarantee("G33")
+@pytest.mark.parametrize("read", ["", "ABC124"], ids=["nothing-read", "one-difference"])
+def test_at_an_entry_a_read_that_is_not_the_plate_asks_for_a_picture_match(
+    app, tenant_id, read
+):
+    _pass, token = made_for(app, tenant_id)
+    out = redeem(app, tenant_id, TRANSIENT_ENTRY, token, read, direction=Direction.ENTRY,
+                 at=LATER)
+    assert out.match_required and not out.recognised and out.passed_by is None
+    assert out.answer.outcome is not Outcome.COVERED, "nothing opens on the QR at an entry"
+
+
+@pytest.mark.guarantee("G33")
+@pytest.mark.parametrize(("read", "passed"), [("", PASSED_NOTHING_READ),
+                                              ("ABC124", PASSED_ONE_DIFFERENCE)])
+def test_at_an_exit_the_same_read_still_lets_the_car_out(app, tenant_id, read, passed):
+    _pass, token = made_for(app, tenant_id)
+    out = redeem(app, tenant_id, TRANSIENT_ENTRY, token, read, direction=Direction.EXIT,
+                 at=LATER)
+    assert out.recognised and out.passed_by == passed
+    assert out.answer.outcome is Outcome.COVERED
+
+
+@pytest.mark.guarantee("G33")
+def test_the_plate_and_a_look_alike_still_open_at_an_entry(app, tenant_id):
+    _pass, token = made_for(app, tenant_id)
+    for read, passed in (("ABC123", "same_plate"), ("A8C123", PASSED_LOOK_ALIKE)):
+        out = redeem(app, tenant_id, TRANSIENT_ENTRY, token, read, direction=Direction.ENTRY,
+                     at=LATER)
+        assert out.recognised and out.passed_by == passed, read
+        assert out.answer.outcome is Outcome.COVERED
+
+
+@pytest.mark.guarantee("G33")
+@pytest.mark.parametrize("read", ["ABC123", "A8C123", "", "ABC124", "XYZ789"])
+def test_while_the_qrs_car_is_inside_the_qr_lets_no_second_car_in(app, tenant_id, read):
+    pass_, token = made_for(app, tenant_id)
+    entered(app, tenant_id, pass_)
+    out = redeem(app, tenant_id, TRANSIENT_ENTRY, token, read, direction=Direction.ENTRY,
+                 at=LATER)
+    assert out.refusal is not None and out.refusal.code == f.REFUSAL_VISIT_ALREADY_OPEN, read
+    assert not out.recognised and not out.match_required
+    # the exit is never refused: the car inside still leaves on its QR
+    leaving = redeem(app, tenant_id, TRANSIENT_ENTRY, token, "ABC123", direction=Direction.EXIT,
+                     at=LATER)
+    assert leaving.recognised and leaving.answer.outcome is Outcome.COVERED
+
+
+@pytest.mark.guarantee("G33")
+def test_once_the_exit_is_recorded_the_qr_opens_again(app, tenant_id):
+    pass_, token = made_for(app, tenant_id)
+    entered(app, tenant_id, pass_)
+    with tenant(app, tenant_id) as cursor:
+        records.record_exit(cursor, tenant_id, TRANSIENT_ENTRY.id, pass_.id, "ABC123", "L2",
+                            at(date(2026, 6, 2), 8, 30))
+    app.commit()
+    out = redeem(app, tenant_id, TRANSIENT_ENTRY, token, "ABC123", direction=Direction.ENTRY,
+                 at=LATER)
+    assert out.recognised and out.answer.outcome is Outcome.COVERED
+
+
+@pytest.mark.guarantee("G33")
+def test_a_picture_match_does_not_let_a_second_car_in_while_the_first_is_inside(
+    app, tenant_id
+):
+    pass_, token = made_for(app, tenant_id)
+    entered(app, tenant_id, pass_)
+    with tenant(app, tenant_id) as cursor:
+        out = confirm_match(cursor, tenant_id, TRANSIENT_ENTRY.id, "qr-1", matched=True,
+                            identity_read=None, decided_by="opa_id", lane="L1",
+                            direction=Direction.ENTRY, at=LATER)
+    app.commit()
+    assert out.refusal is not None and out.refusal.code == f.REFUSAL_VISIT_ALREADY_OPEN
+    assert not out.recognised
 
 
 pytestmark = needs_postgres

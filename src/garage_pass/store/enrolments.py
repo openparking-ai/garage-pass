@@ -123,6 +123,7 @@ from garage_pass.enrolment import (
     Credential,
     CredentialState,
     MintedToken,
+    credential_state,
     digest,
     last_day,
     mint,
@@ -151,8 +152,10 @@ from garage_pass.findings import (
     REFUSAL_GARAGE_MISMATCH,
     REFUSAL_LANE_OUTSIDE_THE_PASS_TERMS,
     REFUSAL_MATCH_DECIDED_BY_UNKNOWN,
+    REFUSAL_OUTSIDE_THE_HOLDER_LINK_WINDOW,
     REFUSAL_PASS_NOT_REGISTRABLE,
     REFUSAL_PLATE_NOT_STATED,
+    REFUSAL_VISIT_ALREADY_OPEN,
     Refused,
 )
 from garage_pass.garage import require_text
@@ -164,6 +167,7 @@ from garage_pass.store.records import (
     ENDED_AFTER_LAST_DAY,
     ONE_PASS_PER_GARAGE,
     REGISTRABLE_STATES,
+    _open_visit,
     as_uuid,
     change_state,
     ends_a_stay_that_day,
@@ -409,7 +413,17 @@ def _stay_of(
     """A BOUND QR IS JUDGED BY ITS OWN STAY, never by the car's next one: the
     registrations of the QR's car ON THE QR'S PASS at this garage, read on
     ``today``. Nothing carries over -- a plate the next stay holds is that
-    stay's, and this QR does not answer for it."""
+    stay's, and this QR does not answer for it.
+
+    A QR MADE FOR A PLATE reads only the registrations that OVERLAP ITS OWN
+    DAYS, ``starts_on`` to its last day -- the one it was made on, however
+    long that runs. A registration of the same car on the same pass that
+    begins after its last day, or ends before its first, is a later or an
+    earlier stay, another QR's, and never makes this one work: measured before
+    this, a QR over for days was recognised again when the car came back on
+    the pass on a QR of its own, and that QR opened before its first day. A QR
+    stored before plates were required is judged by every registration of its
+    car on the pass, as before."""
     cursor.execute(
         "SELECT effective_day, end_day, ended_reason FROM vehicle_registrations "
         "WHERE tenant_id = %s AND garage_id = %s AND pass_id = %s AND vehicle_identity = %s "
@@ -417,6 +431,9 @@ def _stay_of(
         (tenant_uuid, garage_uuid, pass_uuid, plate_key(code.bound)),
     )
     rows = cursor.fetchall()
+    if code.plate is not None:
+        rows = [row for row in rows
+                if row[0] <= code.last_day and (row[1] is None or row[1] > code.starts_on)]
     for row in rows:
         effective, end, _why = row
         if effective <= today and (end is None or today < end):
@@ -825,7 +842,8 @@ def _present_bound(
     A QR MADE FOR A PLATE: ``similar_enough`` against that plate -- the same
     plate, a look-alike, one difference, or nothing usable read (the lane
     hands in nothing, or nothing but spaces) passes; a CLEARLY DIFFERENT
-    plate is None, a case for a person. A QR STORED BEFORE PLATES WERE
+    plate is None, a case for a person -- and AT AN ENTRY so are one
+    difference and nothing read, which pass at an exit only. A QR STORED BEFORE PLATES WERE
     REQUIRED keeps its first-use binding exactly as it was: the identity it
     bound, exact text, passes as the same plate; nothing read is None (a
     picture match); any other identity is refused WRONG CAR. It writes
@@ -852,6 +870,12 @@ def _present_bound(
         )
     else:
         passed_by = PASSED_SAME_PLATE
+    if direction is Direction.ENTRY and passed_by in RECORDED_PASSES:
+        # AT AN ENTRY, A READ THAT IS NOT THE PLATE OPENS NOTHING ON ITS OWN: a
+        # QR is a picture anyone can be sent, and the car with nothing read or
+        # one character off is a car this QR cannot vouch for -- a picture
+        # match decides. At an exit it still passes: nobody is kept inside.
+        passed_by = None
     if direction is Direction.ENTRY and enrolment.exit_only_at is not None:
         raise Refused(
             REFUSAL_CREDENTIAL_EXIT_ONLY, "direction",
@@ -859,6 +883,27 @@ def _present_bound(
             f"at {local(enrolment.exit_only_at, tz).isoformat()}; it answers at an exit only.",
         )
     return passed_by  # None: a picture match, or a person, decides
+
+
+def _refuse_a_second_car_in(
+    cursor: Any, tenant_uuid: UUID, garage_uuid: UUID, garage_external_id: str,
+    pass_uuid: UUID, code: Credential, direction: Direction, tz: ZoneInfo,
+) -> None:
+    """ONE QR LETS ONE CAR IN AT A TIME: at an entry, a bound QR whose car has
+    an entry recorded on the QR's pass at this garage and no exit is refused
+    by name, whatever was read -- the QR's car is inside, so the car at the
+    lane is not it, or the ledger is missing an exit the lane must record
+    first. The exit is never refused here."""
+    if direction is not Direction.ENTRY:
+        return
+    inside = _open_visit(cursor, tenant_uuid, garage_uuid, pass_uuid, plate_key(code.bound))
+    if inside is not None:
+        raise Refused(
+            REFUSAL_VISIT_ALREADY_OPEN, "vehicle_identity",
+            f"{ENROLMENT} {code.id!r}'s car entered garage {garage_external_id!r} on pass "
+            f"{code.pass_id!r} at {local(inside[1], tz).isoformat()} and has no recorded "
+            "exit; the QR lets one car in at a time.",
+        )
 
 
 def _keep_the_pass(
@@ -969,6 +1014,8 @@ def redeem_enrolment(
             stay, stay_row = _stay_of(cursor, tenant_uuid, garage_uuid, pass_uuid, enrolment,
                                       today)
             _refuse_outside_the_stay(stay, stay_row, enrolment, direction)
+            _refuse_a_second_car_in(cursor, tenant_uuid, garage_uuid, garage_external_id,
+                                    pass_uuid, enrolment, direction, tz)
             cursor.execute(f"RELEASE SAVEPOINT {SAVEPOINT}")
             if match_required:
                 # A CLEARLY DIFFERENT CAR -- NOTHING OPENS ON THIS QR: the
@@ -1087,6 +1134,27 @@ def redeem_enrolment(
     )
 
 
+def _refuse_outside_the_links_days(link: Credential, starts_on: object, days_valid: object) -> None:
+    """THE OWNER'S DAYS BOUND THE HOLDER'S QR: the QR a holder asks for lies
+    inside the days the owner issued the link for, ``link.starts_on`` to its
+    last day -- or a refusal by name, nothing written. The holder chooses
+    within them; a link is never a way to choose a longer stay."""
+    _require_day(starts_on, "starts_on")
+    days = require_days_valid(days_valid)
+    window = f"link {link.id!r} was issued for {link.starts_on} to {link.last_day}"
+    if starts_on < link.starts_on:
+        raise Refused(
+            REFUSAL_OUTSIDE_THE_HOLDER_LINK_WINDOW, "starts_on",
+            f"starts_on {starts_on} is before the owner's days: {window}.",
+        )
+    if last_day(starts_on, days) > link.last_day:
+        raise Refused(
+            REFUSAL_OUTSIDE_THE_HOLDER_LINK_WINDOW, "days_valid",
+            f"{days} day(s) from {starts_on} run to {last_day(starts_on, days)}, past the "
+            f"owner's days: {window}.",
+        )
+
+
 #: The two columns a holder link may write on the pass, and no other.
 HOLDER_WRITES = ("holder_name", "holder_phone")
 
@@ -1126,6 +1194,7 @@ def redeem_holder_link(
     _refuse_unless_redeemable(HOLDER_LINK, link, today, tz)
     _pass_uuid, pass_ = load_pass(cursor, tenant_uuid, garage_uuid, link.pass_id)
     _refuse_unless_registrable(pass_, link.pass_id, today, "a holder link")
+    _refuse_outside_the_links_days(link, starts_on, days_valid)
     # THE NARROW WRITE: the holder's name and phone, on the pass, nothing else.
     cursor.execute(
         f"UPDATE passes SET {HOLDER_WRITES[0]} = %s, {HOLDER_WRITES[1]} = %s "
@@ -1209,6 +1278,45 @@ def _under_savepoint(cursor: Any, write: Any, which: str) -> Any:
     return result
 
 
+def _every_other_qr_of_the_car_exit_only(
+    cursor: Any, tenant_uuid: UUID, pass_uuid: UUID, named: UUID, code: Credential, by: str,
+    at: datetime, why: str, today: date,
+) -> list[str]:
+    """THE REPLACED CAR STOPS ENTERING BY EVERY QR IT HOLDS ON THE PASS TODAY,
+    not only the one the replacement was made from: a car may hold a second
+    QR (one reissued for it while the first still ran), and a live QR of the
+    car keeps it entering by its plate too (``registrations_of``). Every other
+    QR of the same car on the pass that is live on the replacement's day --
+    redeemed, or issued and within its own days, the rule ``registrations_of``
+    reads -- and not already replaced, is marked exit only with the same who,
+    when and why, under the pass lock, locked in LOCK_ORDER's second place. A
+    QR whose stay has not begun is the car's own later stay and is left as it
+    is. Their ids, in order."""
+    cursor.execute(
+        "SELECT id, external_id, COALESCE(plate, redeemed_vehicle_identity), state, starts_on, "
+        "days_valid FROM enrolments "
+        "WHERE tenant_id = %s AND pass_id = %s AND id <> %s AND state <> %s "
+        "AND exit_only_at IS NULL AND COALESCE(plate, redeemed_vehicle_identity) IS NOT NULL "
+        f"ORDER BY external_id {lock_clause()}",
+        (tenant_uuid, pass_uuid, named, CredentialState.CANCELLED.value),
+    )
+    same_car = []
+    for uuid, ext, bound, state, starts_on, days in cursor.fetchall():
+        read = credential_state(starts_on, days, CredentialState(state), today)
+        live = read == CredentialState.REDEEMED.value or (
+            read == CredentialState.ISSUED.value and starts_on <= today)
+        if live and plate_key(bound) == plate_key(code.bound):
+            same_car.append((uuid, ext))
+    for uuid, _ext in same_car:
+        cursor.execute(
+            "UPDATE enrolments SET exit_only_at = %s, exit_only_by = %s, exit_only_reason = %s "
+            "WHERE tenant_id = %s AND id = %s AND exit_only_at IS NULL",
+            (at, by, why, tenant_uuid, uuid),
+        )
+        _one_row(cursor, "a replacement", code)
+    return [ext for _uuid, ext in same_car]
+
+
 def replace_car(
     cursor: Any, tenant_id: Any, garage_external_id: str, enrolment_external_id: str,
     new_enrolment_external_id: str, starts_on: date, days_valid: object, *, by: str,
@@ -1254,7 +1362,10 @@ def replace_car(
             )
             _one_row(cursor, "a replacement", code)
             old = {"enrolment": code.id, "vehicle_identity": code.bound,
-                   "now": "exit_only", "at": at}
+                   "now": "exit_only", "at": at,
+                   "also_exit_only": _every_other_qr_of_the_car_exit_only(
+                       cursor, tenant_uuid, _pass_uuid, _uuid, code, by, at, why,
+                       day_of(at, tz))}
         else:
             cursor.execute(
                 "UPDATE enrolments SET state = %s, cancelled_by = %s, cancelled_at = %s, "
@@ -1400,6 +1511,9 @@ def confirm_match(
                                       day_of(at, tz))
             try:
                 _refuse_outside_the_stay(stay, stay_row, code, direction)
+                # and a picture of the QR's car is not the car while it is inside
+                _refuse_a_second_car_in(cursor, tenant_uuid, garage_uuid_, garage_external_id,
+                                        pass_uuid, code, direction, tz)
             except Refused as outside:
                 refusal = outside
             if refusal is None and stay == STAY_LAST_DAY:

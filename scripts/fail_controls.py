@@ -331,6 +331,19 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
         "    if False:  # PLANTED: a blank identity is looked up\n        if is_exit:",
         "a blank identity is looked up as if it were a vehicle and answered NO_PASS",
     ),
+    "G9/entry-written-past-the-allowance": (
+        G9, "store/records.py",
+        "    _refuse_an_entry_the_allowance_does_not_cover(\n",
+        "    (lambda *_args: None)(  # PLANTED: the allowance is read at the answer only\n",
+        "record-entry writes a third entry on a two-visit pass",
+    ),
+    "G9/entry-unlocked": (
+        G9, "store/records.py",
+        "    lock_pass_row(cursor, tenant_uuid, pass_uuid)\n"
+        "    _refuse_an_entry_the_allowance_does_not_cover(\n",
+        "    _refuse_an_entry_the_allowance_does_not_cover(  # PLANTED: no pass lock\n",
+        "two lanes recording a pass's last visit at once both record it",
+    ),
     "G9/per-window": (
         G9, "access.py",
         "            day_of(v.entered_at, clock) == today",
@@ -1770,6 +1783,18 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
         ),
         "the description decides, by its length -- the spelling the G13 scan could not see",
     ),
+    "G23/token-in-argv-silent": (
+        G23, "cli.py",
+        "        if not args.token_in_argv:\n",
+        "        if False:  # PLANTED: a token on the command line is taken without a word\n",
+        "a caller still putting the QR token where ps shows it is never told to move it",
+    ),
+    "G23/stdin-not-read": (
+        G23, "cli.py",
+        "    return sys.stdin.read()\n",
+        "    return args.token or ''  # PLANTED: standard input is not read\n",
+        "a lane that writes the token to standard input, as told, redeems nothing",
+    ),
     "G23/stored-plaintext": (
         G23, "store/enrolments.py",
         "        values += [vehicle_description, *(plate or (None, None))]",
@@ -1799,6 +1824,13 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
         "vehicle_description=vehicle_description,  # PLANTED",
         "the enrolment a link issues records the owner as its issuer, not the link: the row "
         "that issued it no longer records the human",
+    ),
+    "G24/holder-chooses-the-days": (
+        G24, "store/enrolments.py",
+        "    _refuse_outside_the_links_days(link, starts_on, days_valid)\n",
+        "    pass  # PLANTED: the holder chooses any starts_on and days_valid\n",
+        "a three-day holder link mints a QR registered on the pass for as long as the holder "
+        "asks",
     ),
     "G24/spend": (
         G24, "store/enrolments.py",
@@ -2422,6 +2454,12 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
         "    if False:  # PLANTED: a replaced car's QR still opens the entry\n",
         "the old QR still enters after its car was replaced (the brief's check 3, first plant)",
     ),
+    "G28/only-the-named-qr-exit-only": (
+        G28, "store/enrolments.py",
+        "        if live and plate_key(bound) == plate_key(code.bound):\n",
+        "        if False:  # PLANTED: only the QR named is made exit only\n",
+        "a replaced car keeps entering on a second QR it holds on the pass, and by its plate",
+    ),
     "G28/old-qr-refused-at-exit": (
         G28, "store/enrolments.py",
         "    if direction is Direction.ENTRY and enrolment.exit_only_at is not None:\n",
@@ -2640,6 +2678,36 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
         "# PLANTED\n",
         "end-stay ends nothing, so the next stay from the checkout day is refused (check 3)",
     ),
+    "G32/qr-judged-by-the-plates-stay": (
+        G32, "store/enrolments.py",
+        "    if code.plate is not None:\n        rows = [row for row in rows\n",
+        "    if False:  # PLANTED: judged by whatever the plate holds on the pass\n"
+        "        rows = [row for row in rows\n",
+        "a QR over for days opens again when the same car comes back on the pass on a QR of "
+        "its own",
+    ),
+    "G32/own-days-off-by-one": (
+        G32, "store/enrolments.py",
+        "                if row[0] <= code.last_day and (row[1] is None or row[1] > "
+        "code.starts_on)]\n",
+        "                if row[0] <= code.last_day and (row[1] is None or row[1] >= "
+        "code.starts_on)]  # PLANTED\n",
+        "a registration that ended on a QR's first day opens the QR the day before its stay",
+    ),
+    "G32/end-stay-leaves-links-live": (
+        G32, "store/records.py",
+        '            f"AND starts_on + days_valid - 1 >= %s{unbound}",\n',
+        '            f"AND false AND starts_on + days_valid - 1 >= %s{unbound}",  # PLANTED\n',
+        "a guest who checked out redeems the unused holder link and gets a working QR on the "
+        "pass again",
+    ),
+    "G32/end-stay-misses-the-checkout-day": (
+        G32, "store/records.py",
+        '            f"AND starts_on + days_valid - 1 >= %s{unbound}",\n',
+        '            f"AND starts_on + days_valid - 1 > %s{unbound}",  # PLANTED: off by one\n',
+        "a holder link whose last day is the checkout day stays live, and the guest redeems it "
+        "on the day they left",
+    ),
     "G32/old-stay-answers-on-its-pass": (
         G32, "store/enrolments.py",
         "    return STAY_ENDED, (rows[-1] if rows else None)\n",
@@ -2730,6 +2798,18 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
         "no plate passes a near read\n",
         "a QR stored before plates were required is shown by CAR-2 and lets it in on CAR-1's "
         "first-use binding",
+    ),
+    "G33/entry-opens-on-a-near-read": (
+        G33, "store/enrolments.py",
+        "    if direction is Direction.ENTRY and passed_by in RECORDED_PASSES:\n",
+        "    if False:  # PLANTED: one difference and nothing read open at an entry\n",
+        "a screenshot of the QR lets a car with nothing read, or one character off, in on it",
+    ),
+    "G33/second-car-in": (
+        G33, "store/enrolments.py",
+        "    if inside is not None:\n",
+        "    if False:  # PLANTED: the QR lets a car in while its own car is inside\n",
+        "a screenshot of the QR lets a second car in while the QR's own car is still inside",
     ),
     "G31/o-and-i-are-letters": (
         G31, "enrolment.py",
@@ -2904,6 +2984,13 @@ CONTROLS: dict[str, tuple[str, str, str, str, str]] = {
         "'visits']  -- PLANTED: FORCE on all five\n",
         "0007 puts FORCE on a table that did not have it, so the catalogue after it is not the "
         "one it found (and 0001's own FORCE can no longer be seen missing)",
+    ),
+    "G10/owner-password-in-argv": (
+        G10, "scripts/ensure-app-role.py",
+        "        if carries_password:\n",
+        "        if False:  # PLANTED: the owner's password is taken from the command line\n",
+        "the install step runs on an owner DSN whose password ps shows to every user on the "
+        "machine",
     ),
     "G10/password-sent": (
         G10, "scripts/ensure-app-role.py",

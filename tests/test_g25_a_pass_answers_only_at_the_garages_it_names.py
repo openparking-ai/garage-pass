@@ -1907,12 +1907,14 @@ def test_the_product_walk_over_a_three_garage_pass_through_the_command_line(
                                       "--by", "owner", "--at", AT])
     assert status == 0 and out["pass"] == "pass-span" and out["plate_key"] == "CAR1", out
     token = out["token"]
-    status, out = _run(main, capsys, ["redeem-enrolment", *T, "--garage", ELSEWHERE.id, "--token",
-                                      token, "--vehicle", "CAR-1", "--lane", "L1", "--direction",
+    status, out = _run(main, capsys, ["redeem-enrolment", *T, "--garage", ELSEWHERE.id,
+                                      "--token-in-argv", "--token", token, "--vehicle",
+                                      "CAR-1", "--lane", "L1", "--direction",
                                       "entry", "--at", AT])
     assert status == 1 and out["enrolment"]["refused"] == f.REFUSAL_GARAGE_MISMATCH, out
     assert out["answer"]["reason"] == f.NO_PASS, "the movement is answered beside the refusal"
-    status, out = _run(main, capsys, ["redeem-enrolment", *T, "--garage", A.id, "--token", token,
+    status, out = _run(main, capsys, ["redeem-enrolment", *T, "--garage", A.id, "--token-in-argv",
+                                      "--token", token,
                                       "--vehicle", "CAR-1", "--lane", "L1", "--direction", "entry",
                                       "--at", AT])
     # bound to its plate from issue -- registered at every garage of the pass when
@@ -1952,7 +1954,8 @@ def test_the_product_walk_over_a_three_garage_pass_through_the_command_line(
                                       "2026-06-02", "--days-valid", "3", "--plate",
                                       "CAR-1-NEW", "--by", "owner", "--at", AT])
     assert status == 0
-    status, out = _run(main, capsys, ["redeem-enrolment", *T, "--garage", C.id, "--token",
+    status, out = _run(main, capsys, ["redeem-enrolment", *T, "--garage", C.id, "--token-in-argv",
+                                      "--token",
                                       out["token"], "--vehicle", "CAR-1-NEW", "--lane", "L2",
                                       "--direction", "entry", "--at", "2026-06-02T09:00:00-06:00"])
     assert status == 0 and out["enrolment"]["recognised"] is True, out
